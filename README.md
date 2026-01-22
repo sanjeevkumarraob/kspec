@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/kspec-cli.svg)](https://www.npmjs.com/package/kspec-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A spec-driven development workflow for Kiro CLI with specialized agents for analysis, testing, debugging, and code review.
+Spec-driven development workflow for Kiro CLI with verification at every step.
 
 ## Installation
 
@@ -14,86 +14,74 @@ npm install -g kspec-cli
 ## Quick Start
 
 ```bash
-# Initialize in your project
-cd your-project
-kspec init
+kspec init                    # Interactive setup
+kspec analyse                 # Analyse codebase
+kspec spec "User Auth API"    # Create specification
+kspec verify-spec             # Verify spec is complete
+kspec tasks                   # Generate tasks
+kspec verify-tasks            # Verify tasks cover spec
+kspec build                   # Execute with TDD
+kspec verify                  # Verify implementation
+kspec done                    # Complete & harvest memory
+```
 
-# Start developing
-kspec analyse                        # Analyze project
-kspec create-spec "User Auth API"    # Create specification
-kspec create-tasks                   # Generate tasks
-kspec execute-tasks                  # Execute with TDD
+## Workflow
+
+```
+init → analyse → spec → verify-spec → tasks → verify-tasks → build → verify → done
 ```
 
 ## Commands
 
-### Core Workflow
-```bash
-kspec init                    # Initialize kspec structure
-kspec analyse                 # Analyze project (read-only)
-kspec apply-standards         # Update standards from steering
-kspec create-spec "Feature"   # Create feature specification
-kspec create-tasks            # Generate tasks from spec
-kspec execute-tasks           # Execute tasks with TDD
-kspec harvest-memory          # Capture decisions and learnings
-```
+| Command | Description |
+|---------|-------------|
+| `kspec init` | Interactive setup (date format, execution mode) |
+| `kspec analyse` | Analyse codebase, update steering docs |
+| `kspec spec "Name"` | Create spec.md + spec-lite.md |
+| `kspec verify-spec` | Verify spec covers requirements |
+| `kspec tasks` | Generate tasks.md from spec |
+| `kspec verify-tasks` | Verify tasks cover spec |
+| `kspec build` | Execute tasks with TDD |
+| `kspec verify` | Verify implementation matches spec |
+| `kspec done` | Complete spec, harvest memory |
+| `kspec review` | Code review |
+| `kspec list` | List all specs |
+| `kspec status` | Current status |
 
-### Quick Actions
-```bash
-kspec quick "Fix button"      # Fast ad-hoc task
-kspec review                  # Code review mode
-kspec test "src/auth.ts"      # Test generation
-kspec debug "API 500 error"   # Systematic debugging
-```
-
-### Status
-```bash
-kspec status                  # Environment status
-kspec progress                # Workflow progress
-kspec agents                  # List available agents
-kspec help                    # Full help
-```
-
-## Agents & Keyboard Shortcuts
-
-Switch agents during your Kiro CLI session:
+## Agents & Shortcuts
 
 | Agent | Shortcut | Purpose |
 |-------|----------|---------|
-| `kspec-analyse` | - | Read-only project analysis |
-| `kspec-review` | `Ctrl+R` | Code review |
-| `kspec-test` | `Ctrl+T` | Test generation |
-| `kspec-quick` | `Ctrl+Q` | Quick tasks |
-| `kspec-debug` | `Ctrl+D` | Debugging |
+| kspec-analyse | Ctrl+A | Analyse codebase |
+| kspec-spec | Ctrl+S | Create specifications |
+| kspec-tasks | Ctrl+T | Generate tasks |
+| kspec-build | Ctrl+B | Execute with TDD |
+| kspec-verify | Ctrl+V | Verify spec/tasks/impl |
+| kspec-review | Ctrl+R | Code review |
 
-## Project Structure
+## Structure
 
 ```
-your-project/
-├── .kiro/
-│   ├── steering/           # Project rules (authoritative)
-│   │   ├── product.md
-│   │   ├── tech.md
-│   │   ├── structure.md
-│   │   ├── testing.md
-│   │   └── security.md
-│   └── agents/             # Agent configurations
-└── .kspec/
-    ├── standards/          # Derived standards
-    ├── specs/              # Feature specifications
-    ├── quick/              # Quick task logs
-    ├── debug/              # Debug sessions
-    └── memory/             # Decisions & learnings
+.kspec/
+├── config.json           # User preferences
+├── memory.md             # Project learnings
+└── specs/
+    └── 2026-01-22-feature/
+        ├── spec.md       # Full specification
+        ├── spec-lite.md  # Concise (for context compression)
+        ├── tasks.md      # Implementation tasks
+        └── memory.md     # Feature learnings
+
+.kiro/
+└── steering/             # Project rules (Kiro native)
 ```
 
-## Environment Variables
+## Configuration
 
-| Variable | Description |
-|----------|-------------|
-| `KSPEC_DATE` | Override date (YYYY-MM-DD) |
-| `KSPEC_FAST=1` | Non-interactive mode |
-| `KSPEC_FORCE=1` | Overwrite on init |
-| `KSPEC_DEBUG=1` | Debug output |
+Set during `kspec init`:
+
+- **Date format**: YYYY-MM-DD, DD-MM-YYYY, or MM-DD-YYYY
+- **Auto-execute**: ask (default), auto, or dry-run
 
 ## Requirements
 

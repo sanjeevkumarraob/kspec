@@ -1,32 +1,48 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
-const crypto = require('crypto');
+const readline = require('readline');
 
 const KSPEC_DIR = '.kspec';
-const AGENTS_DIR = '.kiro/agents';
 const STEERING_DIR = '.kiro/steering';
+const AGENTS_DIR = '.kiro/agents';
+const CONFIG_FILE = path.join(KSPEC_DIR, 'config.json');
 
-const config = {
-  date: process.env.KSPEC_DATE || new Date().toISOString().split('T')[0],
-  fast: process.env.KSPEC_FAST === '1',
-  force: process.env.KSPEC_FORCE === '1',
-  debug: process.env.KSPEC_DEBUG === '1'
+// Default config
+const defaultConfig = {
+  dateFormat: 'YYYY-MM-DD',
+  autoExecute: 'ask',
+  initialized: false
 };
 
-function log(msg) { console.log(`[kspec] ${msg}`); }
-function debug(msg) { if (config.debug) console.log(`[kspec:debug] ${msg}`); }
-function die(msg) { console.error(`Error: ${msg}`); process.exit(1); }
-
-function slugify(text) {
-  return text.slice(0, 50).toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9_-]/g, '')
-    .replace(/^-+|-+$/g, '');
+function loadConfig() {
+  if (fs.existsSync(CONFIG_FILE)) {
+    return { ...defaultConfig, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) };
+  }
+  return defaultConfig;
 }
 
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+function saveConfig(cfg) {
+  ensureDir(KSPEC_DIR);
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+}
+
+const config = loadConfig();
+
+// Helpers
+function log(msg) { console.log(`[kspec] ${msg}`); }
+function die(msg) { console.error(`Error: ${msg}`); process.exit(1); }
+function ensureDir(dir) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); }
+
+function formatDate(format) {
+  const d = new Date();
+  const pad = n => n.toString().padStart(2, '0');
+  const parts = { YYYY: d.getFullYear(), MM: pad(d.getMonth() + 1), DD: pad(d.getDate()) };
+  return format.replace(/YYYY|MM|DD/g, m => parts[m]);
+}
+
+function slugify(text) {
+  return text.slice(0, 50).toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
 }
 
 function detectCli() {
@@ -35,31 +51,41 @@ function detectCli() {
   die("Neither 'kiro-cli' nor 'q' found. Install Kiro CLI first.");
 }
 
-function chat(message) {
-  const cli = detectCli();
-  const args = config.fast ? ['chat', '--no-interactive', message] : ['chat', message];
-  const child = spawn(cli, args, { stdio: 'inherit', shell: true });
-  return new Promise((resolve) => child.on('close', resolve));
+async function prompt(question, choices) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  
+  return new Promise(resolve => {
+    if (choices) {
+      console.log(`\n${question}`);
+      choices.forEach((c, i) => console.log(`  ${i + 1}) ${c.label}`));
+      rl.question('\nChoice: ', answer => {
+        rl.close();
+        const idx = parseInt(answer) - 1;
+        resolve(choices[idx]?.value || choices[0].value);
+      });
+    } else {
+      rl.question(question, answer => { rl.close(); resolve(answer); });
+    }
+  });
 }
 
-function findSpecFolder(slug) {
-  const specsDir = path.join(KSPEC_DIR, 'specs');
-  if (!fs.existsSync(specsDir)) return null;
-  
-  const matches = fs.readdirSync(specsDir)
-    .filter(d => d.includes(slug) && fs.statSync(path.join(specsDir, d)).isDirectory())
-    .sort().reverse();
-  
-  if (matches.length === 0) return null;
-  if (matches.length === 1) return path.join(specsDir, matches[0]);
-  
-  console.error(`Multiple specs found matching "${slug}":`);
-  matches.forEach((m, i) => console.error(`  ${i + 1}) ${m}`));
-  die('Please specify a more specific name.');
+async function confirm(question) {
+  const answer = await prompt(`${question} (Y/n): `);
+  return !answer || answer.toLowerCase() === 'y';
 }
+
+function chat(message, agent) {
+  const cli = detectCli();
+  const args = agent ? ['chat', '--agent', agent, message] : ['chat', message];
+  const child = spawn(cli, args, { stdio: 'inherit', shell: true });
+  return new Promise(resolve => child.on('close', resolve));
+}
+
+// Spec management
+function getSpecsDir() { return path.join(KSPEC_DIR, 'specs'); }
 
 function getCurrentSpec() {
-  const file = path.join(KSPEC_DIR, '.current_spec');
+  const file = path.join(KSPEC_DIR, '.current');
   if (fs.existsSync(file)) {
     const spec = fs.readFileSync(file, 'utf8').trim();
     if (fs.existsSync(spec)) return spec;
@@ -69,199 +95,233 @@ function getCurrentSpec() {
 
 function setCurrentSpec(folder) {
   ensureDir(KSPEC_DIR);
-  fs.writeFileSync(path.join(KSPEC_DIR, '.current_spec'), folder);
+  fs.writeFileSync(path.join(KSPEC_DIR, '.current'), folder);
 }
 
-function getSteeringFingerprint() {
-  if (!fs.existsSync(STEERING_DIR)) return '';
-  const files = fs.readdirSync(STEERING_DIR).filter(f => f.endsWith('.md')).sort();
-  const content = files.map(f => fs.readFileSync(path.join(STEERING_DIR, f), 'utf8')).join('');
-  return crypto.createHash('sha256').update(content).digest('hex');
+function findSpec(name) {
+  const specsDir = getSpecsDir();
+  if (!fs.existsSync(specsDir)) return null;
+  
+  const slug = slugify(name);
+  const matches = fs.readdirSync(specsDir)
+    .filter(d => d.includes(slug) && fs.statSync(path.join(specsDir, d)).isDirectory())
+    .sort().reverse();
+  
+  if (matches.length === 1) return path.join(specsDir, matches[0]);
+  if (matches.length > 1) {
+    console.log('Multiple matches:');
+    matches.forEach((m, i) => console.log(`  ${i + 1}) ${m}`));
+    die('Be more specific.');
+  }
+  return null;
 }
 
-function contextBlock() {
-  return `kspec context:
-- Date: ${config.date}
-- kspec dir: ${KSPEC_DIR}/
-- Steering: ${STEERING_DIR}/ (authoritative)
-- Standards: ${KSPEC_DIR}/standards/
-- Specs: ${KSPEC_DIR}/specs/`;
+function getOrSelectSpec(name) {
+  if (name) {
+    const found = findSpec(name);
+    if (found) return found;
+    die(`Spec "${name}" not found.`);
+  }
+  const current = getCurrentSpec();
+  if (current) return current;
+  die('No current spec. Run: kspec spec "Feature Name"');
+}
+
+function getTaskStats(folder) {
+  const tasksFile = path.join(folder, 'tasks.md');
+  if (!fs.existsSync(tasksFile)) return null;
+  
+  const content = fs.readFileSync(tasksFile, 'utf8');
+  const total = (content.match(/^-\s*\[[ x]\]/gm) || []).length;
+  const done = (content.match(/^-\s*\[x\]/gim) || []).length;
+  return { total, done, remaining: total - done };
 }
 
 // Templates
-const templates = {
-  steering: {
-    'product.md': `# Product Overview
+const steeringTemplates = {
+  'product.md': `# Product Overview
 
 ## Purpose
-Define your product's purpose, target users, and business objectives.
-
-## Target Users
-- Primary users and their needs
+[Define your product's purpose and target users]
 
 ## Key Features
-- Main features and capabilities
+[List main features and capabilities]
 
 ## Success Metrics
-- How success is measured`,
+[How success is measured]`,
 
-    'tech.md': `# Technology Stack
+  'tech.md': `# Technology Stack
 
 ## Languages & Runtime
-- Primary language and version
+[Primary language and version]
 
 ## Frameworks
-- Web framework, testing framework
+[Web framework, testing framework, key libraries]
 
 ## Tools
-- Build tools, package managers, linters
+[Build tools, package managers, linters]`,
 
-## Infrastructure
-- Deployment targets, CI/CD`,
-
-    'structure.md': `# Project Structure
-
-## File Organization
-- Directory layout and module boundaries
-
-## Naming Conventions
-- Files, variables, classes, constants
-
-## Patterns
-- Design patterns, state management`,
-
-    'testing.md': `# Testing Standards
+  'testing.md': `# Testing Standards
 
 ## Approach
-- TDD: Red → Green → Refactor
+TDD: Red → Green → Refactor
 
 ## Test Types
-- Unit, integration, e2e
+- Unit: Individual functions
+- Integration: Component interactions
+- E2E: User flows
 
 ## Coverage
-- Minimum thresholds, critical paths`,
+[Minimum thresholds]`
+};
 
-    'security.md': `# Security Standards
+const agentTemplates = {
+  'kspec-analyse.json': {
+    name: 'kspec-analyse',
+    description: 'Analyse codebase and update steering docs',
+    prompt: `You are the kspec analyser. Your job:
+1. Analyse the codebase structure, tech stack, patterns
+2. Review .kiro/steering/ docs
+3. Suggest updates to steering based on actual codebase
+4. Identify risks, tech debt, improvement areas
 
-## Authentication
-- Auth requirements and patterns
-
-## Data Protection
-- Encryption, PII handling
-
-## Input Validation
-- Sanitization rules`
+Output a clear analysis report. Propose specific steering doc updates.`,
+    allowedTools: ['read', 'write'],
+    keyboardShortcut: 'ctrl+a',
+    welcomeMessage: 'Analysing codebase...',
+    toolsSettings: {
+      read: { allowedPaths: ['./**'] },
+      write: { allowedPaths: ['.kiro/steering/**'] }
+    }
   },
-  
-  agents: {
-    'kspec-analyse.json': {
-      name: 'kspec-analyse',
-      description: 'Read-only analysis; propose standards diffs; never write.',
-      prompt: 'Analyse the repository. Deliver: (1) tech stack overview, (2) bounded contexts, (3) risks/smells, (4) suggestions for standards. Use .kiro/steering as authoritative. Do not modify files.',
-      allowedTools: ['read'],
-      toolsSettings: { read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] } }
-    },
-    'kspec-apply-standards.json': {
-      name: 'kspec-apply-standards',
-      description: 'Apply or propose changes to .kspec/standards.',
-      prompt: 'Align .kspec/standards with .kiro/steering and repo reality. Read steering and standards, propose edits, write updated files.',
-      allowedTools: ['read', 'write'],
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        write: { allowedPaths: ['.kspec/standards/**'] }
-      }
-    },
-    'kspec-create-spec.json': {
-      name: 'kspec-create-spec',
-      description: 'Create spec.md and spec-lite.md for a feature.',
-      prompt: 'Create feature specification. Read steering and standards, create spec.md with requirements and design, create spec-lite.md as summary.',
-      allowedTools: ['read', 'write'],
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        write: { allowedPaths: ['.kspec/specs/**'] }
-      }
-    },
-    'kspec-create-tasks.json': {
-      name: 'kspec-create-tasks',
-      description: 'Turn spec.md into numbered, TDD-ready tasks.md.',
-      prompt: 'Generate tasks from spec. Use checkbox format: "1. [ ] Task". Enable resume by marking completed tasks with [x].',
-      allowedTools: ['read', 'write'],
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        write: { allowedPaths: ['.kspec/specs/**'] }
-      }
-    },
-    'kspec-execute-tasks.json': {
-      name: 'kspec-execute-tasks',
-      description: 'Execute tasks with TDD approach.',
-      prompt: 'Execute tasks using TDD. For each [ ] task: write test, implement, verify, mark [x]. Never delete .kiro or .kspec folders.',
-      allowedTools: ['read', 'write', 'shell'],
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        write: { allowedPaths: ['.kspec/specs/**', './**'] },
-        shell: { autoAllowReadonly: true }
-      }
-    },
-    'kspec-review.json': {
-      name: 'kspec-review',
-      description: 'Code review: standards compliance, quality, security.',
-      prompt: 'Review code changes. Check compliance with steering, evaluate quality/tests/security, provide actionable feedback.',
-      allowedTools: ['read', 'shell'],
-      keyboardShortcut: 'ctrl+r',
-      welcomeMessage: 'Ready to review. What should I look at?',
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        shell: { allowedCommands: ['git diff*', 'git log*', 'git status*'], autoAllowReadonly: true }
-      }
-    },
-    'kspec-test.json': {
-      name: 'kspec-test',
-      description: 'Test generation and TDD guidance.',
-      prompt: 'Generate tests following TDD. Cover happy path, edge cases, errors. Follow project conventions.',
-      allowedTools: ['read', 'write', 'shell'],
-      keyboardShortcut: 'ctrl+t',
-      welcomeMessage: 'Ready to help with testing.',
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        write: { allowedPaths: ['**/*.test.*', '**/*.spec.*', '**/test/**', '**/tests/**'] },
-        shell: { allowedCommands: ['npm test*', 'yarn test*', 'jest*', 'vitest*'], autoAllowReadonly: true }
-      }
-    },
-    'kspec-quick.json': {
-      name: 'kspec-quick',
-      description: 'Quick ad-hoc tasks without full spec workflow.',
-      prompt: 'Quick mode for small tasks. Create mini-plan, execute with TDD, commit. Log to .kspec/quick/.',
-      allowedTools: ['read', 'write', 'shell'],
-      keyboardShortcut: 'ctrl+q',
-      welcomeMessage: 'Quick mode. What\'s the task?',
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        write: { allowedPaths: ['.kspec/quick/**', './**'] },
-        shell: { autoAllowReadonly: true }
-      }
-    },
-    'kspec-debug.json': {
-      name: 'kspec-debug',
-      description: 'Systematic debugging with hypothesis tracking.',
-      prompt: 'Debug systematically: reproduce, hypothesize, test, fix, verify. Track in .kspec/debug/. Never guess.',
-      allowedTools: ['read', 'write', 'shell'],
-      keyboardShortcut: 'ctrl+d',
-      welcomeMessage: 'Debug mode. Describe the issue.',
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        write: { allowedPaths: ['.kspec/debug/**', './**'] },
-        shell: { autoAllowReadonly: true }
-      }
-    },
-    'kspec-harvest-memory.json': {
-      name: 'kspec-harvest-memory',
-      description: 'Capture decisions, glossary, and follow-ups.',
-      prompt: 'Harvest learnings from specs and tasks. Write decisions.md, glossary.md, follow-ups.md under .kspec/memory/.',
-      allowedTools: ['read', 'write'],
-      toolsSettings: {
-        read: { allowedPaths: ['.kiro/**', '.kspec/**', './**'] },
-        write: { allowedPaths: ['.kspec/memory/**'] }
-      }
+
+  'kspec-spec.json': {
+    name: 'kspec-spec',
+    description: 'Create feature specifications',
+    prompt: `You are the kspec specification writer. Your job:
+1. Read .kiro/steering/ for project context
+2. Create a comprehensive spec.md with:
+   - Problem/Context
+   - Requirements (functional + non-functional)
+   - Constraints
+   - High-level design
+   - Acceptance criteria
+3. IMMEDIATELY after spec.md, create spec-lite.md:
+   - Concise version (under 500 words)
+   - Key requirements only
+   - Used for context after compression
+
+Always create both files. spec-lite.md is critical for context retention.`,
+    allowedTools: ['read', 'write'],
+    keyboardShortcut: 'ctrl+s',
+    welcomeMessage: 'Ready to create specification.',
+    toolsSettings: {
+      read: { allowedPaths: ['./**'] },
+      write: { allowedPaths: ['.kspec/specs/**'] }
+    }
+  },
+
+  'kspec-tasks.json': {
+    name: 'kspec-tasks',
+    description: 'Generate implementation tasks from spec',
+    prompt: `You are the kspec task generator. Your job:
+1. Read spec.md and spec-lite.md from the spec folder
+2. Generate tasks.md with:
+   - Checkbox format: "- [ ] Task description"
+   - TDD approach: test first, then implement
+   - Logical ordering (models → services → API → UI)
+   - Dependencies noted
+   - File paths where changes occur
+
+Tasks must be atomic and independently verifiable.`,
+    allowedTools: ['read', 'write'],
+    keyboardShortcut: 'ctrl+t',
+    welcomeMessage: 'Generating tasks from spec...',
+    toolsSettings: {
+      read: { allowedPaths: ['./**'] },
+      write: { allowedPaths: ['.kspec/specs/**'] }
+    }
+  },
+
+  'kspec-build.json': {
+    name: 'kspec-build',
+    description: 'Execute tasks with TDD',
+    prompt: `You are the kspec builder. Your job:
+1. Read tasks.md, find first uncompleted task (- [ ])
+2. For each task:
+   a) Write test first (TDD)
+   b) Implement minimal code to pass
+   c) Run tests
+   d) Mark task complete: change "- [ ]" to "- [x]"
+   e) Update tasks.md file
+3. Commit after each task
+
+CRITICAL: Always update tasks.md after completing each task.
+NEVER delete .kiro or .kspec folders.
+Use non-interactive flags for commands (--yes, -y).`,
+    allowedTools: ['read', 'write', 'shell'],
+    keyboardShortcut: 'ctrl+b',
+    welcomeMessage: 'Building from tasks...',
+    toolsSettings: {
+      read: { allowedPaths: ['./**'] },
+      write: { allowedPaths: ['./**'] },
+      shell: { autoAllowReadonly: true }
+    }
+  },
+
+  'kspec-verify.json': {
+    name: 'kspec-verify',
+    description: 'Verify spec, tasks, or implementation',
+    prompt: `You are the kspec verifier. Based on what you're asked to verify:
+
+VERIFY-SPEC:
+- Check spec covers all requirements
+- Identify gaps or ambiguities
+- Suggest splitting large requirements
+- Confirm implementability with current codebase
+
+VERIFY-TASKS:
+- Check tasks cover all spec requirements
+- Verify task completion status
+- Check test coverage for completed tasks
+- Report: X/Y tasks done, coverage %
+
+VERIFY-IMPLEMENTATION:
+- Check implementation matches spec requirements
+- Check all tasks marked complete
+- Run tests, report results
+- List any gaps between spec and implementation
+
+Output a clear verification report with pass/fail status.`,
+    allowedTools: ['read', 'shell'],
+    keyboardShortcut: 'ctrl+v',
+    welcomeMessage: 'What should I verify?',
+    toolsSettings: {
+      read: { allowedPaths: ['./**'] },
+      shell: { autoAllowReadonly: true }
+    }
+  },
+
+  'kspec-review.json': {
+    name: 'kspec-review',
+    description: 'Code review',
+    prompt: `You are the kspec code reviewer. Your job:
+1. Review code changes (git diff or specified files)
+2. Check compliance with .kiro/steering/
+3. Evaluate:
+   - Code quality and readability
+   - Test coverage
+   - Security concerns
+   - Performance implications
+4. Provide actionable feedback
+
+Output: APPROVE / REQUEST_CHANGES with specific issues.`,
+    allowedTools: ['read', 'shell'],
+    keyboardShortcut: 'ctrl+r',
+    welcomeMessage: 'Ready to review. What should I look at?',
+    toolsSettings: {
+      read: { allowedPaths: ['./**'] },
+      shell: { allowedCommands: ['git diff*', 'git log*', 'git status*', 'git show*'], autoAllowReadonly: true }
     }
   }
 };
@@ -269,153 +329,298 @@ Define your product's purpose, target users, and business objectives.
 // Commands
 const commands = {
   async init() {
-    log('Initializing kspec...');
+    console.log('\n🚀 Welcome to kspec!\n');
     
-    [KSPEC_DIR, AGENTS_DIR, STEERING_DIR].forEach(ensureDir);
-    ['specs', 'standards', 'memory', 'quick', 'debug'].forEach(d => ensureDir(path.join(KSPEC_DIR, d)));
-    
-    // Write steering templates
-    for (const [file, content] of Object.entries(templates.steering)) {
-      const p = path.join(STEERING_DIR, file);
-      if (!fs.existsSync(p) || config.force) {
-        fs.writeFileSync(p, content);
-        log(`Created ${p}`);
+    const dateFormat = await prompt('Date format for spec folders:', [
+      { label: 'YYYY-MM-DD (2026-01-22) - sorts chronologically', value: 'YYYY-MM-DD' },
+      { label: 'DD-MM-YYYY (22-01-2026)', value: 'DD-MM-YYYY' },
+      { label: 'MM-DD-YYYY (01-22-2026)', value: 'MM-DD-YYYY' }
+    ]);
+
+    const autoExecute = await prompt('Command execution during build:', [
+      { label: 'Ask for permission (recommended)', value: 'ask' },
+      { label: 'Auto-execute (faster)', value: 'auto' },
+      { label: 'Dry-run only (show, don\'t run)', value: 'dry' }
+    ]);
+
+    const createSteering = await confirm('Create steering doc templates?');
+
+    // Save config
+    const cfg = { dateFormat, autoExecute, initialized: true };
+    saveConfig(cfg);
+    Object.assign(config, cfg);
+
+    // Create directories
+    ensureDir(path.join(KSPEC_DIR, 'specs'));
+    ensureDir(AGENTS_DIR);
+
+    // Create steering templates
+    if (createSteering) {
+      ensureDir(STEERING_DIR);
+      for (const [file, content] of Object.entries(steeringTemplates)) {
+        const p = path.join(STEERING_DIR, file);
+        if (!fs.existsSync(p)) {
+          fs.writeFileSync(p, content);
+          log(`Created ${p}`);
+        }
       }
     }
-    
-    // Write agent configs
-    for (const [file, content] of Object.entries(templates.agents)) {
+
+    // Create agents
+    for (const [file, content] of Object.entries(agentTemplates)) {
       const p = path.join(AGENTS_DIR, file);
-      if (!fs.existsSync(p) || config.force) {
-        fs.writeFileSync(p, JSON.stringify(content, null, 2));
-        log(`Created ${p}`);
-      }
+      fs.writeFileSync(p, JSON.stringify(content, null, 2));
+      log(`Created ${p}`);
     }
-    
-    fs.writeFileSync(path.join(KSPEC_DIR, '.fingerprint'), getSteeringFingerprint());
-    log('kspec initialized.');
+
+    console.log('\n✅ kspec initialized!\n');
+    console.log('Next: kspec analyse');
   },
 
   async analyse() {
-    log('Running analysis...');
-    await chat(`Analyse the repository.\n\nDeliver:\n1. Tech stack and architecture\n2. Bounded contexts\n3. Risks and smells\n4. Standards suggestions\n\nRead-only. ${contextBlock()}`);
+    log('Analysing codebase...');
+    await chat(`Analyse this codebase:
+1. Identify tech stack, architecture, patterns
+2. Review existing .kiro/steering/ docs (if any)
+3. Suggest updates to steering docs
+4. Identify risks and improvement areas
+
+Update steering docs as needed.`, 'kspec-analyse');
   },
 
-  async 'apply-standards'() {
-    log('Applying standards...');
-    await chat(`Align .kspec/standards with .kiro/steering.\n\nRead both, identify gaps, write updated standards.\n\n${contextBlock()}`);
-    fs.writeFileSync(path.join(KSPEC_DIR, '.fingerprint'), getSteeringFingerprint());
-  },
-
-  async 'create-spec'(args) {
+  async spec(args) {
     const feature = args.join(' ');
-    if (!feature) die('Usage: kspec create-spec "Feature Name"');
-    
-    const slug = slugify(feature);
-    const folder = path.join(KSPEC_DIR, 'specs', `${config.date}-${slug}`);
+    if (!feature) die('Usage: kspec spec "Feature Name"');
+
+    const date = formatDate(config.dateFormat || 'YYYY-MM-DD');
+    const folder = path.join(getSpecsDir(), `${date}-${slugify(feature)}`);
     ensureDir(folder);
     setCurrentSpec(folder);
-    
-    log(`Feature folder: ${folder}`);
-    await chat(`Create specification for: ${feature}\n\nFolder: ${folder}\n\nCreate spec.md and spec-lite.md.\n\n${contextBlock()}`);
+
+    log(`Spec folder: ${folder}`);
+    await chat(`Create specification for: ${feature}
+
+Folder: ${folder}
+
+1. Read .kiro/steering/ for context
+2. Create ${folder}/spec.md with full specification
+3. IMMEDIATELY create ${folder}/spec-lite.md (concise version, <500 words)
+
+spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec');
   },
 
-  async 'create-tasks'(args) {
-    const folder = args[0] ? findSpecFolder(slugify(args.join(' '))) : getCurrentSpec();
-    if (!folder) die('No spec found. Run create-spec first.');
+  async 'verify-spec'(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    log(`Verifying spec: ${folder}`);
     
-    log(`Tasks for: ${folder}`);
-    await chat(`Generate tasks from spec.\n\nFolder: ${folder}\n\nUse checkbox format: "1. [ ] Task"\n\n${contextBlock()}`);
+    await chat(`Verify the specification in ${folder}/spec.md:
+
+1. Does it cover all requirements clearly?
+2. Are there gaps or ambiguities?
+3. Should large requirements be split into smaller chunks?
+4. Is it implementable with the current codebase?
+
+Read the codebase to check implementability.
+Report: PASS/FAIL with specific issues.`, 'kspec-verify');
   },
 
-  async 'execute-tasks'(args) {
-    const folder = args[0] ? findSpecFolder(slugify(args.join(' '))) : getCurrentSpec();
-    if (!folder) die('No spec found. Run create-spec first.');
-    
-    log(`Executing: ${folder}`);
-    await chat(`Execute tasks with TDD.\n\nFolder: ${folder}\n\nFor each [ ] task: test first, implement, mark [x].\nNEVER delete .kiro or .kspec folders.\n\n${contextBlock()}`);
+  async tasks(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    log(`Generating tasks: ${folder}`);
+
+    await chat(`Generate tasks from specification.
+
+Spec folder: ${folder}
+Read: ${folder}/spec.md and ${folder}/spec-lite.md
+
+Create ${folder}/tasks.md with:
+- Checkbox format: "- [ ] Task description"
+- TDD approach (test first)
+- Logical order
+- File paths for each task`, 'kspec-tasks');
   },
 
-  async quick(args) {
-    const task = args.join(' ');
-    if (!task) die('Usage: kspec quick "Task description"');
+  async 'verify-tasks'(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const stats = getTaskStats(folder);
     
-    const folder = path.join(KSPEC_DIR, 'quick', `${config.date}-${slugify(task)}`);
-    ensureDir(folder);
+    log(`Verifying tasks: ${folder}`);
+    if (stats) log(`Progress: ${stats.done}/${stats.total} tasks completed`);
+
+    await chat(`Verify tasks in ${folder}/tasks.md:
+
+1. Do tasks cover ALL requirements from spec.md?
+2. Check completion status of each task
+3. For completed tasks, verify test coverage
+4. Identify any missing tasks
+
+Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
+  },
+
+  async build(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const stats = getTaskStats(folder);
+
+    log(`Building: ${folder}`);
+    if (stats) {
+      if (stats.remaining === 0) {
+        log('All tasks completed! Run: kspec verify');
+        return;
+      }
+      log(`Progress: ${stats.done}/${stats.total} (${stats.remaining} remaining)`);
+    }
+
+    const execMode = config.autoExecute || 'ask';
+    const execNote = execMode === 'auto' ? 'Auto-execute enabled.' :
+                     execMode === 'dry' ? 'Dry-run mode - show commands only.' :
+                     'Ask before executing commands.';
+
+    await chat(`Execute tasks from ${folder}/tasks.md
+
+${execNote}
+
+1. Find first uncompleted task (- [ ])
+2. Write test first (TDD)
+3. Implement to pass test
+4. Run tests
+5. Mark complete: change "- [ ]" to "- [x]" in tasks.md
+6. Save tasks.md after each completion
+7. Continue to next task
+
+CRITICAL: Update tasks.md after each task completion.
+NEVER delete .kiro or .kspec folders.`, 'kspec-build');
+  },
+
+  async verify(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const stats = getTaskStats(folder);
+
+    log(`Verifying implementation: ${folder}`);
+    if (stats) log(`Tasks: ${stats.done}/${stats.total}`);
+
+    await chat(`Verify implementation for ${folder}:
+
+1. Read spec.md - list all requirements
+2. Read tasks.md - check all marked [x]
+3. Check codebase - does implementation match spec?
+4. Run tests - do they pass?
+5. Check coverage - are requirements tested?
+
+Report:
+- Requirements: X/Y implemented
+- Tasks: X/Y completed  
+- Tests: PASS/FAIL
+- Gaps: [list any]`, 'kspec-verify');
+  },
+
+  async done(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const stats = getTaskStats(folder);
+
+    if (stats && stats.remaining > 0) {
+      const proceed = await confirm(`${stats.remaining} tasks remaining. Mark done anyway?`);
+      if (!proceed) return;
+    }
+
+    log(`Completing: ${folder}`);
     
-    log(`Quick task: ${folder}`);
-    await chat(`Quick task: ${task}\n\nFolder: ${folder}\n\nCreate mini-plan, execute, log changes.\n\n${contextBlock()}`);
+    // Create memory
+    await chat(`Harvest learnings from ${folder}:
+
+1. Read spec.md, tasks.md, and implementation
+2. Create ${folder}/memory.md with:
+   - Key decisions made
+   - Patterns used
+   - Lessons learned
+   - Follow-ups needed
+
+3. Update .kspec/memory.md (project-level) with:
+   - New glossary terms
+   - Reusable patterns
+   - Cross-cutting learnings`, 'kspec-analyse');
+
+    log('Spec completed!');
   },
 
   async review(args) {
-    const target = args.join(' ') || 'recent changes';
-    await chat(`Code review: ${target}\n\nCheck steering compliance, quality, security.\nProvide actionable feedback.\n\n${contextBlock()}`);
+    const target = args.join(' ') || 'recent changes (git diff HEAD~1)';
+    await chat(`Review: ${target}
+
+Check compliance with .kiro/steering/
+Evaluate quality, tests, security.
+Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
   },
 
-  async test(args) {
-    const target = args.join(' ') || 'project';
-    await chat(`Generate tests for: ${target}\n\nFollow TDD, cover edge cases.\n\n${contextBlock()}`);
-  },
+  list() {
+    const specsDir = getSpecsDir();
+    if (!fs.existsSync(specsDir)) {
+      console.log('No specs yet. Run: kspec spec "Feature Name"');
+      return;
+    }
 
-  async debug(args) {
-    const issue = args.join(' ') || '';
-    ensureDir(path.join(KSPEC_DIR, 'debug'));
-    await chat(`Debug${issue ? `: ${issue}` : ''}\n\nMethodology: reproduce → hypothesize → test → fix → verify\n\n${contextBlock()}`);
-  },
+    const current = getCurrentSpec();
+    const specs = fs.readdirSync(specsDir)
+      .filter(d => fs.statSync(path.join(specsDir, d)).isDirectory())
+      .sort().reverse();
 
-  async 'harvest-memory'(args) {
-    const folder = args[0] ? findSpecFolder(slugify(args.join(' '))) : getCurrentSpec();
-    if (!folder) die('No spec found.');
-    
-    log(`Harvesting: ${folder}`);
-    await chat(`Harvest memory from: ${folder}\n\nCapture decisions, glossary, follow-ups.\n\n${contextBlock()}`);
+    if (specs.length === 0) {
+      console.log('No specs yet. Run: kspec spec "Feature Name"');
+      return;
+    }
+
+    console.log('\nSpecs:\n');
+    specs.forEach(s => {
+      const folder = path.join(specsDir, s);
+      const isCurrent = folder === current;
+      const stats = getTaskStats(folder);
+      const progress = stats ? `[${stats.done}/${stats.total}]` : '[no tasks]';
+      console.log(`  ${isCurrent ? '→' : ' '} ${s} ${progress}`);
+    });
+    console.log('');
   },
 
   status() {
+    const current = getCurrentSpec();
+    
     console.log('\nkspec Status\n');
     console.log(`CLI: ${detectCli()}`);
-    console.log(`Date: ${config.date}`);
-    console.log(`Initialized: ${fs.existsSync(KSPEC_DIR) ? 'yes' : 'no'}`);
+    console.log(`Initialized: ${config.initialized ? 'yes' : 'no'}`);
+    console.log(`Date format: ${config.dateFormat || 'YYYY-MM-DD'}`);
+    console.log(`Auto-execute: ${config.autoExecute || 'ask'}`);
     
-    const current = getCurrentSpec();
-    console.log(`Current spec: ${current ? path.basename(current) : '(none)'}`);
-    
-    if (current && fs.existsSync(path.join(current, 'tasks.md'))) {
-      const tasks = fs.readFileSync(path.join(current, 'tasks.md'), 'utf8');
-      const total = (tasks.match(/^\s*\d+\.\s*\[/gm) || []).length;
-      const done = (tasks.match(/^\s*\d+\.\s*\[x\]/gm) || []).length;
-      console.log(`Tasks: ${done}/${total} completed`);
+    if (current) {
+      console.log(`\nCurrent spec: ${path.basename(current)}`);
+      const stats = getTaskStats(current);
+      if (stats) {
+        console.log(`Tasks: ${stats.done}/${stats.total} completed`);
+        if (stats.remaining > 0) {
+          console.log(`\nNext: kspec build`);
+        } else {
+          console.log(`\nNext: kspec verify`);
+        }
+      } else {
+        console.log(`\nNext: kspec tasks`);
+      }
+    } else {
+      console.log(`\nNo current spec. Run: kspec spec "Feature Name"`);
     }
-  },
-
-  progress() {
-    this.status();
-    console.log('\nRecent specs:');
-    const specsDir = path.join(KSPEC_DIR, 'specs');
-    if (fs.existsSync(specsDir)) {
-      fs.readdirSync(specsDir).sort().reverse().slice(0, 5)
-        .forEach(s => console.log(`  - ${s}`));
-    }
+    console.log('');
   },
 
   agents() {
     console.log(`
 kspec Agents
 
-Agent                  Shortcut  Purpose
-──────────────────────────────────────────────────
-kspec-analyse          -         Read-only analysis
-kspec-apply-standards  -         Update standards
-kspec-create-spec      -         Create specifications
-kspec-create-tasks     -         Generate task lists
-kspec-execute-tasks    -         Execute with TDD
-kspec-review           Ctrl+R    Code review
-kspec-test             Ctrl+T    Test generation
-kspec-quick            Ctrl+Q    Quick tasks
-kspec-debug            Ctrl+D    Debugging
-kspec-harvest-memory   -         Capture learnings
+Agent           Shortcut  Purpose
+─────────────────────────────────────────────
+kspec-analyse   Ctrl+A    Analyse codebase, update steering
+kspec-spec      Ctrl+S    Create specifications
+kspec-tasks     Ctrl+T    Generate tasks from spec
+kspec-build     Ctrl+B    Execute tasks with TDD
+kspec-verify    Ctrl+V    Verify spec/tasks/implementation
+kspec-review    Ctrl+R    Code review
 
-Switch: /agent swap or keyboard shortcuts
+Switch: /agent swap or use keyboard shortcuts
 `);
   },
 
@@ -423,27 +628,31 @@ Switch: /agent swap or keyboard shortcuts
     console.log(`
 kspec - Spec-driven development for Kiro CLI
 
-Usage:
-  kspec init                    Initialize kspec
-  kspec analyse                 Analyze project
-  kspec apply-standards         Update standards
-  kspec create-spec "Feature"   Create specification
-  kspec create-tasks            Generate tasks
-  kspec execute-tasks           Execute with TDD
-  kspec quick "Task"            Quick ad-hoc task
-  kspec review [target]         Code review
-  kspec test [target]           Generate tests
-  kspec debug [issue]           Debug mode
-  kspec harvest-memory          Capture learnings
-  kspec status                  Show status
-  kspec progress                Show progress
-  kspec agents                  List agents
-  kspec help                    Show help
+Workflow:
+  kspec init              Interactive setup
+  kspec analyse           Analyse codebase, update steering
+  kspec spec "Feature"    Create specification
+  kspec verify-spec       Verify spec is complete
+  kspec tasks             Generate tasks from spec
+  kspec verify-tasks      Verify tasks cover spec
+  kspec build             Execute tasks with TDD
+  kspec verify            Verify implementation
+  kspec done              Complete spec, harvest memory
 
-Environment:
-  KSPEC_DATE      Override date (YYYY-MM-DD)
-  KSPEC_FAST=1    Non-interactive mode
-  KSPEC_FORCE=1   Overwrite on init
+Other:
+  kspec review [target]   Code review
+  kspec list              List all specs
+  kspec status            Current status
+  kspec agents            List agents
+  kspec help              Show this help
+
+Examples:
+  kspec init
+  kspec spec "User Authentication"
+  kspec tasks
+  kspec build
+  kspec verify
+  kspec done
 `);
   }
 };
@@ -451,7 +660,7 @@ Environment:
 async function run(args) {
   const cmd = (args[0] || 'help').replace(/^\//, '');
   const cmdArgs = args.slice(1);
-  
+
   if (commands[cmd]) {
     await commands[cmd](cmdArgs);
   } else {
@@ -459,4 +668,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands };
+module.exports = { run, commands, loadConfig };
