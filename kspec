@@ -8,17 +8,17 @@ set -euo pipefail
 # - OAS sync, memory harvesting, CI checks, and fast/headless mode
 #
 # Environment:
-#   QOS_DATE=DD-MM-YYYY   override date used for folder naming
-#   QOS_FAST=1            add --no-interactive (good for CI/headless)
-#   QOS_FORCE=1           allow /init to overwrite existing agent JSONs
-#   QOS_AUTO_EXEC=0       disable automatic command execution (default: enabled)
-#   QOS_EXEC_DRY_RUN=1    show commands without executing (overrides QOS_AUTO_EXEC)
+#   KSPEC_DATE=DD-MM-YYYY   override date used for folder naming
+#   KSPEC_FAST=1            add --no-interactive (good for CI/headless)
+#   KSPEC_FORCE=1           allow /init to overwrite existing agent JSONs
+#   KSPEC_AUTO_EXEC=0       disable automatic command execution (default: enabled)
+#   KSPEC_EXEC_DRY_RUN=1    show commands without executing (overrides KSPEC_AUTO_EXEC)
 
 QOS_DIR=".kspec"
 AGENTS_DIR=".kiro/agents"
 RULES_DIR=".kiro/steering"
 CURRENT_SPEC_FILE="${QOS_DIR}/.current_spec"
-TODAY="${QOS_DATE:-$(date +%d-%m-%Y)}"   # AU format
+TODAY="${KSPEC_DATE:-$(date +%d-%m-%Y)}"   # AU format
 
 die(){ printf 'Error: %s\n' "$*" >&2; exit 1; }
 slugify(){ 
@@ -113,9 +113,9 @@ get_or_select_spec(){
   fi
 }
 
-# Add QOS_FAST flags
+# Add KSPEC_FAST flags
 kspec_chat_flags(){
-  if [[ "${QOS_FAST:-0}" = "1" ]]; then
+  if [[ "${KSPEC_FAST:-0}" = "1" ]]; then
     printf -- "--no-interactive"
   else
     printf ''
@@ -140,7 +140,7 @@ info(){
 }
 
 debug(){
-  if [[ "${QOS_DEBUG:-0}" = "1" ]]; then
+  if [[ "${KSPEC_DEBUG:-0}" = "1" ]]; then
     printf '[kspec:debug] %s\n' "$*"
   fi
 }
@@ -240,7 +240,7 @@ write_agent(){
   local name="$1" content="$2" path
   path="${AGENTS_DIR}/${name}.json"
 
-  if [[ -f "$path" && "${QOS_FORCE:-0}" != "1" ]]; then
+  if [[ -f "$path" && "${KSPEC_FORCE:-0}" != "1" ]]; then
     printf 'Agent exists, skipping: %s\n' "$path"
     return 0
   fi
@@ -328,7 +328,7 @@ JSON
 {
   "name": "kspec-execute-tasks",
   "description": "Guided execution with automatic command execution by default.",
-  "prompt": "You are executing implementation tasks. The feature folder path will be provided in the user message. Execute tasks using TDD: for each task in tasks.md, (1) identify incomplete tasks ([ ] checkboxes), (2) resume from first incomplete task, (3) restate the goal, (4) propose code changes, (5) propose tests, (6) suggest and execute commands, (7) CRITICAL: mark task complete by updating tasks.md - change [ ] to [x]. By default, commands are executed automatically (QOS_AUTO_EXEC=1 by default). Set QOS_AUTO_EXEC=0 to disable automatic execution, or QOS_EXEC_DRY_RUN=1 to only show commands without executing. Never run destructive commands without explicit confirmation. Always log executed commands to execution.log in the feature folder. After completing each task, write the updated tasks.md file with [x] for completed tasks to enable resume functionality.",
+  "prompt": "You are executing implementation tasks. The feature folder path will be provided in the user message. Execute tasks using TDD: for each task in tasks.md, (1) identify incomplete tasks ([ ] checkboxes), (2) resume from first incomplete task, (3) restate the goal, (4) propose code changes, (5) propose tests, (6) suggest and execute commands, (7) CRITICAL: mark task complete by updating tasks.md - change [ ] to [x]. By default, commands are executed automatically (KSPEC_AUTO_EXEC=1 by default). Set KSPEC_AUTO_EXEC=0 to disable automatic execution, or KSPEC_EXEC_DRY_RUN=1 to only show commands without executing. Never run destructive commands without explicit confirmation. Always log executed commands to execution.log in the feature folder. After completing each task, write the updated tasks.md file with [x] for completed tasks to enable resume functionality.",
   "allowedTools": ["read", "write", "shell"],
   "toolsSettings": {
     "read": {
@@ -357,6 +357,122 @@ JSON
     },
     "write": {
       "allowedPaths": [".kspec/memory/**"]
+    }
+  }
+}
+JSON
+)"
+
+  # Code Review Agent - inspired by GSD's verification phase
+  write_agent "kspec-review" "$(cat <<'JSON'
+{
+  "name": "kspec-review",
+  "description": "Code review agent: analyze changes, check standards compliance, suggest improvements.",
+  "prompt": "You are a code review specialist. Your role is to review code changes and ensure quality.\n\nReview Process:\n1. Read the current spec and tasks from .kspec/specs/\n2. Analyze recent code changes (use git diff or read modified files)\n3. Check compliance with:\n   - .kiro/steering/*.md (authoritative rules)\n   - .kspec/standards/*.md (derived standards)\n4. Evaluate:\n   - Code quality and readability\n   - Test coverage and quality\n   - Security concerns\n   - Performance implications\n   - Error handling\n   - Documentation\n5. Provide actionable feedback with specific line references\n6. Suggest improvements with code examples\n\nOutput Format:\n- Summary: Overall assessment (APPROVE/REQUEST_CHANGES/COMMENT)\n- Compliance: Standards violations found\n- Issues: Categorized by severity (Critical/Major/Minor/Suggestion)\n- Improvements: Specific recommendations\n- Tests: Missing test coverage\n\nBe constructive and specific. Reference steering docs when citing standards.",
+  "allowedTools": ["read", "shell"],
+  "keyboardShortcut": "ctrl+r",
+  "welcomeMessage": "Ready to review code. What would you like me to review?",
+  "toolsSettings": {
+    "read": {
+      "allowedPaths": [".kiro/**", ".kspec/**", "./**"]
+    },
+    "shell": {
+      "allowedCommands": ["git diff*", "git log*", "git status*", "git show*"],
+      "autoAllowReadonly": true
+    }
+  }
+}
+JSON
+)"
+
+  # Unit Test Agent - focused on test generation and TDD
+  write_agent "kspec-test" "$(cat <<'JSON'
+{
+  "name": "kspec-test",
+  "description": "Unit test specialist: generate tests, improve coverage, TDD guidance.",
+  "prompt": "You are a testing specialist focused on TDD and comprehensive test coverage.\n\nCapabilities:\n1. Generate unit tests for existing code\n2. Guide TDD workflow (Red → Green → Refactor)\n3. Analyze test coverage gaps\n4. Improve existing tests\n5. Create test fixtures and mocks\n\nWorkflow:\n1. Read .kiro/steering/testing-standards.md for testing conventions\n2. Analyze the code to be tested\n3. Identify test scenarios:\n   - Happy path cases\n   - Edge cases\n   - Error conditions\n   - Boundary conditions\n4. Generate tests following project conventions\n5. Suggest test organization and naming\n\nTest Quality Checklist:\n- [ ] Tests are independent and isolated\n- [ ] Tests have clear arrange/act/assert structure\n- [ ] Tests cover edge cases\n- [ ] Tests are readable and maintainable\n- [ ] Mocks are used appropriately\n- [ ] Tests run fast\n\nOutput: Provide complete, runnable test code with explanations.",
+  "allowedTools": ["read", "write", "shell"],
+  "keyboardShortcut": "ctrl+t",
+  "welcomeMessage": "Ready to help with testing. What would you like to test?",
+  "toolsSettings": {
+    "read": {
+      "allowedPaths": [".kiro/**", ".kspec/**", "./**"]
+    },
+    "write": {
+      "allowedPaths": ["**/*.test.*", "**/*.spec.*", "**/test/**", "**/tests/**", "**/__tests__/**"]
+    },
+    "shell": {
+      "allowedCommands": ["npm test*", "yarn test*", "pnpm test*", "pytest*", "cargo test*", "go test*", "jest*", "vitest*"],
+      "autoAllowReadonly": true
+    }
+  }
+}
+JSON
+)"
+
+  # Quick Mode Agent - for ad-hoc tasks without full spec workflow
+  write_agent "kspec-quick" "$(cat <<'JSON'
+{
+  "name": "kspec-quick",
+  "description": "Quick mode: fast ad-hoc tasks without full spec workflow.",
+  "prompt": "You are in quick mode for fast, ad-hoc tasks that don't need full specification.\n\nUse Cases:\n- Bug fixes\n- Small features\n- Config changes\n- Refactoring\n- Documentation updates\n\nWorkflow:\n1. Understand the task\n2. Create a mini-plan (3-5 steps max)\n3. Execute with TDD where applicable\n4. Commit with clear message\n5. Log to .kspec/quick/ for tracking\n\nRules:\n- Keep changes focused and atomic\n- Follow existing patterns in .kiro/steering/\n- Write tests for any logic changes\n- Commit after each logical unit\n\nTracking:\n- Create .kspec/quick/YYYY-MM-DD-<slug>.md for each quick task\n- Include: task description, changes made, files modified\n\nThis is NOT for:\n- Large features (use /create-spec)\n- Architectural changes\n- Breaking changes",
+  "allowedTools": ["read", "write", "shell"],
+  "keyboardShortcut": "ctrl+q",
+  "welcomeMessage": "Quick mode active. What's the task?",
+  "toolsSettings": {
+    "read": {
+      "allowedPaths": [".kiro/**", ".kspec/**", "./**"]
+    },
+    "write": {
+      "allowedPaths": [".kspec/quick/**", "./**"]
+    },
+    "shell": {
+      "autoAllowReadonly": true
+    }
+  }
+}
+JSON
+)"
+
+  # Debug Agent - systematic debugging with state tracking
+  write_agent "kspec-debug" "$(cat <<'JSON'
+{
+  "name": "kspec-debug",
+  "description": "Debug specialist: systematic debugging with hypothesis tracking.",
+  "prompt": "You are a debugging specialist using systematic problem-solving.\n\nDebug Methodology:\n1. REPRODUCE: Understand and reproduce the issue\n2. HYPOTHESIZE: Form hypotheses about root cause\n3. TEST: Test each hypothesis systematically\n4. FIX: Implement minimal fix\n5. VERIFY: Confirm fix and no regressions\n6. DOCUMENT: Record findings\n\nState Tracking:\n- Track hypotheses in .kspec/debug/current-debug.md\n- Log findings and eliminated causes\n- Record successful fix approach\n\nTools:\n- Read logs and error messages\n- Add debug logging temporarily\n- Use debugger commands\n- Analyze stack traces\n- Check recent changes (git log/diff)\n\nOutput Format:\n```\n## Issue: [description]\n## Reproduction: [steps]\n## Hypotheses:\n1. [ ] Hypothesis A - [status]\n2. [ ] Hypothesis B - [status]\n## Root Cause: [finding]\n## Fix: [solution]\n## Verification: [test results]\n```\n\nNever guess - always verify with evidence.",
+  "allowedTools": ["read", "write", "shell"],
+  "keyboardShortcut": "ctrl+d",
+  "welcomeMessage": "Debug mode active. Describe the issue or error.",
+  "toolsSettings": {
+    "read": {
+      "allowedPaths": [".kiro/**", ".kspec/**", "./**"]
+    },
+    "write": {
+      "allowedPaths": [".kspec/debug/**", "./**"]
+    },
+    "shell": {
+      "autoAllowReadonly": true
+    }
+  }
+}
+JSON
+)"
+
+  # Orchestrator Agent - coordinates multi-agent workflows
+  write_agent "kspec-orchestrator" "$(cat <<'JSON'
+{
+  "name": "kspec-orchestrator",
+  "description": "Orchestrator: coordinates complex tasks across multiple specialized agents.",
+  "prompt": "You are the kspec orchestrator, coordinating complex workflows across specialized agents.\n\nAvailable Agents (switch with /agent swap or keyboard shortcuts):\n- kspec-analyse (Ctrl+A): Read-only analysis\n- kspec-apply-standards: Update standards\n- kspec-create-spec: Create specifications\n- kspec-create-tasks: Generate task lists\n- kspec-execute-tasks: Execute with TDD\n- kspec-review (Ctrl+R): Code review\n- kspec-test (Ctrl+T): Testing specialist\n- kspec-quick (Ctrl+Q): Quick ad-hoc tasks\n- kspec-debug (Ctrl+D): Debugging\n- kspec-harvest-memory: Capture learnings\n\nOrchestration Patterns:\n\n1. NEW FEATURE:\n   analyse → create-spec → create-tasks → execute-tasks → review → harvest-memory\n\n2. BUG FIX:\n   debug → quick OR (create-spec → execute-tasks) → review\n\n3. REFACTORING:\n   analyse → create-spec → test (add coverage) → execute-tasks → review\n\n4. CODE REVIEW:\n   review → (debug if issues) → test (if coverage gaps)\n\nYour Role:\n- Understand the user's goal\n- Recommend the right agent sequence\n- Track progress in .kspec/state.md\n- Suggest when to switch agents\n- Ensure nothing falls through cracks\n\nState Management:\n- Read/write .kspec/state.md for workflow state\n- Track: current phase, completed steps, blockers, next actions",
+  "allowedTools": ["read", "write"],
+  "keyboardShortcut": "ctrl+o",
+  "welcomeMessage": "Orchestrator ready. What would you like to accomplish?",
+  "toolsSettings": {
+    "read": {
+      "allowedPaths": [".kiro/**", ".kspec/**", "./**"]
+    },
+    "write": {
+      "allowedPaths": [".kspec/state.md", ".kspec/workflow/**"]
     }
   }
 }
@@ -615,7 +731,7 @@ MD
 
   printf 'Initialized Kiro Steering docs in %s\n' "${RULES_DIR}"
 
-  # Agents (idempotent; set QOS_FORCE=1 to overwrite)
+  # Agents (idempotent; set KSPEC_FORCE=1 to overwrite)
   author_agents
   printf 'Agents initialised in %s\n' "${AGENTS_DIR}"
 
@@ -894,9 +1010,9 @@ Command Execution:
   * Create in subdirectories instead
   * Use --force only if safe (never for .kiro/ or .kspec/)
   * Modify the approach to work with existing structure
-- By default, commands are executed automatically (QOS_AUTO_EXEC=1)
-- Set QOS_AUTO_EXEC=0 to disable automatic execution
-- Set QOS_EXEC_DRY_RUN=1 to only show commands without executing
+- By default, commands are executed automatically (KSPEC_AUTO_EXEC=1)
+- Set KSPEC_AUTO_EXEC=0 to disable automatic execution
+- Set KSPEC_EXEC_DRY_RUN=1 to only show commands without executing
 - Never run destructive commands without explicit confirmation
 - If a command requires user input, modify it to be non-interactive
 
@@ -990,6 +1106,198 @@ $(get_context_block)"
   "${CLI_BIN}" chat $(kspec_chat_flags) "$msg"
 }
 
+cmd_quick(){
+  local task="${1:-}"
+  [[ -n "$task" ]] || die "Usage: kspec /quick \"Task description\""
+
+  local slug folder
+  slug="$(slugify "$task")"
+  folder="${QOS_DIR}/quick/${TODAY}-${slug}"
+  ensure_dir "$folder"
+
+  local msg="Quick mode task: ${task}
+
+Task folder: ${folder}
+
+Instructions:
+1. Understand the task requirements
+2. Create a mini-plan (3-5 steps max) in ${folder}/plan.md
+3. Execute with TDD where applicable
+4. Log changes to ${folder}/changes.md
+5. Suggest commit message
+
+Rules:
+- Keep changes focused and atomic
+- Follow patterns in .kiro/steering/
+- Write tests for logic changes
+- This is for small, quick tasks only
+
+$(get_context_block)"
+
+  info "Quick task folder: ${folder}"
+  "${CLI_BIN}" chat $(kspec_chat_flags) "$msg"
+}
+
+cmd_debug(){
+  local issue="${1:-}"
+  
+  local folder="${QOS_DIR}/debug"
+  ensure_dir "$folder"
+
+  local msg="Debug mode activated.
+
+Debug folder: ${folder}
+${issue:+Issue: ${issue}}
+
+Methodology:
+1. REPRODUCE: Understand and reproduce the issue
+2. HYPOTHESIZE: Form hypotheses about root cause
+3. TEST: Test each hypothesis systematically
+4. FIX: Implement minimal fix
+5. VERIFY: Confirm fix and no regressions
+6. DOCUMENT: Record findings in ${folder}/current-debug.md
+
+Track your hypotheses and findings. Never guess - verify with evidence.
+
+$(get_context_block)"
+
+  "${CLI_BIN}" chat $(kspec_chat_flags) "$msg"
+}
+
+cmd_review(){
+  local target="${1:-}"
+  
+  local msg="Code review mode activated.
+
+${target:+Review target: ${target}}
+
+Review Process:
+1. Analyze recent changes (git diff HEAD~1 or specified target)
+2. Check compliance with .kiro/steering/*.md
+3. Evaluate code quality, tests, security, performance
+4. Provide actionable feedback
+
+Output Format:
+- Summary: APPROVE / REQUEST_CHANGES / COMMENT
+- Issues by severity: Critical / Major / Minor / Suggestion
+- Specific recommendations with code examples
+
+$(get_context_block)"
+
+  "${CLI_BIN}" chat $(kspec_chat_flags) "$msg"
+}
+
+cmd_test(){
+  local target="${1:-}"
+  
+  local msg="Test generation mode activated.
+
+${target:+Target: ${target}}
+
+Workflow:
+1. Read .kiro/steering/testing-standards.md
+2. Analyze code to be tested
+3. Generate comprehensive tests:
+   - Happy path cases
+   - Edge cases
+   - Error conditions
+   - Boundary conditions
+4. Follow project test conventions
+5. Ensure tests are independent and fast
+
+Provide complete, runnable test code.
+
+$(get_context_block)"
+
+  "${CLI_BIN}" chat $(kspec_chat_flags) "$msg"
+}
+
+cmd_progress(){
+  info "kspec Progress"
+  printf '\n'
+  
+  # Current spec status
+  if [[ -f "${CURRENT_SPEC_FILE}" ]]; then
+    local current_spec
+    current_spec="$(cat "${CURRENT_SPEC_FILE}")"
+    printf 'Current Spec: %s\n' "$(basename "$current_spec")"
+    
+    if [[ -f "${current_spec}/tasks.md" ]]; then
+      local total completed remaining
+      total=$(grep -c '^\s*[0-9]*\.\s*\[' "${current_spec}/tasks.md" 2>/dev/null || echo 0)
+      completed=$(grep -c '^\s*[0-9]*\.\s*\[x\]' "${current_spec}/tasks.md" 2>/dev/null || echo 0)
+      remaining=$((total - completed))
+      printf 'Tasks: %d/%d completed (%d remaining)\n' "$completed" "$total" "$remaining"
+    fi
+    
+    printf '\nFiles:\n'
+    for f in spec.md spec-lite.md tasks.md execution.log; do
+      if [[ -f "${current_spec}/${f}" ]]; then
+        printf '  ✓ %s\n' "$f"
+      else
+        printf '  ○ %s\n' "$f"
+      fi
+    done
+  else
+    printf 'No current spec selected.\n'
+  fi
+  
+  printf '\nRecent Specs:\n'
+  find "${QOS_DIR}/specs" -maxdepth 1 -type d ! -name "specs" 2>/dev/null | sort -r | head -5 | while read -r spec; do
+    printf '  - %s\n' "$(basename "$spec")"
+  done
+  
+  printf '\nQuick Tasks:\n'
+  find "${QOS_DIR}/quick" -maxdepth 1 -type d ! -name "quick" 2>/dev/null | sort -r | head -5 | while read -r task; do
+    printf '  - %s\n' "$(basename "$task")"
+  done 2>/dev/null || printf '  (none)\n'
+  
+  printf '\nNext Steps:\n'
+  if [[ ! -d "${QOS_DIR}" ]]; then
+    printf '  → Run: kspec /init\n'
+  elif [[ ! -f "${CURRENT_SPEC_FILE}" ]]; then
+    printf '  → Run: kspec /create-spec "Feature Name"\n'
+  elif [[ -f "${CURRENT_SPEC_FILE}" ]]; then
+    current_spec="$(cat "${CURRENT_SPEC_FILE}")"
+    if [[ ! -f "${current_spec}/spec.md" ]]; then
+      printf '  → Spec creation in progress\n'
+    elif [[ ! -f "${current_spec}/tasks.md" ]]; then
+      printf '  → Run: kspec /create-tasks\n'
+    else
+      local remaining
+      remaining=$(grep -c '^\s*[0-9]*\.\s*\[ \]' "${current_spec}/tasks.md" 2>/dev/null || echo 0)
+      if [[ "$remaining" -gt 0 ]]; then
+        printf '  → Run: kspec /execute-tasks (%d tasks remaining)\n' "$remaining"
+      else
+        printf '  → Run: kspec /review or /harvest-memory\n'
+      fi
+    fi
+  fi
+}
+
+cmd_agents(){
+  info "Available kspec Agents"
+  printf '\n'
+  printf 'Agent                    Shortcut  Purpose\n'
+  printf '─────────────────────────────────────────────────────────────\n'
+  printf 'kspec-analyse            -         Read-only project analysis\n'
+  printf 'kspec-apply-standards    -         Update standards from steering\n'
+  printf 'kspec-create-spec        -         Create feature specifications\n'
+  printf 'kspec-create-tasks       -         Generate task lists from specs\n'
+  printf 'kspec-execute-tasks      -         Execute tasks with TDD\n'
+  printf 'kspec-review             Ctrl+R    Code review and quality check\n'
+  printf 'kspec-test               Ctrl+T    Test generation specialist\n'
+  printf 'kspec-quick              Ctrl+Q    Quick ad-hoc tasks\n'
+  printf 'kspec-debug              Ctrl+D    Systematic debugging\n'
+  printf 'kspec-orchestrator       Ctrl+O    Coordinate multi-agent workflows\n'
+  printf 'kspec-harvest-memory     -         Capture decisions and learnings\n'
+  printf '\n'
+  printf 'Switch agents:\n'
+  printf '  - Use keyboard shortcuts during chat\n'
+  printf '  - Run: /agent swap (in kiro-cli)\n'
+  printf '  - Run: kiro-cli --agent <agent-name>\n'
+}
+
 cmd_check_consistency(){
   info "Checking consistency between steering and standards..."
 
@@ -1028,11 +1336,11 @@ cmd_status(){
   printf 'Environment:\n'
   printf '  CLI Binary: %s\n' "${CLI_BIN}"
   printf '  Date: %s\n' "${TODAY}"
-  printf '  QOS_FAST: %s\n' "${QOS_FAST:-0}"
-  printf '  QOS_FORCE: %s\n' "${QOS_FORCE:-0}"
-  printf '  QOS_AUTO_EXEC: %s (default: 1)\n' "${QOS_AUTO_EXEC:-1}"
-  printf '  QOS_EXEC_DRY_RUN: %s\n' "${QOS_EXEC_DRY_RUN:-0}"
-  printf '  QOS_DEBUG: %s\n' "${QOS_DEBUG:-0}"
+  printf '  KSPEC_FAST: %s\n' "${KSPEC_FAST:-0}"
+  printf '  KSPEC_FORCE: %s\n' "${KSPEC_FORCE:-0}"
+  printf '  KSPEC_AUTO_EXEC: %s (default: 1)\n' "${KSPEC_AUTO_EXEC:-1}"
+  printf '  KSPEC_EXEC_DRY_RUN: %s\n' "${KSPEC_EXEC_DRY_RUN:-0}"
+  printf '  KSPEC_DEBUG: %s\n' "${KSPEC_DEBUG:-0}"
   printf '\n'
   
   if [[ -f "${CURRENT_SPEC_FILE}" ]]; then
@@ -1059,51 +1367,71 @@ cmd_status(){
 
 cmd_show_help(){
   cat <<EOF
-kspec - Spec-driven workflow for Kiro CLI (Q-compatible)
+kspec - Spec-driven workflow for Kiro CLI
 
 Usage:
-  kspec /init
-  kspec /status
-  kspec /analyse
-  kspec /apply-standards
-  kspec /create-spec "Feature Name"
-  kspec /create-tasks ["Feature Name"]
-  kspec /execute-tasks ["Feature Name"]
-  kspec /harvest-memory ["Feature Name"]
-  kspec /check-consistency
-  kspec /reconcile-rules-standards
+  kspec /init                           Initialize kspec structure
+  kspec /status                         Show environment status
+  kspec /progress                       Show workflow progress and next steps
+  kspec /agents                         List available agents and shortcuts
+
+Core Workflow:
+  kspec /analyse                        Analyze project (read-only)
+  kspec /apply-standards                Update standards from steering
+  kspec /create-spec "Feature Name"     Create feature specification
+  kspec /create-tasks ["Feature"]       Generate tasks from spec
+  kspec /execute-tasks ["Feature"]      Execute tasks with TDD
+  kspec /harvest-memory ["Feature"]     Capture decisions and learnings
+
+Quick Actions:
+  kspec /quick "Task description"       Fast ad-hoc task (no full spec)
+  kspec /review [target]                Code review mode
+  kspec /test [target]                  Test generation mode
+  kspec /debug [issue]                  Systematic debugging mode
+
+Maintenance:
+  kspec /check-consistency              Check steering vs standards
+  kspec /reconcile-rules-standards      Propose alignment fixes
 
 Examples:
   # Initial setup
-  kspec /init                            # Initialize kspec structure
-  kspec /analyse                         # Analyze project and suggest standards
-  kspec /apply-standards                 # Update standards based on analysis
+  kspec /init
+  kspec /analyse
+  kspec /apply-standards
   
-  # Feature development
+  # Feature development (full workflow)
   kspec /create-spec "User Authentication API"
-  kspec /create-tasks                    # Uses current spec
-  kspec /execute-tasks                   # Uses current spec
-  kspec /harvest-memory                  # Uses current spec
+  kspec /create-tasks
+  kspec /execute-tasks
+  kspec /review
+  kspec /harvest-memory
+  
+  # Quick tasks (no spec needed)
+  kspec /quick "Fix login button alignment"
+  kspec /debug "API returns 500 on POST /users"
+  kspec /test "src/services/auth.ts"
 
-Notes:
-  - /analyse is project-level: analyzes entire codebase and suggests standards
-  - Feature name is required only for /create-spec
-  - Other feature commands use the current spec by default
-  - If multiple specs exist, you'll be prompted to select one
-  - You can override by providing a feature name
+Agent Shortcuts (in kiro-cli chat):
+  Ctrl+R  → kspec-review (code review)
+  Ctrl+T  → kspec-test (testing)
+  Ctrl+Q  → kspec-quick (quick tasks)
+  Ctrl+D  → kspec-debug (debugging)
+  Ctrl+O  → kspec-orchestrator (workflow coordination)
 
-Steering:
-  - Authoritative project rules live under .kiro/steering/.
-  - Derived standards live under .kspec/standards/.
-  - Specs and tasks live under .kspec/specs/.
+Environment Variables:
+  KSPEC_DATE=DD-MM-YYYY   Override date for folder naming
+  KSPEC_FAST=1            Non-interactive mode (CI/headless)
+  KSPEC_FORCE=1           Overwrite existing agents on /init
+  KSPEC_DEBUG=1           Enable debug output
 
-Agents (per-project):
-  - .kiro/agents/kspec-analyse.json
-  - .kiro/agents/kspec-apply-standards.json
-  - .kiro/agents/kspec-create-spec.json
-  - .kiro/agents/kspec-create-tasks.json
-  - .kiro/agents/kspec-execute-tasks.json
-  - .kiro/agents/kspec-harvest-memory.json
+Structure:
+  .kiro/steering/         Authoritative project rules
+  .kiro/agents/           kspec agent configurations
+  .kspec/standards/       Derived standards (from steering)
+  .kspec/specs/           Feature specifications
+  .kspec/quick/           Quick task logs
+  .kspec/debug/           Debug session logs
+  .kspec/memory/          Decisions, glossary, follow-ups
 EOF
 }
 
@@ -1115,16 +1443,22 @@ shift || true
 case "$cmd" in
   /init)                    cmd_init "$@" ;;
   /status)                  cmd_status "$@" ;;
-  /analyse)                 cmd_analyse "$@" ;;
+  /progress)                cmd_progress "$@" ;;
+  /agents)                  cmd_agents "$@" ;;
+  /analyse|/analyze)        cmd_analyse "$@" ;;
   /apply-standards)         cmd_apply_standards "$@" ;;
   /create-spec)             cmd_create_spec "$@" ;;
   /create-tasks)            cmd_create_tasks "$@" ;;
   /execute-tasks)           cmd_execute_tasks "$@" ;;
   /harvest-memory)          cmd_harvest_memory "$@" ;;
+  /quick)                   cmd_quick "$@" ;;
+  /debug)                   cmd_debug "$@" ;;
+  /review)                  cmd_review "$@" ;;
+  /test)                    cmd_test "$@" ;;
   /check-consistency)       cmd_check_consistency "$@" ;;
   /reconcile-rules-standards) cmd_reconcile_rules_standards "$@" ;;
   /help|-h|--help|"")       cmd_show_help ;;
   *)
-    die "Unknown command: $cmd"
+    die "Unknown command: $cmd (run 'kspec /help' for usage)"
     ;;
 esac
