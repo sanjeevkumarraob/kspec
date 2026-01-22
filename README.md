@@ -1,6 +1,6 @@
 # kspec — Spec-Driven Development for Kiro CLI
 
-[![npm version](https://img.shields.io/npm/v/kspec-cli.svg)](https://www.npmjs.com/package/kspec-cli)
+[![npm version](https://img.shields.io/npm/v/kspec.svg)](https://www.npmjs.com/package/kspec)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Spec-driven development workflow for Kiro CLI with verification at every step.
@@ -8,7 +8,7 @@ Spec-driven development workflow for Kiro CLI with verification at every step.
 ## Installation
 
 ```bash
-npm install -g kspec-cli
+npm install -g kspec
 ```
 
 ## Quick Start
@@ -47,6 +47,9 @@ init → analyse → spec → verify-spec → tasks → verify-tasks → build �
 | `kspec review` | Code review |
 | `kspec list` | List all specs |
 | `kspec status` | Current status |
+| `kspec help` | Show help |
+| `kspec --help, -h` | Show help (standard flag) |
+| `kspec --version, -v` | Show version (standard flag) |
 
 ## Agents & Shortcuts
 
@@ -83,10 +86,124 @@ Set during `kspec init`:
 - **Date format**: YYYY-MM-DD, DD-MM-YYYY, or MM-DD-YYYY
 - **Auto-execute**: ask (default), auto, or dry-run
 
+## Integration with Kiro IDE
+
+kspec and Kiro IDE work seamlessly together, combining structured workflow automation with interactive development assistance.
+
+### Workflow Integration
+
+**kspec provides:**
+- Structured spec creation and task generation
+- Automated analysis and verification steps
+- TDD workflow enforcement
+- Project memory harvesting
+
+**Kiro IDE provides:**
+- Interactive implementation assistance
+- Real-time code help and debugging
+- Native spec workflow support
+- Advanced AI-powered development tools
+
+### Usage Patterns
+
+#### Pattern 1: kspec-Driven Development
+```bash
+# Use kspec for structure and planning
+kspec init
+kspec analyse
+kspec spec "User Authentication API"
+kspec tasks
+
+# Switch to Kiro IDE for implementation
+# Reference spec files: #File .kspec/specs/2026-01-22-user-auth/spec.md
+# Implement tasks interactively with AI assistance
+
+# Return to kspec for verification
+kspec verify
+kspec done
+```
+
+#### Pattern 2: Kiro-Native with kspec Analysis
+```bash
+# Use Kiro's built-in spec workflow
+# Create specs using Kiro IDE's native tools
+
+# Use kspec for analysis and verification
+kspec analyse          # Update steering docs
+kspec review          # Code review
+kspec verify          # Verify implementation
+```
+
+#### Pattern 3: Hybrid Approach
+```bash
+kspec spec "Feature"   # Create initial spec
+# Edit and refine spec in Kiro IDE
+kspec tasks           # Generate tasks
+# Implement tasks in Kiro IDE with AI assistance
+kspec verify          # Final verification
+```
+
+### File System Integration
+
+Both tools share the same file structure:
+
+```
+.kiro/
+├── steering/         # Shared project context
+│   ├── product.md   # Used by both kspec and Kiro
+│   ├── tech.md      # Technology standards
+│   └── testing.md   # Testing approach
+└── agents/          # kspec-generated agents (usable in Kiro)
+
+.kspec/
+└── specs/           # kspec-generated specs
+    └── feature/
+        ├── spec.md      # Reference in Kiro: #File .kspec/specs/feature/spec.md
+        ├── spec-lite.md # Concise version for context
+        ├── tasks.md     # Task list
+        └── memory.md    # Learnings
+```
+
+### Kiro IDE Context Usage
+
+Reference kspec files in Kiro IDE chat:
+
+```
+#File .kspec/specs/user-auth/spec.md     # Full specification
+#File .kspec/specs/user-auth/tasks.md    # Task list
+#Folder .kspec/specs/user-auth           # Entire spec folder
+#Folder .kiro/steering                   # Project context
+```
+
+### Agent Integration
+
+kspec creates specialized agents that work in Kiro IDE:
+
+- **kspec-analyse** (Ctrl+A): Codebase analysis
+- **kspec-spec** (Ctrl+S): Specification creation  
+- **kspec-tasks** (Ctrl+T): Task generation
+- **kspec-build** (Ctrl+B): TDD implementation
+- **kspec-verify** (Ctrl+V): Verification
+- **kspec-review** (Ctrl+R): Code review
+
+Switch agents in Kiro IDE: `/agent swap` or use keyboard shortcuts.
+
+### Best Practices
+
+1. **Start with kspec** for structured planning and analysis
+2. **Use Kiro IDE** for interactive implementation and debugging
+3. **Reference kspec files** in Kiro chat for context
+4. **Leverage steering docs** updated by kspec analysis
+5. **Use kspec agents** within Kiro for specialized workflows
+6. **Verify with kspec** to ensure completeness
+
+This integration gives you the best of both worlds: structured workflow automation and intelligent development assistance.
+
 ## Requirements
 
 - Node.js >= 18
 - Kiro CLI or Amazon Q CLI
+- Kiro IDE (optional, for enhanced integration)
 
 ## License
 

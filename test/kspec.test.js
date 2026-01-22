@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig;
+  let commands, loadConfig, run;
   
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig } = require('../src/index.js'));
+    ({ commands, loadConfig, run } = require('../src/index.js'));
   });
 
   after(() => {
@@ -60,6 +60,86 @@ describe('kspec', () => {
   describe('help', () => {
     it('outputs help text', () => {
       assert.doesNotThrow(() => commands.help());
+    });
+  });
+
+  describe('CLI flags', () => {
+    it('handles --help flag', async () => {
+      // Capture console output
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+      
+      try {
+        await run(['--help']);
+        assert(output.includes('kspec - Spec-driven development for Kiro CLI'));
+        assert(output.includes('Workflow:'));
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('handles -h flag', async () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+      
+      try {
+        await run(['-h']);
+        assert(output.includes('kspec - Spec-driven development for Kiro CLI'));
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('handles --version flag', async () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+      
+      try {
+        await run(['--version']);
+        // Should output the version from package.json
+        const pkg = require('../package.json');
+        assert.strictEqual(output.trim(), pkg.version);
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('handles -v flag', async () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+      
+      try {
+        await run(['-v']);
+        // Should output the version from package.json
+        const pkg = require('../package.json');
+        assert.strictEqual(output.trim(), pkg.version);
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('handles unknown command', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      
+      console.error = (...args) => { errorOutput += args.join(' ') + '\n'; };
+      process.exit = () => { throw new Error('EXIT_CALLED'); };
+      
+      try {
+        await assert.rejects(
+          () => run(['unknown-command']),
+          /EXIT_CALLED/
+        );
+        assert(errorOutput.includes('Unknown command: unknown-command'));
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
     });
   });
 });

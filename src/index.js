@@ -651,6 +651,8 @@ Other:
   kspec status            Current status
   kspec agents            List agents
   kspec help              Show this help
+  kspec --help, -h        Show this help
+  kspec --version, -v     Show version
 
 Examples:
   kspec init
@@ -664,6 +666,17 @@ Examples:
 };
 
 async function run(args) {
+  // Handle standard CLI flags first
+  if (args.includes('--help') || args.includes('-h')) {
+    return commands.help();
+  }
+  
+  if (args.includes('--version') || args.includes('-v')) {
+    const pkg = require('../package.json');
+    console.log(pkg.version);
+    return;
+  }
+
   const cmd = (args[0] || 'help').replace(/^\//, '');
   const cmdArgs = args.slice(1);
 
