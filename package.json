@@ -1,0 +1,36 @@
+{
+  "name": "kspec-cli",
+  "version": "1.0.0",
+  "description": "Spec-driven development workflow for Kiro CLI",
+  "main": "src/index.js",
+  "bin": {
+    "kspec": "./bin/kspec.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "lint": "eslint src bin"
+  },
+  "keywords": [
+    "kiro",
+    "cli",
+    "spec-driven",
+    "tdd",
+    "development",
+    "workflow",
+    "ai"
+  ],
+  "author": "Sanjeev Kumar Badrinath",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sanjeevkumarraob/kspec.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "bin",
+    "src",
+    "templates"
+  ]
+}

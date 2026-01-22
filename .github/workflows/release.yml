@@ -9,17 +9,28 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --test
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get Version
-        id: version
-        uses: sanjeevkumarraob/version-system@v1
+      - uses: sanjeevkumarraob/version-system@v1
         with:
           VERSION_FILE: "version.txt"
           CREATE_RELEASE: true

@@ -1,0 +1,6 @@
+node_modules/
+.kspec/
+.kiro/
+*.log
+.DS_Store
+coverage/
