@@ -4,7 +4,7 @@
   "description": "Spec-driven development workflow for Kiro CLI",
   "main": "src/index.js",
   "bin": {
-    "kspec": "./bin/kspec.js"
+    "kspec": "bin/kspec.js"
   },
   "scripts": {
     "test": "node --test",
