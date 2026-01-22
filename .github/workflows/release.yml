@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write  # Required for npm trusted publishing (OIDC)
 
 jobs:
   test:
@@ -30,7 +31,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: sanjeevkumarraob/version-system@v1
+      - uses: actions/setup-node@v4
         with:
-          VERSION_FILE: "version.txt"
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Get Version
+        id: version
+        uses: sanjeevkumarraob/version-system@v1
+        with:
+          VERSION_FILE: 'version.txt'
           CREATE_RELEASE: true
+
+      - name: Update package.json version
+        run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - name: Publish to npm
+        run: npm publish --access public
