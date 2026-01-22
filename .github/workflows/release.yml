@@ -36,6 +36,9 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
       - name: Get Version
         id: version
         uses: sanjeevkumarraob/version-system@v1
