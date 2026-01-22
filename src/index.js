@@ -48,7 +48,13 @@ function slugify(text) {
 function detectCli() {
   try { execSync('kiro-cli --version', { stdio: 'ignore' }); return 'kiro-cli'; } catch {}
   try { execSync('q --version', { stdio: 'ignore' }); return 'q'; } catch {}
-  die("Neither 'kiro-cli' nor 'q' found. Install Kiro CLI first.");
+  return null;
+}
+
+function requireCli() {
+  const cli = requireCli();
+  if (!cli) die("Neither 'kiro-cli' nor 'q' found. Install Kiro CLI first.");
+  return cli;
 }
 
 async function prompt(question, choices) {
@@ -75,7 +81,7 @@ async function confirm(question) {
 }
 
 function chat(message, agent) {
-  const cli = detectCli();
+  const cli = requireCli();
   const args = agent ? ['chat', '--agent', agent, message] : ['chat', message];
   const child = spawn(cli, args, { stdio: 'inherit', shell: true });
   return new Promise(resolve => child.on('close', resolve));
@@ -583,7 +589,7 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
     const current = getCurrentSpec();
     
     console.log('\nkspec Status\n');
-    console.log(`CLI: ${detectCli()}`);
+    console.log(`CLI: ${detectCli() || '(not installed)'}`);
     console.log(`Initialized: ${config.initialized ? 'yes' : 'no'}`);
     console.log(`Date format: ${config.dateFormat || 'YYYY-MM-DD'}`);
     console.log(`Auto-execute: ${config.autoExecute || 'ask'}`);

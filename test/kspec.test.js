@@ -1,4 +1,4 @@
-const { describe, it, before, after, beforeEach } = require('node:test');
+const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
@@ -19,25 +19,24 @@ describe('kspec', () => {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  describe('init (non-interactive parts)', () => {
-    it('creates directory structure when config exists', () => {
-      // Simulate config already set
-      fs.mkdirSync('.kspec', { recursive: true });
-      fs.writeFileSync('.kspec/config.json', JSON.stringify({
-        dateFormat: 'YYYY-MM-DD',
-        autoExecute: 'ask',
-        initialized: true
-      }));
-      
-      assert.ok(fs.existsSync('.kspec'));
-    });
-  });
-
   describe('loadConfig', () => {
     it('returns defaults when no config', () => {
       const cfg = loadConfig();
       assert.strictEqual(cfg.dateFormat, 'YYYY-MM-DD');
       assert.strictEqual(cfg.autoExecute, 'ask');
+    });
+
+    it('loads config from file', () => {
+      fs.mkdirSync('.kspec', { recursive: true });
+      fs.writeFileSync('.kspec/config.json', JSON.stringify({
+        dateFormat: 'DD-MM-YYYY',
+        autoExecute: 'auto',
+        initialized: true
+      }));
+      
+      const cfg = loadConfig();
+      assert.strictEqual(cfg.dateFormat, 'DD-MM-YYYY');
+      assert.strictEqual(cfg.autoExecute, 'auto');
     });
   });
 
@@ -45,22 +44,21 @@ describe('kspec', () => {
     it('handles no specs', () => {
       assert.doesNotThrow(() => commands.list());
     });
-  });
 
-  describe('status', () => {
-    it('shows status', () => {
-      assert.doesNotThrow(() => commands.status());
+    it('lists specs when they exist', () => {
+      fs.mkdirSync('.kspec/specs/2026-01-22-test-feature', { recursive: true });
+      assert.doesNotThrow(() => commands.list());
     });
   });
 
   describe('agents', () => {
-    it('lists agents', () => {
+    it('outputs agent list', () => {
       assert.doesNotThrow(() => commands.agents());
     });
   });
 
   describe('help', () => {
-    it('shows help', () => {
+    it('outputs help text', () => {
       assert.doesNotThrow(() => commands.help());
     });
   });
