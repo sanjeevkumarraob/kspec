@@ -1,0 +1,25 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Version
+        id: version
+        uses: sanjeevkumarraob/version-system@v1
+        with:
+          VERSION_FILE: "version.txt"
+          CREATE_RELEASE: true
