@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions;
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions, hasAtlassianMcp, getMcpConfig;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions, hasAtlassianMcp, getMcpConfig } = require('../src/index.js'));
   });
 
   after(() => {
@@ -373,6 +373,99 @@ describe('kspec', () => {
     it('returns 0 when versions are equal', () => {
       assert.strictEqual(compareVersions('1.0.0', '1.0.0'), 0);
       assert.strictEqual(compareVersions('2.5.10', '2.5.10'), 0);
+    });
+  });
+
+  describe('MCP detection', () => {
+    it('hasAtlassianMcp returns boolean', () => {
+      const result = hasAtlassianMcp();
+      assert(typeof result === 'boolean');
+    });
+
+    it('getMcpConfig returns object or null', () => {
+      const result = getMcpConfig();
+      assert(result === null || typeof result === 'object');
+    });
+  });
+
+  describe('agentTemplates - Jira agent', () => {
+    it('has kspec-jira agent', () => {
+      assert(agentTemplates['kspec-jira.json'], 'Missing kspec-jira agent');
+    });
+
+    it('kspec-jira has mcp tool', () => {
+      const jiraAgent = agentTemplates['kspec-jira.json'];
+      assert(jiraAgent.tools.includes('mcp'), 'kspec-jira should include mcp tool');
+      assert(jiraAgent.allowedTools.includes('mcp'), 'kspec-jira should allow mcp tool');
+    });
+
+    it('kspec-jira has correct keyboard shortcut', () => {
+      const jiraAgent = agentTemplates['kspec-jira.json'];
+      assert.strictEqual(jiraAgent.keyboardShortcut, 'ctrl+shift+j');
+    });
+  });
+
+  describe('refreshContext with Jira links', () => {
+    it('includes Jira links when jira-links.json exists', () => {
+      const specFolder = '.kspec/specs/2026-01-24-jira-test';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# Jira Test Spec');
+      fs.writeFileSync(`${specFolder}/jira-links.json`, JSON.stringify({
+        sourceIssues: ['PROJ-123', 'PROJ-456'],
+        specIssue: 'PROJ-789',
+        subtasks: ['PROJ-790', 'PROJ-791']
+      }));
+      fs.writeFileSync('.kspec/.current', specFolder);
+
+      const content = refreshContext();
+      assert(content.includes('Jira Links'), 'Should include Jira Links section');
+      assert(content.includes('PROJ-123'), 'Should include source issue');
+      assert(content.includes('PROJ-789'), 'Should include spec issue');
+      assert(content.includes('PROJ-790'), 'Should include subtask');
+    });
+
+    it('omits Jira section when no jira-links.json', () => {
+      const specFolder = '.kspec/specs/2026-01-24-no-jira';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# No Jira Spec');
+      fs.writeFileSync('.kspec/.current', specFolder);
+
+      const content = refreshContext();
+      assert(!content.includes('Jira Links'), 'Should not include Jira Links section');
+    });
+  });
+
+  describe('help text', () => {
+    it('includes Jira integration section', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('Jira Integration'), 'Help should mention Jira Integration');
+        assert(output.includes('--jira'), 'Help should mention --jira flag');
+        assert(output.includes('sync-jira'), 'Help should mention sync-jira command');
+        assert(output.includes('jira-subtasks'), 'Help should mention jira-subtasks command');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('agents command', () => {
+    it('lists kspec-jira agent', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.agents();
+        assert(output.includes('kspec-jira'), 'Should list kspec-jira agent');
+        assert(output.includes('Ctrl+Shift+J'), 'Should show Jira agent shortcut');
+      } finally {
+        console.log = originalLog;
+      }
     });
   });
 });

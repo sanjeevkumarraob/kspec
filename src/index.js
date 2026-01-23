@@ -9,6 +9,7 @@ const STEERING_DIR = '.kiro/steering';
 const AGENTS_DIR = '.kiro/agents';
 const CONFIG_FILE = path.join(KSPEC_DIR, 'config.json');
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
+const KIRO_MCP_CONFIG = path.join(os.homedir(), '.kiro', 'mcp.json');
 
 // Default config
 const defaultConfig = {
@@ -90,6 +91,67 @@ async function checkForUpdates() {
   } catch {
     // Silently fail - don't block user workflow
   }
+}
+
+// MCP Integration Detection
+function getMcpConfig() {
+  try {
+    if (fs.existsSync(KIRO_MCP_CONFIG)) {
+      return JSON.parse(fs.readFileSync(KIRO_MCP_CONFIG, 'utf8'));
+    }
+  } catch {}
+  return null;
+}
+
+function hasAtlassianMcp() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return false;
+
+  // Check for atlassian or jira MCP server
+  const serverNames = Object.keys(mcpConfig.mcpServers);
+  return serverNames.some(name =>
+    name.toLowerCase().includes('atlassian') ||
+    name.toLowerCase().includes('jira')
+  );
+}
+
+function getAtlassianMcpName() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return null;
+
+  const serverNames = Object.keys(mcpConfig.mcpServers);
+  return serverNames.find(name =>
+    name.toLowerCase().includes('atlassian') ||
+    name.toLowerCase().includes('jira')
+  );
+}
+
+function requireAtlassianMcp() {
+  if (!hasAtlassianMcp()) {
+    die(`Atlassian MCP not configured.
+
+To use Jira integration, you need to:
+1. Install the Atlassian MCP server
+2. Configure it in ~/.kiro/mcp.json
+
+Example ~/.kiro/mcp.json:
+{
+  "mcpServers": {
+    "atlassian": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-atlassian"],
+      "env": {
+        "ATLASSIAN_HOST": "https://your-domain.atlassian.net",
+        "ATLASSIAN_EMAIL": "your-email@example.com",
+        "ATLASSIAN_API_TOKEN": "your-api-token"
+      }
+    }
+  }
+}
+
+Get your API token: https://id.atlassian.com/manage-profile/security/api-tokens`);
+  }
+  return getAtlassianMcpName();
 }
 
 // Helpers
@@ -283,6 +345,15 @@ No active spec. Run: \`kspec spec "Feature Name"\`
     memory = fs.readFileSync(memoryFile, 'utf8');
   }
 
+  // Read Jira links if exists
+  const jiraLinksFile = path.join(current, 'jira-links.json');
+  let jiraLinks = null;
+  if (fs.existsSync(jiraLinksFile)) {
+    try {
+      jiraLinks = JSON.parse(fs.readFileSync(jiraLinksFile, 'utf8'));
+    } catch {}
+  }
+
   // Build context
   let content = `# kspec Context
 > Auto-generated. Always read this first after context compression.
@@ -317,6 +388,24 @@ ${specLite}
 ${memory}
 
 `;
+  }
+
+  if (jiraLinks) {
+    content += `## Jira Links
+`;
+    if (jiraLinks.sourceIssues && jiraLinks.sourceIssues.length > 0) {
+      content += `- Source Issues: ${jiraLinks.sourceIssues.join(', ')}
+`;
+    }
+    if (jiraLinks.specIssue) {
+      content += `- Spec Issue: ${jiraLinks.specIssue}
+`;
+    }
+    if (jiraLinks.subtasks && jiraLinks.subtasks.length > 0) {
+      content += `- Subtasks: ${jiraLinks.subtasks.join(', ')}
+`;
+    }
+    content += '\n';
   }
 
   content += `## Quick Commands
@@ -567,6 +656,59 @@ Your job:
 Output: APPROVE / REQUEST_CHANGES with specific issues.`,
     keyboardShortcut: 'ctrl+shift+r',
     welcomeMessage: 'Ready to review. What should I look at?'
+  },
+
+  'kspec-jira.json': {
+    name: 'kspec-jira',
+    description: 'Jira integration for specs',
+    model: 'claude-sonnet-4',
+    tools: ['read', 'write', 'mcp'],
+    allowedTools: ['read', 'write', 'mcp'],
+    resources: [
+      'file://.kspec/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kspec/**/*.md'
+    ],
+    prompt: `You are the kspec Jira integration agent.
+
+PREREQUISITE: This agent requires Atlassian MCP to be configured.
+If MCP calls fail, inform the user to configure Atlassian MCP first.
+
+CAPABILITIES:
+
+1. PULL FROM JIRA (when user provides issue keys):
+   - Use MCP to fetch Jira issue details
+   - Extract: summary, description, acceptance criteria, comments
+   - For multiple issues, consolidate into unified requirements
+   - Create spec.md with proper attribution to source issues
+   - Include Jira links in spec for traceability
+
+2. SYNC TO JIRA (when user asks to sync/push):
+   - Create new "Technical Specification" issue in Jira
+   - Or update existing issue with spec content
+   - Link to source stories
+   - Add comment requesting BA review
+   - Set appropriate labels (kspec, technical-spec)
+
+3. CREATE SUBTASKS (when user asks after tasks.md exists):
+   - Read tasks.md from current spec
+   - Create Jira sub-tasks for each task
+   - Link to parent spec issue
+   - Include task details and acceptance criteria
+
+WORKFLOW:
+1. Read .kspec/CONTEXT.md for current spec state
+2. Identify what user wants (pull/sync/subtasks)
+3. Use Atlassian MCP for Jira operations
+4. Update .kspec/CONTEXT.md with Jira links
+5. Report what was created/updated
+
+IMPORTANT:
+- Always include Jira issue links in spec.md
+- Add "Source: JIRA-XXX" attribution for pulled requirements
+- Update CONTEXT.md with linked Jira issues`,
+    keyboardShortcut: 'ctrl+shift+j',
+    welcomeMessage: 'Jira integration ready. Provide issue keys to pull, or say "sync" to push spec to Jira.'
   }
 };
 
@@ -635,16 +777,62 @@ Update steering docs as needed.`, 'kspec-analyse');
   },
 
   async spec(args) {
+    // Parse --jira flag
+    const jiraIndex = args.findIndex(a => a === '--jira' || a.startsWith('--jira='));
+    let jiraIssues = null;
+
+    if (jiraIndex !== -1) {
+      // Check prerequisite
+      requireAtlassianMcp();
+
+      if (args[jiraIndex].startsWith('--jira=')) {
+        jiraIssues = args[jiraIndex].split('=')[1];
+        args.splice(jiraIndex, 1);
+      } else if (args[jiraIndex + 1] && !args[jiraIndex + 1].startsWith('-')) {
+        jiraIssues = args[jiraIndex + 1];
+        args.splice(jiraIndex, 2);
+      } else {
+        die('Usage: kspec spec --jira PROJ-123,PROJ-124 "Feature Name"');
+      }
+    }
+
     const feature = args.join(' ');
-    if (!feature) die('Usage: kspec spec "Feature Name"');
+    if (!feature && !jiraIssues) die('Usage: kspec spec "Feature Name" [--jira ISSUE-123,ISSUE-456]');
 
     const date = formatDate(config.dateFormat || 'YYYY-MM-DD');
-    const folder = path.join(getSpecsDir(), `${date}-${slugify(feature)}`);
+    const featureName = feature || `jira-${jiraIssues.split(',')[0].toLowerCase()}`;
+    const folder = path.join(getSpecsDir(), `${date}-${slugify(featureName)}`);
     ensureDir(folder);
     setCurrentSpec(folder);
 
     log(`Spec folder: ${folder}`);
-    await chat(`Create specification for: ${feature}
+
+    if (jiraIssues) {
+      // Jira-driven spec creation
+      log(`Pulling requirements from Jira: ${jiraIssues}`);
+      await chat(`Create specification from Jira issues: ${jiraIssues}
+
+Folder: ${folder}
+
+WORKFLOW:
+1. Use Atlassian MCP to fetch each Jira issue: ${jiraIssues}
+2. Extract from each issue:
+   - Summary and description
+   - Acceptance criteria
+   - Comments (for context)
+   - Linked issues
+3. Consolidate into unified spec.md with:
+   - Problem/Context (from issue descriptions)
+   - Requirements (from acceptance criteria)
+   - Source attribution: "Source: JIRA-XXX" for each requirement
+   - Links to original issues
+4. Create spec-lite.md (<500 words, key requirements only)
+5. Save Jira issue keys to ${folder}/jira-links.json
+
+IMPORTANT: Include Jira links for traceability.`, 'kspec-jira');
+    } else {
+      // Standard spec creation
+      await chat(`Create specification for: ${feature}
 
 Folder: ${folder}
 
@@ -653,6 +841,7 @@ Folder: ${folder}
 3. IMMEDIATELY create ${folder}/spec-lite.md (concise version, <500 words)
 
 spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec');
+    }
   },
 
   async 'verify-spec'(args) {
@@ -668,6 +857,120 @@ spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec'
 
 Read the codebase to check implementability.
 Report: PASS/FAIL with specific issues.`, 'kspec-verify');
+  },
+
+  async 'sync-jira'(args) {
+    // Check prerequisite
+    requireAtlassianMcp();
+
+    const folder = getOrSelectSpec();
+
+    // Parse flags
+    const createFlag = args.includes('--create');
+    const updateIndex = args.findIndex(a => a === '--update' || a.startsWith('--update='));
+    let updateIssue = null;
+
+    if (updateIndex !== -1) {
+      if (args[updateIndex].startsWith('--update=')) {
+        updateIssue = args[updateIndex].split('=')[1];
+      } else if (args[updateIndex + 1] && !args[updateIndex + 1].startsWith('-')) {
+        updateIssue = args[updateIndex + 1];
+      } else {
+        die('Usage: kspec sync-jira --update PROJ-123');
+      }
+    }
+
+    if (!createFlag && !updateIssue) {
+      // Default to create
+      log('No flag specified, will create new Jira issue');
+    }
+
+    log(`Syncing spec to Jira: ${folder}`);
+
+    if (updateIssue) {
+      await chat(`Update existing Jira issue with specification.
+
+Spec folder: ${folder}
+Target issue: ${updateIssue}
+
+WORKFLOW:
+1. Read ${folder}/spec.md
+2. Use Atlassian MCP to update ${updateIssue}:
+   - Update description with spec content (or add as comment)
+   - Add label: kspec-spec
+   - Add comment: "Technical specification updated via kspec"
+3. Update ${folder}/jira-links.json with the issue key
+4. Update .kspec/CONTEXT.md with Jira link
+
+Report the updated issue URL.`, 'kspec-jira');
+    } else {
+      await chat(`Create new Jira issue from specification.
+
+Spec folder: ${folder}
+
+WORKFLOW:
+1. Read ${folder}/spec.md and ${folder}/spec-lite.md
+2. Check ${folder}/jira-links.json for source issues to link
+3. Use Atlassian MCP to create new issue:
+   - Type: Task or Story (based on project settings)
+   - Summary: Extract from spec title
+   - Description: Include spec-lite.md content
+   - Labels: kspec-spec, technical-specification
+   - Link to source issues if any
+4. Add comment requesting BA/PM review
+5. Save new issue key to ${folder}/jira-links.json
+6. Update .kspec/CONTEXT.md with new Jira link
+
+Report the created issue URL.`, 'kspec-jira');
+    }
+  },
+
+  async 'jira-subtasks'(args) {
+    // Check prerequisite
+    requireAtlassianMcp();
+
+    const folder = getOrSelectSpec();
+    const tasksFile = path.join(folder, 'tasks.md');
+
+    if (!fs.existsSync(tasksFile)) {
+      die(`No tasks.md found in ${folder}. Run 'kspec tasks' first.`);
+    }
+
+    // Check for parent issue
+    const jiraLinksFile = path.join(folder, 'jira-links.json');
+    let parentIssue = args[0];
+
+    if (!parentIssue && fs.existsSync(jiraLinksFile)) {
+      try {
+        const links = JSON.parse(fs.readFileSync(jiraLinksFile, 'utf8'));
+        parentIssue = links.specIssue || links.sourceIssues?.[0];
+      } catch {}
+    }
+
+    if (!parentIssue) {
+      die(`No parent issue specified. Usage: kspec jira-subtasks PROJ-123
+Or run 'kspec sync-jira' first to create a spec issue.`);
+    }
+
+    log(`Creating Jira subtasks from: ${folder}`);
+
+    await chat(`Create Jira subtasks from tasks.md.
+
+Spec folder: ${folder}
+Parent issue: ${parentIssue}
+Tasks file: ${tasksFile}
+
+WORKFLOW:
+1. Read ${tasksFile}
+2. For each uncompleted task (- [ ]):
+   - Use Atlassian MCP to create subtask under ${parentIssue}
+   - Summary: Task description
+   - Description: Include any details, file paths mentioned
+   - Labels: kspec-task
+3. Save created subtask keys to ${folder}/jira-links.json
+4. Update .kspec/CONTEXT.md with subtask links
+
+Report created subtasks with their URLs.`, 'kspec-jira');
   },
 
   async tasks(args) {
@@ -863,14 +1166,15 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
     console.log(`
 kspec Agents
 
-Agent           Shortcut  Purpose
-─────────────────────────────────────────────
+Agent           Shortcut        Purpose
+─────────────────────────────────────────────────────────
 kspec-analyse   Ctrl+Shift+A    Analyse codebase, update steering
 kspec-spec      Ctrl+Shift+S    Create specifications
 kspec-tasks     Ctrl+Shift+T    Generate tasks from spec
 kspec-build     Ctrl+Shift+B    Execute tasks with TDD
 kspec-verify    Ctrl+Shift+V    Verify spec/tasks/implementation
 kspec-review    Ctrl+Shift+R    Code review
+kspec-jira      Ctrl+Shift+J    Jira integration (requires Atlassian MCP)
 
 Switch: /agent swap or use keyboard shortcuts
 `);
@@ -930,6 +1234,16 @@ Inside kiro-cli (recommended):
 
   Agents read .kspec/CONTEXT.md automatically for state.
 
+Jira Integration (requires Atlassian MCP):
+  kspec spec --jira PROJ-123,PROJ-456 "Feature"
+                          Create spec from Jira issues
+  kspec sync-jira         Create/update Jira issue from spec
+  kspec sync-jira --update PROJ-123
+                          Update existing Jira issue
+  kspec jira-subtasks     Create Jira subtasks from tasks.md
+  kspec jira-subtasks PROJ-123
+                          Create subtasks under specific issue
+
 Other:
   kspec context           Refresh/view context file
   kspec review [target]   Code review
@@ -942,6 +1256,7 @@ Other:
 Examples:
   kspec init                        # First time setup
   kspec spec "User Auth"            # CLI mode
+  kspec spec --jira PROJ-123 "Auth" # From Jira story
   kiro-cli --agent kspec-spec       # Direct agent mode
 `);
   }
@@ -972,4 +1287,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentTask, checkForUpdates, compareVersions };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig };
