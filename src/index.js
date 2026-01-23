@@ -42,7 +42,26 @@ function formatDate(format) {
 }
 
 function slugify(text) {
-  return text.slice(0, 50).toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
+  // Extract key words and create a meaningful short identifier
+  const words = text.toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ') // Replace non-alphanumeric with spaces
+    .split(/\s+/)
+    .filter(word => word.length > 2) // Remove short words
+    .filter(word => !['the', 'and', 'for', 'with', 'app', 'web', 'api'].includes(word)); // Remove common words
+  
+  // Take first 3-4 meaningful words and truncate to max 25 chars total
+  let slug = words.slice(0, 4).join('-');
+  if (slug.length > 25) {
+    slug = words.slice(0, 3).join('-');
+  }
+  if (slug.length > 25) {
+    slug = words.slice(0, 2).join('-');
+  }
+  if (slug.length > 25) {
+    slug = slug.slice(0, 25);
+  }
+  
+  return slug.replace(/^-+|-+$/g, '') || 'feature';
 }
 
 function detectCli() {

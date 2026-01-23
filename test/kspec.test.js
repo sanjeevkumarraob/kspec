@@ -141,5 +141,19 @@ describe('kspec', () => {
         process.exit = originalExit;
       }
     });
+
+    it('prioritizes flags over commands', async () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+      
+      try {
+        // Even with other arguments, --help should take precedence
+        await run(['init', '--help', 'something']);
+        assert(output.includes('kspec - Spec-driven development for Kiro CLI'));
+      } finally {
+        console.log = originalLog;
+      }
+    });
   });
 });
