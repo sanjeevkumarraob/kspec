@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext;
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions } = require('../src/index.js'));
   });
 
   after(() => {
@@ -106,12 +106,13 @@ describe('kspec', () => {
       let output = '';
       const originalLog = console.log;
       console.log = (...args) => { output += args.join(' ') + '\n'; };
-      
+
       try {
         await run(['--version']);
-        // Should output the version from package.json
+        // Should output the version from package.json (now with update check)
         const pkg = require('../package.json');
-        assert.strictEqual(output.trim(), pkg.version);
+        assert(output.includes(pkg.version), 'Output should contain version');
+        assert(output.includes('kspec'), 'Output should mention kspec');
       } finally {
         console.log = originalLog;
       }
@@ -121,12 +122,12 @@ describe('kspec', () => {
       let output = '';
       const originalLog = console.log;
       console.log = (...args) => { output += args.join(' ') + '\n'; };
-      
+
       try {
         await run(['-v']);
-        // Should output the version from package.json
+        // Should output the version from package.json (now with update check)
         const pkg = require('../package.json');
-        assert.strictEqual(output.trim(), pkg.version);
+        assert(output.includes(pkg.version), 'Output should contain version');
       } finally {
         console.log = originalLog;
       }
@@ -352,6 +353,26 @@ describe('kspec', () => {
       } finally {
         console.log = originalLog;
       }
+    });
+  });
+
+  describe('compareVersions', () => {
+    it('returns -1 when first version is older', () => {
+      assert.strictEqual(compareVersions('1.0.0', '1.0.1'), -1);
+      assert.strictEqual(compareVersions('1.0.0', '1.1.0'), -1);
+      assert.strictEqual(compareVersions('1.0.0', '2.0.0'), -1);
+      assert.strictEqual(compareVersions('1.0.8', '1.0.15'), -1);
+    });
+
+    it('returns 1 when first version is newer', () => {
+      assert.strictEqual(compareVersions('1.0.1', '1.0.0'), 1);
+      assert.strictEqual(compareVersions('1.1.0', '1.0.0'), 1);
+      assert.strictEqual(compareVersions('2.0.0', '1.0.0'), 1);
+    });
+
+    it('returns 0 when versions are equal', () => {
+      assert.strictEqual(compareVersions('1.0.0', '1.0.0'), 0);
+      assert.strictEqual(compareVersions('2.5.10', '2.5.10'), 0);
     });
   });
 });

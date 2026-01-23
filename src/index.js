@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execSync, spawn } = require('child_process');
 const readline = require('readline');
 
@@ -7,6 +8,7 @@ const KSPEC_DIR = '.kspec';
 const STEERING_DIR = '.kiro/steering';
 const AGENTS_DIR = '.kiro/agents';
 const CONFIG_FILE = path.join(KSPEC_DIR, 'config.json');
+const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
 
 // Default config
 const defaultConfig = {
@@ -33,6 +35,62 @@ function saveConfig(cfg) {
 }
 
 const config = loadConfig();
+const pkg = require('../package.json');
+
+// Update check (non-blocking, cached for 24h)
+function shouldCheckUpdate() {
+  try {
+    if (fs.existsSync(UPDATE_CHECK_FILE)) {
+      const lastCheck = parseInt(fs.readFileSync(UPDATE_CHECK_FILE, 'utf8'), 10);
+      const hoursSinceCheck = (Date.now() - lastCheck) / (1000 * 60 * 60);
+      return hoursSinceCheck >= 24;
+    }
+  } catch {}
+  return true;
+}
+
+function saveUpdateCheck() {
+  try {
+    fs.writeFileSync(UPDATE_CHECK_FILE, Date.now().toString());
+  } catch {}
+}
+
+function compareVersions(v1, v2) {
+  const parts1 = v1.split('.').map(Number);
+  const parts2 = v2.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((parts1[i] || 0) < (parts2[i] || 0)) return -1;
+    if ((parts1[i] || 0) > (parts2[i] || 0)) return 1;
+  }
+  return 0;
+}
+
+async function checkForUpdates() {
+  if (!shouldCheckUpdate()) return;
+
+  try {
+    const https = require('https');
+    const data = await new Promise((resolve, reject) => {
+      const req = https.get('https://registry.npmjs.org/kspec/latest', { timeout: 3000 }, res => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => resolve(body));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    });
+
+    const latest = JSON.parse(data).version;
+    saveUpdateCheck();
+
+    if (compareVersions(pkg.version, latest) < 0) {
+      console.log(`\n  Update available: ${pkg.version} → ${latest}`);
+      console.log(`  Run: npm install -g kspec\n`);
+    }
+  } catch {
+    // Silently fail - don't block user workflow
+  }
+}
 
 // Helpers
 function log(msg) { console.log(`[kspec] ${msg}`); }
@@ -818,6 +876,37 @@ Switch: /agent swap or use keyboard shortcuts
 `);
   },
 
+  async update() {
+    console.log(`\nkspec v${pkg.version}\n`);
+    console.log('Checking for updates...');
+
+    try {
+      const https = require('https');
+      const data = await new Promise((resolve, reject) => {
+        const req = https.get('https://registry.npmjs.org/kspec/latest', { timeout: 5000 }, res => {
+          let body = '';
+          res.on('data', chunk => body += chunk);
+          res.on('end', () => resolve(body));
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      });
+
+      const latest = JSON.parse(data).version;
+      saveUpdateCheck();
+
+      if (compareVersions(pkg.version, latest) < 0) {
+        console.log(`\nUpdate available: ${pkg.version} → ${latest}`);
+        console.log('\nTo update, run:');
+        console.log('  npm install -g kspec\n');
+      } else {
+        console.log(`\nYou're on the latest version!\n`);
+      }
+    } catch (err) {
+      console.error('\nCould not check for updates. Check your internet connection.\n');
+    }
+  },
+
   help() {
     console.log(`
 kspec - Spec-driven development for Kiro CLI
@@ -847,6 +936,7 @@ Other:
   kspec list              List all specs
   kspec status            Current status
   kspec agents            List agents
+  kspec update            Check for updates
   kspec help              Show this help
 
 Examples:
@@ -858,14 +948,17 @@ Examples:
 };
 
 async function run(args) {
+  // Check for updates (non-blocking, cached for 24h)
+  checkForUpdates();
+
   // Handle standard CLI flags first
   if (args.includes('--help') || args.includes('-h')) {
     return commands.help();
   }
-  
+
   if (args.includes('--version') || args.includes('-v')) {
-    const pkg = require('../package.json');
-    console.log(pkg.version);
+    // Show version and check for updates
+    await commands.update();
     return;
   }
 
@@ -879,4 +972,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentTask };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentTask, checkForUpdates, compareVersions };
