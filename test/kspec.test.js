@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run;
-  
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates;
+
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates } = require('../src/index.js'));
   });
 
   after(() => {
@@ -146,13 +146,100 @@ describe('kspec', () => {
       let output = '';
       const originalLog = console.log;
       console.log = (...args) => { output += args.join(' ') + '\n'; };
-      
+
       try {
         // Even with other arguments, --help should take precedence
         await run(['init', '--help', 'something']);
         assert(output.includes('kspec - Spec-driven development for Kiro CLI'));
       } finally {
         console.log = originalLog;
+      }
+    });
+  });
+
+  describe('detectCli', () => {
+    it('returns string or null', () => {
+      const result = detectCli();
+      assert(result === null || typeof result === 'string');
+    });
+
+    it('returns kiro-cli, q, or null', () => {
+      const result = detectCli();
+      assert(result === null || result === 'kiro-cli' || result === 'q');
+    });
+  });
+
+  describe('requireCli', () => {
+    it('does not cause stack overflow', () => {
+      // This test verifies the bug fix - requireCli should call detectCli, not itself
+      // If it calls itself, this will throw "Maximum call stack size exceeded"
+      let errorThrown = null;
+      const originalExit = process.exit;
+      const originalError = console.error;
+
+      process.exit = () => { throw new Error('CLI_NOT_FOUND'); };
+      console.error = () => {};
+
+      try {
+        requireCli();
+      } catch (e) {
+        errorThrown = e;
+      } finally {
+        process.exit = originalExit;
+        console.error = originalError;
+      }
+
+      // Should either return a CLI name or throw CLI_NOT_FOUND (from our mock)
+      // Should NOT throw "Maximum call stack size exceeded"
+      if (errorThrown) {
+        assert.strictEqual(errorThrown.message, 'CLI_NOT_FOUND');
+      }
+    });
+  });
+
+  describe('agentTemplates', () => {
+    it('has all required agents', () => {
+      const expectedAgents = [
+        'kspec-analyse.json',
+        'kspec-spec.json',
+        'kspec-tasks.json',
+        'kspec-build.json',
+        'kspec-verify.json',
+        'kspec-review.json'
+      ];
+
+      for (const agent of expectedAgents) {
+        assert(agentTemplates[agent], `Missing agent: ${agent}`);
+      }
+    });
+
+    it('agents have Kiro CLI compatible format', () => {
+      for (const [filename, agent] of Object.entries(agentTemplates)) {
+        // Required fields
+        assert(agent.name, `${filename}: missing name`);
+        assert(agent.description, `${filename}: missing description`);
+        assert(agent.prompt, `${filename}: missing prompt`);
+
+        // Kiro CLI format fields
+        assert(agent.model, `${filename}: missing model`);
+        assert(Array.isArray(agent.tools), `${filename}: tools should be array`);
+        assert(Array.isArray(agent.allowedTools), `${filename}: allowedTools should be array`);
+        assert(Array.isArray(agent.resources), `${filename}: resources should be array`);
+
+        // Resources use file:// protocol
+        for (const resource of agent.resources) {
+          assert(resource.startsWith('file://'), `${filename}: resource should use file:// protocol: ${resource}`);
+        }
+      }
+    });
+
+    it('agents include steering and kspec resources', () => {
+      for (const [filename, agent] of Object.entries(agentTemplates)) {
+        const hasSteeringResource = agent.resources.some(r => r.includes('.kiro/steering'));
+        const hasKspecResource = agent.resources.some(r => r.includes('.kspec'));
+
+        assert(hasSteeringResource, `${filename}: should include .kiro/steering resource`);
+        assert(hasKspecResource, `${filename}: should include .kspec resource`);
       }
     });
   });

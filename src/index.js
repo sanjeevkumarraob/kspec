@@ -71,7 +71,7 @@ function detectCli() {
 }
 
 function requireCli() {
-  const cli = requireCli();
+  const cli = detectCli();
   if (!cli) die("Neither 'kiro-cli' nor 'q' found. Install Kiro CLI first.");
   return cli;
 }
@@ -204,6 +204,13 @@ const agentTemplates = {
   'kspec-analyse.json': {
     name: 'kspec-analyse',
     description: 'Analyse codebase and update steering docs',
+    model: 'claude-sonnet-4',
+    tools: ['read', 'write'],
+    allowedTools: ['read', 'write'],
+    resources: [
+      'file://.kiro/steering/**/*.md',
+      'file://.kspec/**/*.md'
+    ],
     prompt: `You are the kspec analyser. Your job:
 1. Analyse the codebase structure, tech stack, patterns
 2. Review .kiro/steering/ docs
@@ -211,18 +218,20 @@ const agentTemplates = {
 4. Identify risks, tech debt, improvement areas
 
 Output a clear analysis report. Propose specific steering doc updates.`,
-    allowedTools: ['read', 'write'],
     keyboardShortcut: 'ctrl+a',
-    welcomeMessage: 'Analysing codebase...',
-    toolsSettings: {
-      read: { allowedPaths: ['./**'] },
-      write: { allowedPaths: ['.kiro/steering/**'] }
-    }
+    welcomeMessage: 'Analysing codebase...'
   },
 
   'kspec-spec.json': {
     name: 'kspec-spec',
     description: 'Create feature specifications',
+    model: 'claude-sonnet-4',
+    tools: ['read', 'write'],
+    allowedTools: ['read', 'write'],
+    resources: [
+      'file://.kiro/steering/**/*.md',
+      'file://.kspec/**/*.md'
+    ],
     prompt: `You are the kspec specification writer. Your job:
 1. Read .kiro/steering/ for project context
 2. Create a comprehensive spec.md with:
@@ -237,18 +246,20 @@ Output a clear analysis report. Propose specific steering doc updates.`,
    - Used for context after compression
 
 Always create both files. spec-lite.md is critical for context retention.`,
-    allowedTools: ['read', 'write'],
     keyboardShortcut: 'ctrl+s',
-    welcomeMessage: 'Ready to create specification.',
-    toolsSettings: {
-      read: { allowedPaths: ['./**'] },
-      write: { allowedPaths: ['.kspec/specs/**'] }
-    }
+    welcomeMessage: 'Ready to create specification.'
   },
 
   'kspec-tasks.json': {
     name: 'kspec-tasks',
     description: 'Generate implementation tasks from spec',
+    model: 'claude-sonnet-4',
+    tools: ['read', 'write'],
+    allowedTools: ['read', 'write'],
+    resources: [
+      'file://.kiro/steering/**/*.md',
+      'file://.kspec/**/*.md'
+    ],
     prompt: `You are the kspec task generator. Your job:
 1. Read spec.md and spec-lite.md from the spec folder
 2. Generate tasks.md with:
@@ -259,18 +270,20 @@ Always create both files. spec-lite.md is critical for context retention.`,
    - File paths where changes occur
 
 Tasks must be atomic and independently verifiable.`,
-    allowedTools: ['read', 'write'],
     keyboardShortcut: 'ctrl+t',
-    welcomeMessage: 'Generating tasks from spec...',
-    toolsSettings: {
-      read: { allowedPaths: ['./**'] },
-      write: { allowedPaths: ['.kspec/specs/**'] }
-    }
+    welcomeMessage: 'Generating tasks from spec...'
   },
 
   'kspec-build.json': {
     name: 'kspec-build',
     description: 'Execute tasks with TDD',
+    model: 'claude-sonnet-4',
+    tools: ['read', 'write', 'shell'],
+    allowedTools: ['read', 'write', 'shell'],
+    resources: [
+      'file://.kiro/steering/**/*.md',
+      'file://.kspec/**/*.md'
+    ],
     prompt: `You are the kspec builder. Your job:
 1. Read tasks.md, find first uncompleted task (- [ ])
 2. For each task:
@@ -284,19 +297,20 @@ Tasks must be atomic and independently verifiable.`,
 CRITICAL: Always update tasks.md after completing each task.
 NEVER delete .kiro or .kspec folders.
 Use non-interactive flags for commands (--yes, -y).`,
-    allowedTools: ['read', 'write', 'shell'],
     keyboardShortcut: 'ctrl+b',
-    welcomeMessage: 'Building from tasks...',
-    toolsSettings: {
-      read: { allowedPaths: ['./**'] },
-      write: { allowedPaths: ['./**'] },
-      shell: { autoAllowReadonly: true }
-    }
+    welcomeMessage: 'Building from tasks...'
   },
 
   'kspec-verify.json': {
     name: 'kspec-verify',
     description: 'Verify spec, tasks, or implementation',
+    model: 'claude-sonnet-4',
+    tools: ['read', 'shell'],
+    allowedTools: ['read', 'shell'],
+    resources: [
+      'file://.kiro/steering/**/*.md',
+      'file://.kspec/**/*.md'
+    ],
     prompt: `You are the kspec verifier. Based on what you're asked to verify:
 
 VERIFY-SPEC:
@@ -318,18 +332,20 @@ VERIFY-IMPLEMENTATION:
 - List any gaps between spec and implementation
 
 Output a clear verification report with pass/fail status.`,
-    allowedTools: ['read', 'shell'],
     keyboardShortcut: 'ctrl+v',
-    welcomeMessage: 'What should I verify?',
-    toolsSettings: {
-      read: { allowedPaths: ['./**'] },
-      shell: { autoAllowReadonly: true }
-    }
+    welcomeMessage: 'What should I verify?'
   },
 
   'kspec-review.json': {
     name: 'kspec-review',
     description: 'Code review',
+    model: 'claude-sonnet-4',
+    tools: ['read', 'shell'],
+    allowedTools: ['read', 'shell'],
+    resources: [
+      'file://.kiro/steering/**/*.md',
+      'file://.kspec/**/*.md'
+    ],
     prompt: `You are the kspec code reviewer. Your job:
 1. Review code changes (git diff or specified files)
 2. Check compliance with .kiro/steering/
@@ -341,13 +357,8 @@ Output a clear verification report with pass/fail status.`,
 4. Provide actionable feedback
 
 Output: APPROVE / REQUEST_CHANGES with specific issues.`,
-    allowedTools: ['read', 'shell'],
     keyboardShortcut: 'ctrl+r',
-    welcomeMessage: 'Ready to review. What should I look at?',
-    toolsSettings: {
-      read: { allowedPaths: ['./**'] },
-      shell: { allowedCommands: ['git diff*', 'git log*', 'git status*', 'git show*'], autoAllowReadonly: true }
-    }
+    welcomeMessage: 'Ready to review. What should I look at?'
   }
 };
 
@@ -706,4 +717,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates };
