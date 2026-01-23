@@ -102,7 +102,7 @@ async function confirm(question) {
 function chat(message, agent) {
   const cli = requireCli();
   const args = agent ? ['chat', '--agent', agent, message] : ['chat', message];
-  const child = spawn(cli, args, { stdio: 'inherit', shell: true });
+  const child = spawn(cli, args, { stdio: 'inherit' });
   return new Promise(resolve => child.on('close', resolve));
 }
 
