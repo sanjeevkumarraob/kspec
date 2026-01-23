@@ -334,7 +334,7 @@ Your job:
 4. Identify risks, tech debt, improvement areas
 
 Output a clear analysis report. Propose specific steering doc updates.`,
-    keyboardShortcut: 'ctrl+a',
+    keyboardShortcut: 'ctrl+shift+a',
     welcomeMessage: 'Analysing codebase...'
   },
 
@@ -368,7 +368,7 @@ WORKFLOW (do this autonomously):
 6. Update .kspec/CONTEXT.md with current state
 
 After completion, suggest: "Switch to kspec-tasks agent to generate implementation tasks"`,
-    keyboardShortcut: 'ctrl+s',
+    keyboardShortcut: 'ctrl+shift+s',
     welcomeMessage: 'Ready to create specification. Describe your feature.'
   },
 
@@ -400,7 +400,7 @@ WORKFLOW:
 Tasks must be atomic and independently verifiable.
 
 After completion, suggest: "Switch to kspec-build agent to start implementing tasks"`,
-    keyboardShortcut: 'ctrl+t',
+    keyboardShortcut: 'ctrl+shift+t',
     welcomeMessage: 'Reading current spec and generating tasks...'
   },
 
@@ -437,7 +437,7 @@ CRITICAL:
 - Use non-interactive flags for commands (--yes, -y)
 
 When all tasks complete, suggest: "Switch to kspec-verify agent to verify implementation"`,
-    keyboardShortcut: 'ctrl+b',
+    keyboardShortcut: 'ctrl+shift+b',
     welcomeMessage: 'Reading current task and building...'
   },
 
@@ -477,7 +477,7 @@ VERIFY-IMPLEMENTATION:
 - List any gaps between spec and implementation
 
 Output a clear verification report with pass/fail status.`,
-    keyboardShortcut: 'ctrl+v',
+    keyboardShortcut: 'ctrl+shift+v',
     welcomeMessage: 'What should I verify?'
   },
 
@@ -507,7 +507,7 @@ Your job:
 4. Provide actionable feedback
 
 Output: APPROVE / REQUEST_CHANGES with specific issues.`,
-    keyboardShortcut: 'ctrl+r',
+    keyboardShortcut: 'ctrl+shift+r',
     welcomeMessage: 'Ready to review. What should I look at?'
   }
 };
@@ -807,12 +807,12 @@ kspec Agents
 
 Agent           Shortcut  Purpose
 ─────────────────────────────────────────────
-kspec-analyse   Ctrl+A    Analyse codebase, update steering
-kspec-spec      Ctrl+S    Create specifications
-kspec-tasks     Ctrl+T    Generate tasks from spec
-kspec-build     Ctrl+B    Execute tasks with TDD
-kspec-verify    Ctrl+V    Verify spec/tasks/implementation
-kspec-review    Ctrl+R    Code review
+kspec-analyse   Ctrl+Shift+A    Analyse codebase, update steering
+kspec-spec      Ctrl+Shift+S    Create specifications
+kspec-tasks     Ctrl+Shift+T    Generate tasks from spec
+kspec-build     Ctrl+Shift+B    Execute tasks with TDD
+kspec-verify    Ctrl+Shift+V    Verify spec/tasks/implementation
+kspec-review    Ctrl+Shift+R    Code review
 
 Switch: /agent swap or use keyboard shortcuts
 `);
