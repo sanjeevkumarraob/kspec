@@ -106,6 +106,9 @@ async function confirm(question) {
 }
 
 function chat(message, agent) {
+  // Refresh context before each chat to ensure LLM has latest state
+  refreshContext();
+
   const cli = requireCli();
   const args = agent ? ['chat', '--agent', agent, message] : ['chat', message];
   const child = spawn(cli, args, { stdio: 'inherit' });
@@ -175,6 +178,101 @@ function getTaskStats(folder) {
   return { total, done, remaining: total - done };
 }
 
+function getCurrentTask(folder) {
+  const tasksFile = path.join(folder, 'tasks.md');
+  if (!fs.existsSync(tasksFile)) return null;
+
+  const content = fs.readFileSync(tasksFile, 'utf8');
+  const lines = content.split('\n');
+  for (const line of lines) {
+    if (/^-\s*\[ \]/.test(line)) {
+      return line.replace(/^-\s*\[ \]\s*/, '').trim();
+    }
+  }
+  return null;
+}
+
+function refreshContext() {
+  const contextFile = path.join(KSPEC_DIR, 'CONTEXT.md');
+  const current = getCurrentSpec();
+
+  if (!current) {
+    // No current spec - create minimal context
+    const content = `# kspec Context
+
+No active spec. Run: \`kspec spec "Feature Name"\`
+`;
+    ensureDir(KSPEC_DIR);
+    fs.writeFileSync(contextFile, content);
+    return content;
+  }
+
+  const specName = path.basename(current);
+  const stats = getTaskStats(current);
+  const currentTask = getCurrentTask(current);
+
+  // Read spec-lite if exists
+  const specLiteFile = path.join(current, 'spec-lite.md');
+  let specLite = '';
+  if (fs.existsSync(specLiteFile)) {
+    specLite = fs.readFileSync(specLiteFile, 'utf8');
+  }
+
+  // Read memory if exists
+  const memoryFile = path.join(current, 'memory.md');
+  let memory = '';
+  if (fs.existsSync(memoryFile)) {
+    memory = fs.readFileSync(memoryFile, 'utf8');
+  }
+
+  // Build context
+  let content = `# kspec Context
+> Auto-generated. Always read this first after context compression.
+
+## Current Spec
+**${specName}**
+Path: \`${current}\`
+
+`;
+
+  if (stats) {
+    content += `## Progress
+- Tasks: ${stats.done}/${stats.total} completed
+- Remaining: ${stats.remaining}
+`;
+    if (currentTask) {
+      content += `- **Current Task**: ${currentTask}
+`;
+    }
+    content += '\n';
+  }
+
+  if (specLite) {
+    content += `## Requirements Summary
+${specLite}
+
+`;
+  }
+
+  if (memory) {
+    content += `## Decisions & Learnings
+${memory}
+
+`;
+  }
+
+  content += `## Quick Commands
+- \`kspec build\` - Continue building tasks
+- \`kspec verify\` - Verify implementation
+- \`kspec status\` - Show current status
+- \`kspec context\` - Refresh this file
+`;
+
+  ensureDir(KSPEC_DIR);
+  fs.writeFileSync(contextFile, content);
+  return content;
+}
+
 // Templates
 const steeringTemplates = {
   'product.md': `# Product Overview
@@ -221,10 +319,15 @@ const agentTemplates = {
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
+      'file://.kspec/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
       'file://.kspec/**/*.md'
     ],
-    prompt: `You are the kspec analyser. Your job:
+    prompt: `You are the kspec analyser.
+
+FIRST: Read .kspec/CONTEXT.md for current state and spec summary.
+
+Your job:
 1. Analyse the codebase structure, tech stack, patterns
 2. Review .kiro/steering/ docs
 3. Suggest updates to steering based on actual codebase
@@ -242,25 +345,31 @@ Output a clear analysis report. Propose specific steering doc updates.`,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
+      'file://.kspec/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
       'file://.kspec/**/*.md'
     ],
-    prompt: `You are the kspec specification writer. Your job:
+    prompt: `You are the kspec specification writer.
+
+WORKFLOW (do this autonomously):
 1. Read .kiro/steering/ for project context
-2. Create a comprehensive spec.md with:
+2. Create spec folder: .kspec/specs/YYYY-MM-DD-{feature-slug}/
+   - Use today's date and a short slug (2-4 words from feature name)
+3. Create spec.md in that folder with:
    - Problem/Context
    - Requirements (functional + non-functional)
    - Constraints
    - High-level design
    - Acceptance criteria
-3. IMMEDIATELY after spec.md, create spec-lite.md:
-   - Concise version (under 500 words)
+4. Create spec-lite.md (CRITICAL - under 500 words):
+   - Concise version for context retention after compression
    - Key requirements only
-   - Used for context after compression
+5. Update .kspec/.current with the spec folder path
+6. Update .kspec/CONTEXT.md with current state
 
-Always create both files. spec-lite.md is critical for context retention.`,
+After completion, suggest: "Switch to kspec-tasks agent to generate implementation tasks"`,
     keyboardShortcut: 'ctrl+s',
-    welcomeMessage: 'Ready to create specification.'
+    welcomeMessage: 'Ready to create specification. Describe your feature.'
   },
 
   'kspec-tasks.json': {
@@ -270,21 +379,29 @@ Always create both files. spec-lite.md is critical for context retention.`,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
+      'file://.kspec/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
       'file://.kspec/**/*.md'
     ],
-    prompt: `You are the kspec task generator. Your job:
-1. Read spec.md and spec-lite.md from the spec folder
-2. Generate tasks.md with:
+    prompt: `You are the kspec task generator.
+
+WORKFLOW:
+1. Read .kspec/CONTEXT.md for current spec location
+2. Read .kspec/.current to get spec folder path
+3. Read spec.md and spec-lite.md from that folder
+4. Generate tasks.md in the spec folder with:
    - Checkbox format: "- [ ] Task description"
    - TDD approach: test first, then implement
    - Logical ordering (models → services → API → UI)
    - Dependencies noted
    - File paths where changes occur
+5. Update .kspec/CONTEXT.md with task count
 
-Tasks must be atomic and independently verifiable.`,
+Tasks must be atomic and independently verifiable.
+
+After completion, suggest: "Switch to kspec-build agent to start implementing tasks"`,
     keyboardShortcut: 'ctrl+t',
-    welcomeMessage: 'Generating tasks from spec...'
+    welcomeMessage: 'Reading current spec and generating tasks...'
   },
 
   'kspec-build.json': {
@@ -294,24 +411,34 @@ Tasks must be atomic and independently verifiable.`,
     tools: ['read', 'write', 'shell'],
     allowedTools: ['read', 'write', 'shell'],
     resources: [
+      'file://.kspec/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
       'file://.kspec/**/*.md'
     ],
-    prompt: `You are the kspec builder. Your job:
-1. Read tasks.md, find first uncompleted task (- [ ])
-2. For each task:
+    prompt: `You are the kspec builder.
+
+WORKFLOW:
+1. Read .kspec/CONTEXT.md for current spec and task progress
+2. Read .kspec/.current to get spec folder path
+3. Read tasks.md from spec folder, find first uncompleted task (- [ ])
+4. For each task:
    a) Write test first (TDD)
    b) Implement minimal code to pass
    c) Run tests
    d) Mark task complete: change "- [ ]" to "- [x]"
    e) Update tasks.md file
-3. Commit after each task
+   f) Update .kspec/CONTEXT.md with new progress
+5. Commit after each task with descriptive message
 
-CRITICAL: Always update tasks.md after completing each task.
-NEVER delete .kiro or .kspec folders.
-Use non-interactive flags for commands (--yes, -y).`,
+CRITICAL:
+- Always update tasks.md after completing each task
+- Update .kspec/CONTEXT.md with current task and progress
+- NEVER delete .kiro or .kspec folders
+- Use non-interactive flags for commands (--yes, -y)
+
+When all tasks complete, suggest: "Switch to kspec-verify agent to verify implementation"`,
     keyboardShortcut: 'ctrl+b',
-    welcomeMessage: 'Building from tasks...'
+    welcomeMessage: 'Reading current task and building...'
   },
 
   'kspec-verify.json': {
@@ -321,10 +448,15 @@ Use non-interactive flags for commands (--yes, -y).`,
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
+      'file://.kspec/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
       'file://.kspec/**/*.md'
     ],
-    prompt: `You are the kspec verifier. Based on what you're asked to verify:
+    prompt: `You are the kspec verifier.
+
+FIRST: Read .kspec/CONTEXT.md for current spec and progress.
+
+Based on what you're asked to verify:
 
 VERIFY-SPEC:
 - Check spec covers all requirements
@@ -356,10 +488,15 @@ Output a clear verification report with pass/fail status.`,
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
+      'file://.kspec/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
       'file://.kspec/**/*.md'
     ],
-    prompt: `You are the kspec code reviewer. Your job:
+    prompt: `You are the kspec code reviewer.
+
+FIRST: Read .kspec/CONTEXT.md for current spec context.
+
+Your job:
 1. Review code changes (git diff or specified files)
 2. Check compliance with .kiro/steering/
 3. Evaluate:
@@ -632,13 +769,13 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
 
   status() {
     const current = getCurrentSpec();
-    
+
     console.log('\nkspec Status\n');
     console.log(`CLI: ${detectCli() || '(not installed)'}`);
     console.log(`Initialized: ${config.initialized ? 'yes' : 'no'}`);
     console.log(`Date format: ${config.dateFormat || 'YYYY-MM-DD'}`);
     console.log(`Auto-execute: ${config.autoExecute || 'ask'}`);
-    
+
     if (current) {
       console.log(`\nCurrent spec: ${path.basename(current)}`);
       const stats = getTaskStats(current);
@@ -656,6 +793,12 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
       console.log(`\nNo current spec. Run: kspec spec "Feature Name"`);
     }
     console.log('');
+  },
+
+  context() {
+    const content = refreshContext();
+    console.log(content);
+    console.log(`Context saved to: .kspec/CONTEXT.md\n`);
   },
 
   agents() {
@@ -679,7 +822,7 @@ Switch: /agent swap or use keyboard shortcuts
     console.log(`
 kspec - Spec-driven development for Kiro CLI
 
-Workflow:
+CLI Workflow (outside kiro-cli):
   kspec init              Interactive setup
   kspec analyse           Analyse codebase, update steering
   kspec spec "Feature"    Create specification
@@ -690,22 +833,26 @@ Workflow:
   kspec verify            Verify implementation
   kspec done              Complete spec, harvest memory
 
+Inside kiro-cli (recommended):
+  /agent swap kspec-spec    → Describe feature → creates spec
+  /agent swap kspec-tasks   → Generates tasks from spec
+  /agent swap kspec-build   → Builds tasks with TDD
+  /agent swap kspec-verify  → Verifies implementation
+
+  Agents read .kspec/CONTEXT.md automatically for state.
+
 Other:
+  kspec context           Refresh/view context file
   kspec review [target]   Code review
   kspec list              List all specs
   kspec status            Current status
   kspec agents            List agents
   kspec help              Show this help
-  kspec --help, -h        Show this help
-  kspec --version, -v     Show version
 
 Examples:
-  kspec init
-  kspec spec "User Authentication"
-  kspec tasks
-  kspec build
-  kspec verify
-  kspec done
+  kspec init                        # First time setup
+  kspec spec "User Auth"            # CLI mode
+  kiro-cli --agent kspec-spec       # Direct agent mode
 `);
   }
 };
@@ -732,4 +879,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentTask };

@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats;
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext } = require('../src/index.js'));
   });
 
   after(() => {
@@ -79,11 +79,11 @@ describe('kspec', () => {
       let output = '';
       const originalLog = console.log;
       console.log = (...args) => { output += args.join(' ') + '\n'; };
-      
+
       try {
         await run(['--help']);
         assert(output.includes('kspec - Spec-driven development for Kiro CLI'));
-        assert(output.includes('Workflow:'));
+        assert(output.includes('CLI Workflow'));
       } finally {
         console.log = originalLog;
       }
@@ -241,6 +241,41 @@ describe('kspec', () => {
     });
   });
 
+  describe('refreshContext', () => {
+    it('creates CONTEXT.md with no active spec', () => {
+      // Clear any existing .current file
+      const currentFile = '.kspec/.current';
+      if (fs.existsSync(currentFile)) fs.unlinkSync(currentFile);
+
+      const content = refreshContext();
+      assert(content.includes('No active spec'));
+      assert(fs.existsSync('.kspec/CONTEXT.md'));
+    });
+
+    it('includes spec info when spec exists', () => {
+      // Create a spec with spec-lite
+      const specFolder = '.kspec/specs/2026-01-24-test-context';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# Test Spec\n- Requirement 1\n- Requirement 2');
+      fs.writeFileSync('.kspec/.current', specFolder);
+
+      const content = refreshContext();
+      assert(content.includes('2026-01-24-test-context'));
+      assert(content.includes('Requirements Summary'));
+      assert(content.includes('Requirement 1'));
+    });
+
+    it('includes task progress when tasks exist', () => {
+      const specFolder = '.kspec/specs/2026-01-24-test-context';
+      fs.writeFileSync(`${specFolder}/tasks.md`, '- [x] Task 1\n- [ ] Task 2\n- [ ] Task 3');
+      fs.writeFileSync('.kspec/.current', specFolder);
+
+      const content = refreshContext();
+      assert(content.includes('1/3 completed'));
+      assert(content.includes('Current Task'));
+    });
+  });
+
   describe('agentTemplates', () => {
     it('has all required agents', () => {
       const expectedAgents = [
@@ -284,6 +319,38 @@ describe('kspec', () => {
 
         assert(hasSteeringResource, `${filename}: should include .kiro/steering resource`);
         assert(hasKspecResource, `${filename}: should include .kspec resource`);
+      }
+    });
+
+    it('agents include CONTEXT.md as first resource', () => {
+      for (const [filename, agent] of Object.entries(agentTemplates)) {
+        assert(agent.resources[0] === 'file://.kspec/CONTEXT.md',
+          `${filename}: CONTEXT.md should be first resource for context restoration`);
+      }
+    });
+
+    it('agent prompts instruct to read context first', () => {
+      const agentsNeedingContext = ['kspec-tasks.json', 'kspec-build.json', 'kspec-verify.json'];
+      for (const filename of agentsNeedingContext) {
+        const agent = agentTemplates[filename];
+        assert(agent.prompt.includes('CONTEXT.md') || agent.prompt.includes('WORKFLOW'),
+          `${filename}: prompt should reference context or workflow`);
+      }
+    });
+  });
+
+  describe('context command', () => {
+    it('outputs context and confirms file creation', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.context();
+        assert(output.includes('kspec Context'));
+        assert(output.includes('CONTEXT.md'));
+      } finally {
+        console.log = originalLog;
       }
     });
   });
