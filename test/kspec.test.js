@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates;
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats } = require('../src/index.js'));
   });
 
   after(() => {
@@ -33,10 +33,20 @@ describe('kspec', () => {
         autoExecute: 'auto',
         initialized: true
       }));
-      
+
       const cfg = loadConfig();
       assert.strictEqual(cfg.dateFormat, 'DD-MM-YYYY');
       assert.strictEqual(cfg.autoExecute, 'auto');
+    });
+
+    it('returns defaults on corrupted config', () => {
+      fs.mkdirSync('.kspec', { recursive: true });
+      fs.writeFileSync('.kspec/config.json', 'invalid json {{{');
+
+      // Should not throw, should return defaults
+      const cfg = loadConfig();
+      assert.strictEqual(cfg.dateFormat, 'YYYY-MM-DD');
+      assert.strictEqual(cfg.autoExecute, 'ask');
     });
   });
 
@@ -194,6 +204,40 @@ describe('kspec', () => {
       if (errorThrown) {
         assert.strictEqual(errorThrown.message, 'CLI_NOT_FOUND');
       }
+    });
+  });
+
+  describe('getTaskStats', () => {
+    it('returns null for missing tasks.md', () => {
+      fs.mkdirSync('.kspec/specs/test-spec', { recursive: true });
+      const stats = getTaskStats('.kspec/specs/test-spec');
+      assert.strictEqual(stats, null);
+    });
+
+    it('counts tasks correctly', () => {
+      fs.mkdirSync('.kspec/specs/task-test', { recursive: true });
+      fs.writeFileSync('.kspec/specs/task-test/tasks.md', `# Tasks
+- [ ] Pending task 1
+- [x] Done task 1
+- [ ] Pending task 2
+`);
+      const stats = getTaskStats('.kspec/specs/task-test');
+      assert.strictEqual(stats.total, 3);
+      assert.strictEqual(stats.done, 1);
+      assert.strictEqual(stats.remaining, 2);
+    });
+
+    it('handles uppercase [X] markers', () => {
+      fs.mkdirSync('.kspec/specs/uppercase-test', { recursive: true });
+      fs.writeFileSync('.kspec/specs/uppercase-test/tasks.md', `# Tasks
+- [ ] Pending
+- [x] Done lowercase
+- [X] Done uppercase
+`);
+      const stats = getTaskStats('.kspec/specs/uppercase-test');
+      assert.strictEqual(stats.total, 3);
+      assert.strictEqual(stats.done, 2);
+      assert.strictEqual(stats.remaining, 1);
     });
   });
 

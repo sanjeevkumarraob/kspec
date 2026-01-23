@@ -17,7 +17,12 @@ const defaultConfig = {
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
-    return { ...defaultConfig, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) };
+    try {
+      return { ...defaultConfig, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) };
+    } catch {
+      console.error('Warning: Invalid config.json, using defaults');
+      return defaultConfig;
+    }
   }
   return defaultConfig;
 }
@@ -65,8 +70,9 @@ function slugify(text) {
 }
 
 function detectCli() {
-  try { execSync('kiro-cli --version', { stdio: 'ignore' }); return 'kiro-cli'; } catch {}
-  try { execSync('q --version', { stdio: 'ignore' }); return 'q'; } catch {}
+  const opts = { stdio: 'ignore', timeout: 5000 };
+  try { execSync('kiro-cli --version', opts); return 'kiro-cli'; } catch {}
+  try { execSync('q --version', opts); return 'q'; } catch {}
   return null;
 }
 
@@ -103,7 +109,13 @@ function chat(message, agent) {
   const cli = requireCli();
   const args = agent ? ['chat', '--agent', agent, message] : ['chat', message];
   const child = spawn(cli, args, { stdio: 'inherit' });
-  return new Promise(resolve => child.on('close', resolve));
+  return new Promise((resolve, reject) => {
+    child.on('error', err => {
+      console.error(`Failed to start ${cli}: ${err.message}`);
+      reject(err);
+    });
+    child.on('close', resolve);
+  });
 }
 
 // Spec management
@@ -155,10 +167,11 @@ function getOrSelectSpec(name) {
 function getTaskStats(folder) {
   const tasksFile = path.join(folder, 'tasks.md');
   if (!fs.existsSync(tasksFile)) return null;
-  
+
   const content = fs.readFileSync(tasksFile, 'utf8');
-  const total = (content.match(/^-\s*\[[ x]\]/gm) || []).length;
-  const done = (content.match(/^-\s*\[x\]/gim) || []).length;
+  // Match both [x] and [X] consistently for total and done counts
+  const total = (content.match(/^-\s*\[[ xX]\]/gm) || []).length;
+  const done = (content.match(/^-\s*\[[xX]\]/gm) || []).length;
   return { total, done, remaining: total - done };
 }
 
@@ -402,11 +415,13 @@ const commands = {
       }
     }
 
-    // Create agents
+    // Create agents (skip if already exist to preserve customizations)
     for (const [file, content] of Object.entries(agentTemplates)) {
       const p = path.join(AGENTS_DIR, file);
-      fs.writeFileSync(p, JSON.stringify(content, null, 2));
-      log(`Created ${p}`);
+      if (!fs.existsSync(p)) {
+        fs.writeFileSync(p, JSON.stringify(content, null, 2));
+        log(`Created ${p}`);
+      }
     }
 
     console.log('\n✅ kspec initialized!\n');
@@ -717,4 +732,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats };
