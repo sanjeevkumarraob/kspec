@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions, hasAtlassianMcp, getMcpConfig;
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions, hasAtlassianMcp, getMcpConfig } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig } = require('../src/index.js'));
   });
 
   after(() => {
@@ -239,6 +239,43 @@ describe('kspec', () => {
       assert.strictEqual(stats.total, 3);
       assert.strictEqual(stats.done, 2);
       assert.strictEqual(stats.remaining, 1);
+    });
+  });
+
+  describe('getCurrentSpec', () => {
+    it('returns null when no .current file', () => {
+      const currentFile = '.kspec/.current';
+      if (fs.existsSync(currentFile)) fs.unlinkSync(currentFile);
+
+      const result = getCurrentSpec();
+      assert.strictEqual(result, null);
+    });
+
+    it('handles full path format', () => {
+      const specFolder = '.kspec/specs/2026-01-25-full-path-test';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync('.kspec/.current', specFolder);
+
+      const result = getCurrentSpec();
+      assert.strictEqual(result, specFolder);
+    });
+
+    it('handles just folder name (agent mode)', () => {
+      const specName = '2026-01-25-agent-mode-test';
+      const specFolder = `.kspec/specs/${specName}`;
+      fs.mkdirSync(specFolder, { recursive: true });
+      // Agent mode writes just the folder name
+      fs.writeFileSync('.kspec/.current', specName);
+
+      const result = getCurrentSpec();
+      assert.strictEqual(result, specFolder);
+    });
+
+    it('returns null for non-existent spec', () => {
+      fs.writeFileSync('.kspec/.current', 'non-existent-spec-folder');
+
+      const result = getCurrentSpec();
+      assert.strictEqual(result, null);
     });
   });
 

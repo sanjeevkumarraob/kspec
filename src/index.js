@@ -248,7 +248,17 @@ function getCurrentSpec() {
   const file = path.join(KSPEC_DIR, '.current');
   if (fs.existsSync(file)) {
     const spec = fs.readFileSync(file, 'utf8').trim();
+    // Handle full path format
     if (fs.existsSync(spec)) return spec;
+    // Handle just folder name (from agent mode)
+    const fullPath = path.join(getSpecsDir(), spec);
+    if (fs.existsSync(fullPath)) return fullPath;
+    // Handle folder name without date prefix - find matching spec
+    const specsDir = getSpecsDir();
+    if (fs.existsSync(specsDir)) {
+      const match = fs.readdirSync(specsDir).find(d => d.includes(spec) || spec.includes(d));
+      if (match) return path.join(specsDir, match);
+    }
   }
   return null;
 }
@@ -1287,4 +1297,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig };
