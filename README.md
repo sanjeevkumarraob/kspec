@@ -130,22 +130,84 @@ Switch agents in kiro-cli: `/agent swap kspec-build` or use keyboard shortcuts.
 
 ```
 .kspec/
-├── config.json           # User preferences
-├── .current              # Current active spec path
-├── CONTEXT.md            # Auto-generated context for agents
-├── memory.md             # Project learnings
+├── config.json           # User preferences (commit)
+├── .current              # Current active spec path (local only)
+├── CONTEXT.md            # Auto-generated context (local only)
+├── memory.md             # Project learnings (commit)
 └── specs/
     └── 2026-01-22-feature/
-        ├── spec.md       # Full specification
+        ├── spec.md       # Full specification (commit)
         ├── spec-lite.md  # Concise (for context compression)
-        ├── tasks.md      # Implementation tasks
-        ├── memory.md     # Feature learnings
-        └── jira-links.json # Jira issue links (if integrated)
+        ├── tasks.md      # Implementation tasks (commit)
+        ├── memory.md     # Feature learnings (commit)
+        └── jira-links.json # Jira issue links (commit)
 
 .kiro/
-├── steering/             # Project rules (Kiro native)
-└── agents/               # kspec-generated agents
+├── steering/             # Project rules (commit)
+├── agents/               # kspec-generated agents (commit)
+└── mcp.json.template     # MCP config template (commit, no secrets)
 ```
+
+## Team Collaboration
+
+kspec is designed for team collaboration. Most files should be committed to share specifications, tasks, and guidelines across your team.
+
+### What to Commit
+
+| Path | Commit? | Why |
+|------|---------|-----|
+| `.kiro/steering/` | Yes | Shared product, tech, testing guidelines |
+| `.kiro/agents/` | Yes | Consistent agent configurations |
+| `.kiro/mcp.json.template` | Yes | MCP setup template (no secrets) |
+| `.kspec/config.json` | Yes | Project preferences |
+| `.kspec/specs/` | Yes | Specifications, tasks, memory |
+| `.kspec/.current` | No | Personal working state |
+| `.kspec/CONTEXT.md` | No | Auto-generated, local state |
+| `~/.kiro/mcp.json` | N/A | Personal secrets in home directory |
+
+### Setting Up MCP for Teams
+
+**Problem**: API tokens should never be committed, but teams need consistent MCP configuration.
+
+**Solution**: Use environment variables with a committed template.
+
+1. Commit a template file (`.kiro/mcp.json.template`):
+   ```json
+   {
+     "mcpServers": {
+       "atlassian": {
+         "command": "npx",
+         "args": ["-y", "@anthropic/mcp-atlassian"],
+         "env": {
+           "ATLASSIAN_HOST": "${ATLASSIAN_HOST}",
+           "ATLASSIAN_EMAIL": "${ATLASSIAN_EMAIL}",
+           "ATLASSIAN_API_TOKEN": "${ATLASSIAN_API_TOKEN}"
+         }
+       }
+     }
+   }
+   ```
+
+2. Each team member creates their personal config:
+   ```bash
+   # Copy template to home directory
+   mkdir -p ~/.kiro && chmod 700 ~/.kiro
+   cp .kiro/mcp.json.template ~/.kiro/mcp.json
+   chmod 600 ~/.kiro/mcp.json
+
+   # Edit with real credentials
+   nano ~/.kiro/mcp.json
+   ```
+
+3. Or use environment variables directly:
+   ```bash
+   # Add to ~/.bashrc or ~/.zshrc
+   export ATLASSIAN_HOST="https://your-domain.atlassian.net"
+   export ATLASSIAN_EMAIL="your-email@example.com"
+   export ATLASSIAN_API_TOKEN="your-api-token"
+   ```
+
+See [SECURITY.md](SECURITY.md) for detailed security best practices.
 
 ## Jira Integration
 
@@ -178,7 +240,19 @@ Generate Jira subtasks from tasks.md for progress tracking.
 
 ### Prerequisites
 
-Configure Atlassian MCP in `~/.kiro/mcp.json`:
+`kspec init` creates `.kiro/mcp.json.template` automatically. To enable Jira integration:
+
+```bash
+# Copy template to your home directory (keeps secrets out of repo)
+mkdir -p ~/.kiro && chmod 700 ~/.kiro
+cp .kiro/mcp.json.template ~/.kiro/mcp.json
+chmod 600 ~/.kiro/mcp.json
+
+# Edit with your real credentials
+nano ~/.kiro/mcp.json
+```
+
+Replace the `${...}` placeholders with your actual values:
 
 ```json
 {
@@ -197,6 +271,8 @@ Configure Atlassian MCP in `~/.kiro/mcp.json`:
 ```
 
 Get your API token: https://id.atlassian.com/manage-profile/security/api-tokens
+
+See [Team Collaboration](#team-collaboration) for secure team setup with environment variables.
 
 ## Configuration
 
@@ -224,6 +300,13 @@ kspec --version
 - Node.js >= 18
 - Kiro CLI or Amazon Q CLI
 - Atlassian MCP (optional, for Jira integration)
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for:
+- Secure MCP configuration with environment variables
+- API token best practices
+- Git repository safety guidelines
 
 ## License
 
