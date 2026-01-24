@@ -167,25 +167,71 @@ function formatDate(format) {
 }
 
 function slugify(text) {
-  // Extract key words and create a meaningful short identifier
-  const words = text.toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ') // Replace non-alphanumeric with spaces
-    .split(/\s+/)
-    .filter(word => word.length > 2) // Remove short words
-    .filter(word => !['the', 'and', 'for', 'with', 'app', 'web', 'api'].includes(word)); // Remove common words
-  
-  // Take first 3-4 meaningful words and truncate to max 25 chars total
-  let slug = words.slice(0, 4).join('-');
-  if (slug.length > 25) {
-    slug = words.slice(0, 3).join('-');
+  // Filler words to remove (action verbs, articles, prepositions, generic terms)
+  const fillerWords = new Set([
+    'a', 'an', 'the', 'and', 'or', 'but', 'for', 'with', 'using', 'via',
+    'create', 'build', 'make', 'implement', 'add', 'develop', 'write',
+    'application', 'app', 'system', 'feature', 'functionality', 'module',
+    'that', 'this', 'which', 'will', 'should', 'can', 'could', 'would',
+    'new', 'simple', 'basic', 'full', 'complete'
+  ]);
+
+  // Tech terms to prioritize (frameworks, libraries, tools)
+  const techTerms = new Set([
+    'react', 'nextjs', 'next', 'vue', 'angular', 'svelte', 'node', 'express',
+    'typescript', 'javascript', 'python', 'rust', 'go', 'java',
+    'tailwind', 'shadcn', 'prisma', 'drizzle', 'supabase', 'firebase',
+    'postgres', 'mysql', 'mongodb', 'redis', 'graphql', 'rest', 'trpc',
+    'docker', 'kubernetes', 'aws', 'vercel', 'netlify'
+  ]);
+
+  // Normalize text: handle "to do" -> "todo", lowercase, clean
+  let normalized = text.toLowerCase()
+    .replace(/to\s*do/g, 'todo')
+    .replace(/e[\s-]?commerce/g, 'ecommerce')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const words = normalized.split(' ').filter(w => w.length > 0);
+
+  // Separate into tech terms and other meaningful words
+  const tech = [];
+  const meaningful = [];
+
+  for (const word of words) {
+    if (fillerWords.has(word)) continue;
+    if (techTerms.has(word)) {
+      tech.push(word);
+    } else if (word.length > 2) {
+      meaningful.push(word);
+    }
   }
-  if (slug.length > 25) {
-    slug = words.slice(0, 2).join('-');
+
+  // Prioritize: first meaningful word + tech terms (max 3-4 words total)
+  const selected = [];
+  if (meaningful.length > 0) selected.push(meaningful[0]);
+  selected.push(...tech.slice(0, 2));
+  if (selected.length < 3 && meaningful.length > 1) {
+    selected.push(meaningful[1]);
   }
-  if (slug.length > 25) {
-    slug = slug.slice(0, 25);
+
+  // Fallback if nothing meaningful
+  if (selected.length === 0) {
+    const fallback = words.filter(w => w.length > 2).slice(0, 2);
+    selected.push(...fallback);
   }
-  
+
+  let slug = selected.join('-');
+
+  // Truncate if still too long
+  if (slug.length > 30) {
+    slug = selected.slice(0, 2).join('-');
+  }
+  if (slug.length > 30) {
+    slug = slug.slice(0, 30);
+  }
+
   return slug.replace(/^-+|-+$/g, '') || 'feature';
 }
 
