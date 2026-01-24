@@ -5,6 +5,20 @@
 
 Spec-driven development workflow for Kiro CLI with context management, verification at every step, and Jira integration.
 
+## Why kspec?
+
+AI coding assistants forget context, drift from requirements, and repeat mistakes. kspec solves this:
+
+| Problem | kspec Solution |
+|---------|---------------|
+| **Context loss** | `CONTEXT.md` survives AI context compression |
+| **Scope creep** | Specs define boundaries before coding |
+| **No verification** | Verify at every step (spec → tasks → build) |
+| **Lost learnings** | `memory.md` compounds knowledge across projects |
+| **Enterprise silos** | Jira integration bridges BA/PM and developers |
+
+Read the full [Methodology](docs/methodology.md) or see a complete [Example Walkthrough](docs/examples/todo-app/).
+
 ## Installation
 
 ```bash
@@ -301,12 +315,11 @@ kspec --version
 - Kiro CLI or Amazon Q CLI
 - Atlassian MCP (optional, for Jira integration)
 
-## Security
+## Documentation
 
-See [SECURITY.md](SECURITY.md) for:
-- Secure MCP configuration with environment variables
-- API token best practices
-- Git repository safety guidelines
+- [Methodology](docs/methodology.md) — Why spec-driven development works
+- [Example: Todo App](docs/examples/todo-app/) — Complete walkthrough with real files
+- [SECURITY.md](SECURITY.md) — Secure MCP configuration and best practices
 
 ## License
 
