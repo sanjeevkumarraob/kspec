@@ -453,6 +453,53 @@ describe('kspec', () => {
     });
   });
 
+  describe('isSpecStale', () => {
+    let isSpecStale;
+
+    before(() => {
+      ({ isSpecStale } = require('../src/index.js'));
+    });
+
+    it('returns false when no spec.md', () => {
+      const folder = path.join('.kspec', 'specs', 'no-spec-test');
+      fs.mkdirSync(folder, { recursive: true });
+      const result = isSpecStale(folder);
+      assert.strictEqual(result, false);
+    });
+
+    it('returns true when no spec-lite.md', () => {
+      const folder = path.join('.kspec', 'specs', 'no-spec-lite-test');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec');
+      const result = isSpecStale(folder);
+      assert.strictEqual(result, true);
+    });
+
+    it('returns false when spec-lite is newer', () => {
+      const folder = path.join('.kspec', 'specs', 'spec-lite-newer');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec');
+      // Wait a bit to ensure different mtime
+      const now = new Date();
+      fs.utimesSync(path.join(folder, 'spec.md'), now, new Date(now.getTime() - 10000));
+      fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Spec Lite');
+      const result = isSpecStale(folder);
+      assert.strictEqual(result, false);
+    });
+
+    it('returns true when spec.md is newer', () => {
+      const folder = path.join('.kspec', 'specs', 'spec-newer');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Spec Lite');
+      // Wait a bit to ensure different mtime
+      const now = new Date();
+      fs.utimesSync(path.join(folder, 'spec-lite.md'), now, new Date(now.getTime() - 10000));
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec Updated');
+      const result = isSpecStale(folder);
+      assert.strictEqual(result, true);
+    });
+  });
+
   describe('MCP detection', () => {
     it('hasAtlassianMcp returns boolean', () => {
       const result = hasAtlassianMcp();

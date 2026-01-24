@@ -411,6 +411,34 @@ function getCurrentTask(folder) {
   return null;
 }
 
+// Check if spec.md has been modified after spec-lite.md
+function isSpecStale(folder) {
+  const specFile = path.join(folder, 'spec.md');
+  const specLiteFile = path.join(folder, 'spec-lite.md');
+
+  if (!fs.existsSync(specFile)) return false;
+  if (!fs.existsSync(specLiteFile)) return true; // No spec-lite means stale
+
+  const specMtime = fs.statSync(specFile).mtime;
+  const specLiteMtime = fs.statSync(specLiteFile).mtime;
+
+  return specMtime > specLiteMtime;
+}
+
+// Check staleness and prompt user before proceeding
+async function checkStaleness(folder) {
+  if (!isSpecStale(folder)) return true; // Not stale, proceed
+
+  console.log('\n⚠️  spec.md has been modified since spec-lite.md was generated.');
+  console.log('   This may cause outdated information to be used.\n');
+  console.log('   Options:');
+  console.log('   1. Run `kspec refresh` to update spec-lite.md first (recommended)');
+  console.log('   2. Continue anyway with potentially stale context\n');
+
+  const proceed = await confirm('Continue with potentially stale spec?');
+  return proceed;
+}
+
 function refreshContext() {
   const contextFile = path.join(KSPEC_DIR, 'CONTEXT.md');
   const current = getCurrentSpec();
@@ -429,6 +457,7 @@ No active spec. Run: \`kspec spec "Feature Name"\`
   const specName = path.basename(current);
   const stats = getTaskStats(current);
   const currentTask = getCurrentTask(current);
+  const stale = isSpecStale(current);
 
   // Read spec-lite if exists
   const specLiteFile = path.join(current, 'spec-lite.md');
@@ -460,8 +489,17 @@ No active spec. Run: \`kspec spec "Feature Name"\`
 ## Current Spec
 **${specName}**
 Path: \`${current}\`
+`;
+
+  if (stale) {
+    content += `
+**WARNING: spec.md has been modified since spec-lite.md was generated.**
+Run \`kspec refresh\` to update spec-lite.md with latest changes.
 
 `;
+  } else {
+    content += '\n';
+  }
 
   if (stats) {
     content += `## Progress
@@ -1077,6 +1115,9 @@ Report created subtasks with their URLs.`, 'kspec-jira');
 
   async tasks(args) {
     const folder = getOrSelectSpec(args.join(' '));
+
+    if (!await checkStaleness(folder)) return;
+
     log(`Generating tasks: ${folder}`);
 
     await chat(`Generate tasks from specification.
@@ -1093,8 +1134,11 @@ Create ${folder}/tasks.md with:
 
   async 'verify-tasks'(args) {
     const folder = getOrSelectSpec(args.join(' '));
+
+    if (!await checkStaleness(folder)) return;
+
     const stats = getTaskStats(folder);
-    
+
     log(`Verifying tasks: ${folder}`);
     if (stats) log(`Progress: ${stats.done}/${stats.total} tasks completed`);
 
@@ -1110,6 +1154,9 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
 
   async build(args) {
     const folder = getOrSelectSpec(args.join(' '));
+
+    if (!await checkStaleness(folder)) return;
+
     const stats = getTaskStats(folder);
 
     log(`Building: ${folder}`);
@@ -1144,6 +1191,9 @@ NEVER delete .kiro or .kspec folders.`, 'kspec-build');
 
   async verify(args) {
     const folder = getOrSelectSpec(args.join(' '));
+
+    if (!await checkStaleness(folder)) return;
+
     const stats = getTaskStats(folder);
 
     log(`Verifying implementation: ${folder}`);
@@ -1159,9 +1209,52 @@ NEVER delete .kiro or .kspec folders.`, 'kspec-build');
 
 Report:
 - Requirements: X/Y implemented
-- Tasks: X/Y completed  
+- Tasks: X/Y completed
 - Tests: PASS/FAIL
 - Gaps: [list any]`, 'kspec-verify');
+  },
+
+  async refresh(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const specFile = path.join(folder, 'spec.md');
+    const specLiteFile = path.join(folder, 'spec-lite.md');
+
+    if (!fs.existsSync(specFile)) {
+      die(`No spec.md found in ${folder}`);
+    }
+
+    const stale = isSpecStale(folder);
+    if (!stale && !args.includes('--force')) {
+      log('spec-lite.md is up to date with spec.md');
+      log('Use --force to regenerate anyway');
+      return;
+    }
+
+    log(`Refreshing spec-lite.md from ${folder}/spec.md...`);
+
+    await chat(`Regenerate spec-lite.md from the updated spec.md.
+
+Spec folder: ${folder}
+
+WORKFLOW:
+1. Read ${specFile} carefully - this is the source of truth
+2. Create a NEW ${specLiteFile} that:
+   - Summarizes ALL key requirements (under 500 words)
+   - Captures the current tech stack and versions
+   - Includes critical constraints and acceptance criteria
+   - Preserves any Jira issue references
+3. This spec-lite.md will be used for context restoration after AI compression
+
+IMPORTANT:
+- Read the FULL spec.md before generating spec-lite.md
+- Ensure ALL tech stack details are captured (versions matter!)
+- This replaces the old spec-lite.md completely
+
+After updating, confirm what changed.`, 'kspec-spec');
+
+    // Update CONTEXT.md with new spec-lite
+    refreshContext();
+    log('Context refreshed with updated spec');
   },
 
   async done(args) {
@@ -1347,6 +1440,7 @@ Jira Integration (requires Atlassian MCP):
                           Create subtasks under specific issue
 
 Other:
+  kspec refresh           Regenerate spec-lite.md after editing spec.md
   kspec context           Refresh/view context file
   kspec review [target]   Code review
   kspec list              List all specs
@@ -1389,4 +1483,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale };
