@@ -248,6 +248,49 @@ function requireCli() {
   return cli;
 }
 
+// Generate meaningful slug using LLM, fallback to regex
+async function generateSlug(featureName) {
+  const cli = detectCli();
+  if (!cli) {
+    return slugify(featureName);
+  }
+
+  try {
+    const prompt = `Generate a short folder name (2-4 words, lowercase, hyphenated) for this feature: "${featureName}"
+
+Rules:
+- Extract the core concept (e.g., "todo app", "user auth", "shopping cart")
+- Include key tech if mentioned (e.g., "nextjs", "react")
+- No filler words (create, build, implement, application)
+- Max 30 characters
+- Only lowercase letters, numbers, hyphens
+
+Reply with ONLY the folder name, nothing else. Example: todo-nextjs-shadcn`;
+
+    const result = execSync(`${cli} chat "${prompt.replace(/"/g, '\\"')}" --no-interactive 2>/dev/null`, {
+      encoding: 'utf8',
+      timeout: 15000,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    // Extract just the slug from response (first line that looks like a slug)
+    const lines = result.trim().split('\n');
+    for (const line of lines) {
+      const cleaned = line.trim().toLowerCase();
+      // Valid slug: only lowercase, numbers, hyphens, 3-30 chars
+      if (/^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/.test(cleaned) && !cleaned.includes(' ')) {
+        return cleaned;
+      }
+    }
+
+    // If no valid slug found, fallback
+    return slugify(featureName);
+  } catch {
+    // CLI failed, use regex fallback
+    return slugify(featureName);
+  }
+}
+
 async function prompt(question, choices) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   
@@ -857,7 +900,10 @@ Update steering docs as needed.`, 'kspec-analyse');
 
     const date = formatDate(config.dateFormat || 'YYYY-MM-DD');
     const featureName = feature || `jira-${jiraIssues.split(',')[0].toLowerCase()}`;
-    const folder = path.join(getSpecsDir(), `${date}-${slugify(featureName)}`);
+
+    log('Generating spec folder name...');
+    const slug = await generateSlug(featureName);
+    const folder = path.join(getSpecsDir(), `${date}-${slug}`);
     ensureDir(folder);
     setCurrentSpec(folder);
 
@@ -1343,4 +1389,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug };

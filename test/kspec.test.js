@@ -413,6 +413,46 @@ describe('kspec', () => {
     });
   });
 
+  describe('slugify', () => {
+    let slugify;
+
+    before(() => {
+      ({ slugify } = require('../src/index.js'));
+    });
+
+    it('extracts todo from "to do"', () => {
+      const result = slugify('Create a to do application');
+      assert(result.includes('todo'), `Expected "todo" in "${result}"`);
+    });
+
+    it('prioritizes tech terms', () => {
+      const result = slugify('Build app with nextjs and shadcn');
+      assert(result.includes('nextjs') || result.includes('shadcn'), `Expected tech terms in "${result}"`);
+    });
+
+    it('removes filler words', () => {
+      const result = slugify('Create a simple application using React');
+      assert(!result.includes('create'), `Should not contain "create" in "${result}"`);
+      assert(!result.includes('simple'), `Should not contain "simple" in "${result}"`);
+      assert(!result.includes('using'), `Should not contain "using" in "${result}"`);
+    });
+
+    it('handles e-commerce', () => {
+      const result = slugify('Build e-commerce cart');
+      assert(result.includes('ecommerce'), `Expected "ecommerce" in "${result}"`);
+    });
+
+    it('returns feature for empty input', () => {
+      const result = slugify('');
+      assert.strictEqual(result, 'feature');
+    });
+
+    it('produces meaningful names', () => {
+      const result = slugify('Create a to do application using nextjs and shadcn');
+      assert.strictEqual(result, 'todo-nextjs-shadcn');
+    });
+  });
+
   describe('MCP detection', () => {
     it('hasAtlassianMcp returns boolean', () => {
       const result = hasAtlassianMcp();
