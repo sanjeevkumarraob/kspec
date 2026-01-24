@@ -244,7 +244,7 @@ describe('kspec', () => {
 
   describe('getCurrentSpec', () => {
     it('returns null when no .current file', () => {
-      const currentFile = '.kspec/.current';
+      const currentFile = path.join('.kspec', '.current');
       if (fs.existsSync(currentFile)) fs.unlinkSync(currentFile);
 
       const result = getCurrentSpec();
@@ -252,9 +252,9 @@ describe('kspec', () => {
     });
 
     it('handles full path format', () => {
-      const specFolder = '.kspec/specs/2026-01-25-full-path-test';
+      const specFolder = path.join('.kspec', 'specs', '2026-01-25-full-path-test');
       fs.mkdirSync(specFolder, { recursive: true });
-      fs.writeFileSync('.kspec/.current', specFolder);
+      fs.writeFileSync(path.join('.kspec', '.current'), specFolder);
 
       const result = getCurrentSpec();
       assert.strictEqual(result, specFolder);
@@ -262,17 +262,17 @@ describe('kspec', () => {
 
     it('handles just folder name (agent mode)', () => {
       const specName = '2026-01-25-agent-mode-test';
-      const specFolder = `.kspec/specs/${specName}`;
+      const specFolder = path.join('.kspec', 'specs', specName);
       fs.mkdirSync(specFolder, { recursive: true });
       // Agent mode writes just the folder name
-      fs.writeFileSync('.kspec/.current', specName);
+      fs.writeFileSync(path.join('.kspec', '.current'), specName);
 
       const result = getCurrentSpec();
       assert.strictEqual(result, specFolder);
     });
 
     it('returns null for non-existent spec', () => {
-      fs.writeFileSync('.kspec/.current', 'non-existent-spec-folder');
+      fs.writeFileSync(path.join('.kspec', '.current'), 'non-existent-spec-folder');
 
       const result = getCurrentSpec();
       assert.strictEqual(result, null);
