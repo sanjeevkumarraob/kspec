@@ -459,10 +459,20 @@ No active spec. Run: \`kspec spec "Feature Name"\`
   const currentTask = getCurrentTask(current);
   const stale = isSpecStale(current);
 
-  // Read spec-lite if exists
+  // Read spec-lite if exists, or fall back to spec.md if stale
   const specLiteFile = path.join(current, 'spec-lite.md');
+  const specFile = path.join(current, 'spec.md');
   let specLite = '';
-  if (fs.existsSync(specLiteFile)) {
+  let usingSpecFallback = false;
+
+  if (stale && fs.existsSync(specFile)) {
+    // Use spec.md directly when stale (truncate if too long)
+    const specContent = fs.readFileSync(specFile, 'utf8');
+    specLite = specContent.length > 3000
+      ? specContent.slice(0, 3000) + '\n\n... (truncated, run `kspec refresh` for full summary)'
+      : specContent;
+    usingSpecFallback = true;
+  } else if (fs.existsSync(specLiteFile)) {
     specLite = fs.readFileSync(specLiteFile, 'utf8');
   }
 
@@ -493,8 +503,8 @@ Path: \`${current}\`
 
   if (stale) {
     content += `
-**WARNING: spec.md has been modified since spec-lite.md was generated.**
-Run \`kspec refresh\` to update spec-lite.md with latest changes.
+**NOTE: spec.md was modified. Using spec.md directly for context.**
+Run \`kspec refresh\` to generate optimized spec-lite.md summary.
 
 `;
   } else {
@@ -1230,31 +1240,46 @@ Report:
       return;
     }
 
+    // Read the current spec.md content
+    const specContent = fs.readFileSync(specFile, 'utf8');
+
     log(`Refreshing spec-lite.md from ${folder}/spec.md...`);
 
-    await chat(`Regenerate spec-lite.md from the updated spec.md.
+    await chat(`URGENT: Regenerate spec-lite.md NOW.
 
-Spec folder: ${folder}
+TARGET FILE: ${specLiteFile}
 
-WORKFLOW:
-1. Read ${specFile} carefully - this is the source of truth
-2. Create a NEW ${specLiteFile} that:
-   - Summarizes ALL key requirements (under 500 words)
-   - Captures the current tech stack and versions
-   - Includes critical constraints and acceptance criteria
-   - Preserves any Jira issue references
-3. This spec-lite.md will be used for context restoration after AI compression
+CURRENT spec.md CONTENT (source of truth):
+---
+${specContent}
+---
 
-IMPORTANT:
-- Read the FULL spec.md before generating spec-lite.md
-- Ensure ALL tech stack details are captured (versions matter!)
-- This replaces the old spec-lite.md completely
+YOUR TASK:
+1. Write a NEW ${specLiteFile} file immediately
+2. Summarize the above spec.md content (under 500 words)
+3. MUST include:
+   - All tech stack with EXACT versions (e.g., Next.js 16+, NOT 14+)
+   - Key requirements and acceptance criteria
+   - Any Jira references
 
-After updating, confirm what changed.`, 'kspec-spec');
+DO THIS NOW:
+- Use your write tool to create ${specLiteFile}
+- Copy the tech stack details EXACTLY as shown above
+- Do not read the old spec-lite.md, replace it completely
+
+After writing, show me what you wrote.`, 'kspec-spec');
+
+    // Verify spec-lite.md was updated
+    if (isSpecStale(folder)) {
+      console.log('\n⚠️  spec-lite.md may not have been updated correctly.');
+      console.log('   Please verify the file was written with updated content.\n');
+    } else {
+      log('spec-lite.md updated successfully');
+    }
 
     // Update CONTEXT.md with new spec-lite
     refreshContext();
-    log('Context refreshed with updated spec');
+    log('Context refreshed');
   },
 
   async done(args) {
