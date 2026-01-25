@@ -1225,6 +1225,11 @@ Report:
   },
 
   async refresh(args) {
+    // Parse --force flag
+    const forceIndex = args.indexOf('--force');
+    const force = forceIndex !== -1;
+    if (force) args.splice(forceIndex, 1);
+
     const folder = getOrSelectSpec(args.join(' '));
     const specFile = path.join(folder, 'spec.md');
     const specLiteFile = path.join(folder, 'spec-lite.md');
@@ -1234,7 +1239,7 @@ Report:
     }
 
     const stale = isSpecStale(folder);
-    if (!stale && !args.includes('--force')) {
+    if (!stale && !force) {
       log('spec-lite.md is up to date with spec.md');
       log('Use --force to regenerate anyway');
       return;
