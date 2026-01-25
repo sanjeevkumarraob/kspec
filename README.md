@@ -181,47 +181,29 @@ kspec is designed for team collaboration. Most files should be committed to shar
 
 ### Setting Up MCP for Teams
 
-**Problem**: API tokens should never be committed, but teams need consistent MCP configuration.
+`kspec init` creates `.kiro/mcp.json.template` which uses mcp-remote with OAuth (no API tokens needed):
 
-**Solution**: Use environment variables with a committed template.
+```json
+{
+  "mcpServers": {
+    "atlassian": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/sse"],
+      "timeout": 120000
+    }
+  }
+}
+```
 
-1. Commit a template file (`.kiro/mcp.json.template`):
-   ```json
-   {
-     "mcpServers": {
-       "atlassian": {
-         "command": "npx",
-         "args": ["-y", "@anthropic/mcp-atlassian"],
-         "env": {
-           "ATLASSIAN_HOST": "${ATLASSIAN_HOST}",
-           "ATLASSIAN_EMAIL": "${ATLASSIAN_EMAIL}",
-           "ATLASSIAN_API_TOKEN": "${ATLASSIAN_API_TOKEN}"
-         }
-       }
-     }
-   }
-   ```
+Each team member copies to their settings:
+```bash
+mkdir -p ~/.kiro/settings
+cp .kiro/mcp.json.template ~/.kiro/settings/mcp.json
+```
 
-2. Each team member creates their personal config:
-   ```bash
-   # Copy template to home directory
-   mkdir -p ~/.kiro && chmod 700 ~/.kiro
-   cp .kiro/mcp.json.template ~/.kiro/mcp.json
-   chmod 600 ~/.kiro/mcp.json
+Or add via CLI: `kiro-cli mcp add --name atlassian`
 
-   # Edit with real credentials
-   nano ~/.kiro/mcp.json
-   ```
-
-3. Or use environment variables directly:
-   ```bash
-   # Add to ~/.bashrc or ~/.zshrc
-   export ATLASSIAN_HOST="https://your-domain.atlassian.net"
-   export ATLASSIAN_EMAIL="your-email@example.com"
-   export ATLASSIAN_API_TOKEN="your-api-token"
-   ```
-
-See [SECURITY.md](SECURITY.md) for detailed security best practices.
+See [SECURITY.md](SECURITY.md) for security best practices.
 
 ## Jira Integration
 

@@ -12,7 +12,7 @@ If you discover a security vulnerability in kspec, please report it responsibly:
 
 ### 1. Protect MCP API Tokens
 
-The Atlassian MCP configuration contains sensitive API tokens. These should **never** be committed to version control.
+The modern Atlassian MCP uses OAuth via mcp-remote, so no API tokens are stored in configuration files.
 
 **Setup for Teams:**
 
@@ -23,38 +23,25 @@ The Atlassian MCP configuration contains sensitive API tokens. These should **ne
      "mcpServers": {
        "atlassian": {
          "command": "npx",
-         "args": ["-y", "@anthropic/mcp-atlassian"],
-         "env": {
-           "ATLASSIAN_HOST": "${ATLASSIAN_HOST}",
-           "ATLASSIAN_EMAIL": "${ATLASSIAN_EMAIL}",
-           "ATLASSIAN_API_TOKEN": "${ATLASSIAN_API_TOKEN}"
-         }
+         "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/sse"],
+         "timeout": 120000
        }
      }
    }
    ```
 
-2. Each team member sets environment variables locally:
+2. Each team member copies to their settings directory:
    ```bash
-   # Add to ~/.bashrc, ~/.zshrc, or use a secrets manager
-   export ATLASSIAN_HOST="https://your-domain.atlassian.net"
-   export ATLASSIAN_EMAIL="your-email@example.com"
-   export ATLASSIAN_API_TOKEN="your-api-token"
+   mkdir -p ~/.kiro/settings
+   cp .kiro/mcp.json.template ~/.kiro/settings/mcp.json
    ```
 
-3. Or use the secure local config (never committed):
+3. Or add via CLI:
    ```bash
-   # Create personal config in home directory
-   mkdir -p ~/.kiro
-   chmod 700 ~/.kiro
-
-   # Copy template and fill in real values
-   cp .kiro/mcp.json.template ~/.kiro/mcp.json
-   chmod 600 ~/.kiro/mcp.json
-
-   # Edit with your real credentials
-   nano ~/.kiro/mcp.json
+   kiro-cli mcp add --name atlassian
    ```
+
+Authentication is handled via OAuth when you first use Jira commands.
 
 ### 2. Git Repository Safety
 

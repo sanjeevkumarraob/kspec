@@ -919,7 +919,7 @@ const commands = {
       }
     }
 
-    // Create MCP template (safe to commit, no secrets)
+    // Create MCP template (safe to commit, uses OAuth via mcp-remote)
     const mcpTemplatePath = path.join('.kiro', 'mcp.json.template');
     if (!fs.existsSync(mcpTemplatePath)) {
       ensureDir('.kiro');
@@ -927,17 +927,13 @@ const commands = {
         mcpServers: {
           atlassian: {
             command: 'npx',
-            args: ['-y', '@anthropic/mcp-atlassian'],
-            env: {
-              ATLASSIAN_HOST: '${ATLASSIAN_HOST}',
-              ATLASSIAN_EMAIL: '${ATLASSIAN_EMAIL}',
-              ATLASSIAN_API_TOKEN: '${ATLASSIAN_API_TOKEN}'
-            }
+            args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/sse'],
+            timeout: 120000
           }
         }
       };
       fs.writeFileSync(mcpTemplatePath, JSON.stringify(mcpTemplate, null, 2));
-      log(`Created ${mcpTemplatePath} (commit this, set env vars for secrets)`);
+      log(`Created ${mcpTemplatePath} (commit this, OAuth handles auth)`);
     }
 
     // Update .gitignore for kspec (append if exists, create if not)
