@@ -9,7 +9,10 @@ const STEERING_DIR = '.kiro/steering';
 const AGENTS_DIR = '.kiro/agents';
 const CONFIG_FILE = path.join(KSPEC_DIR, 'config.json');
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
-const KIRO_MCP_CONFIG = path.join(os.homedir(), '.kiro', 'mcp.json');
+const KIRO_MCP_CONFIG_USER = path.join(os.homedir(), '.kiro', 'settings', 'mcp.json');
+const KIRO_MCP_CONFIG_WORKSPACE = path.join('.kiro', 'settings', 'mcp.json');
+// Legacy path for backwards compatibility
+const KIRO_MCP_CONFIG_LEGACY = path.join(os.homedir(), '.kiro', 'mcp.json');
 
 // Default config
 const defaultConfig = {
@@ -95,11 +98,20 @@ async function checkForUpdates() {
 
 // MCP Integration Detection
 function getMcpConfig() {
-  try {
-    if (fs.existsSync(KIRO_MCP_CONFIG)) {
-      return JSON.parse(fs.readFileSync(KIRO_MCP_CONFIG, 'utf8'));
-    }
-  } catch {}
+  // Check in order: workspace, user, legacy
+  const configPaths = [
+    KIRO_MCP_CONFIG_WORKSPACE,
+    KIRO_MCP_CONFIG_USER,
+    KIRO_MCP_CONFIG_LEGACY
+  ];
+
+  for (const configPath of configPaths) {
+    try {
+      if (fs.existsSync(configPath)) {
+        return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+    } catch {}
+  }
   return null;
 }
 
@@ -130,26 +142,24 @@ function requireAtlassianMcp() {
   if (!hasAtlassianMcp()) {
     die(`Atlassian MCP not configured.
 
-To use Jira integration, you need to:
-1. Install the Atlassian MCP server
-2. Configure it in ~/.kiro/mcp.json
+To use Jira integration, configure Atlassian MCP in one of these locations:
+- Workspace: .kiro/settings/mcp.json
+- User: ~/.kiro/settings/mcp.json
 
-Example ~/.kiro/mcp.json:
+Example configuration:
 {
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["-y", "@anthropic/mcp-atlassian"],
-      "env": {
-        "ATLASSIAN_HOST": "https://your-domain.atlassian.net",
-        "ATLASSIAN_EMAIL": "your-email@example.com",
-        "ATLASSIAN_API_TOKEN": "your-api-token"
-      }
+      "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/sse"],
+      "timeout": 120000
     }
   }
 }
 
-Get your API token: https://id.atlassian.com/manage-profile/security/api-tokens`);
+Or run: kiro-cli mcp add --name atlassian
+
+See: https://kiro.dev/docs/cli/mcp/`);
   }
   return getAtlassianMcpName();
 }
@@ -809,8 +819,9 @@ Output: APPROVE / REQUEST_CHANGES with specific issues.`,
     name: 'kspec-jira',
     description: 'Jira integration for specs',
     model: 'claude-sonnet-4',
-    tools: ['read', 'write', 'mcp'],
-    allowedTools: ['read', 'write', 'mcp'],
+    tools: ['read', 'write', '@atlassian'],
+    allowedTools: ['read', 'write', '@atlassian'],
+    includeMcpJson: true,
     resources: [
       'file://.kspec/CONTEXT.md',
       'file://.kiro/steering/**/*.md',

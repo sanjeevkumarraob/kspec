@@ -517,10 +517,11 @@ describe('kspec', () => {
       assert(agentTemplates['kspec-jira.json'], 'Missing kspec-jira agent');
     });
 
-    it('kspec-jira has mcp tool', () => {
+    it('kspec-jira has atlassian mcp access', () => {
       const jiraAgent = agentTemplates['kspec-jira.json'];
-      assert(jiraAgent.tools.includes('mcp'), 'kspec-jira should include mcp tool');
-      assert(jiraAgent.allowedTools.includes('mcp'), 'kspec-jira should allow mcp tool');
+      assert(jiraAgent.tools.includes('@atlassian'), 'kspec-jira should include @atlassian tool');
+      assert(jiraAgent.allowedTools.includes('@atlassian'), 'kspec-jira should allow @atlassian tool');
+      assert(jiraAgent.includeMcpJson === true, 'kspec-jira should have includeMcpJson: true');
     });
 
     it('kspec-jira has correct keyboard shortcut', () => {

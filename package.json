@@ -1,6 +1,6 @@
 {
   "name": "kspec",
-  "version": "1.0.8",
+  "version": "1.0.27",
   "description": "Spec-driven development workflow for Kiro CLI",
   "main": "src/index.js",
   "bin": {
