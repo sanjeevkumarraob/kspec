@@ -661,7 +661,7 @@ WORKFLOW (do this autonomously):
 5. Update .kspec/.current with the spec folder path
 6. Update .kspec/CONTEXT.md with current state
 
-After completion, suggest: "Switch to kspec-tasks agent to generate implementation tasks"`,
+Next step: Run \`/agent swap kspec-tasks\` or \`kspec tasks\` to generate implementation tasks.`,
     keyboardShortcut: 'ctrl+shift+s',
     welcomeMessage: 'Ready to create specification. Describe your feature.'
   },
@@ -693,7 +693,7 @@ WORKFLOW:
 
 Tasks must be atomic and independently verifiable.
 
-After completion, suggest: "Switch to kspec-build agent to start implementing tasks"`,
+Next step: Run \`/agent swap kspec-build\` or \`kspec build\` to start implementing tasks.`,
     keyboardShortcut: 'ctrl+shift+t',
     welcomeMessage: 'Reading current spec and generating tasks...'
   },
@@ -730,7 +730,7 @@ CRITICAL:
 - NEVER delete .kiro or .kspec folders
 - Use non-interactive flags for commands (--yes, -y)
 
-When all tasks complete, suggest: "Switch to kspec-verify agent to verify implementation"`,
+When all tasks complete: Run \`/agent swap kspec-verify\` or \`kspec verify\` to verify implementation.`,
     keyboardShortcut: 'ctrl+shift+b',
     welcomeMessage: 'Reading current task and building...'
   },
@@ -909,7 +909,9 @@ const commands = {
     }
 
     console.log('\n✅ kspec initialized!\n');
-    console.log('Next: kspec analyse');
+    console.log('Next step:');
+    console.log('  kspec analyse');
+    console.log('  or inside kiro-cli: /agent swap kspec-analyse\n');
   },
 
   async analyse() {
@@ -992,6 +994,10 @@ Folder: ${folder}
 
 spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec');
     }
+
+    console.log('\nNext step:');
+    console.log('  kspec tasks');
+    console.log('  or inside kiro-cli: /agent swap kspec-tasks\n');
   },
 
   async 'verify-spec'(args) {
@@ -1140,6 +1146,10 @@ Create ${folder}/tasks.md with:
 - TDD approach (test first)
 - Logical order
 - File paths for each task`, 'kspec-tasks');
+
+    console.log('\nNext step:');
+    console.log('  kspec build');
+    console.log('  or inside kiro-cli: /agent swap kspec-build\n');
   },
 
   async 'verify-tasks'(args) {
@@ -1172,7 +1182,10 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
     log(`Building: ${folder}`);
     if (stats) {
       if (stats.remaining === 0) {
-        log('All tasks completed! Run: kspec verify');
+        log('All tasks completed!');
+        console.log('\nNext step:');
+        console.log('  kspec verify');
+        console.log('  or inside kiro-cli: /agent swap kspec-verify\n');
         return;
       }
       log(`Progress: ${stats.done}/${stats.total} (${stats.remaining} remaining)`);
@@ -1197,6 +1210,18 @@ ${execNote}
 
 CRITICAL: Update tasks.md after each task completion.
 NEVER delete .kiro or .kspec folders.`, 'kspec-build');
+
+    // Show next step based on remaining tasks
+    const updatedStats = getTaskStats(folder);
+    if (updatedStats && updatedStats.remaining === 0) {
+      console.log('\nAll tasks completed!');
+      console.log('Next step:');
+      console.log('  kspec verify');
+      console.log('  or inside kiro-cli: /agent swap kspec-verify\n');
+    } else if (updatedStats && updatedStats.remaining > 0) {
+      console.log(`\n${updatedStats.remaining} tasks remaining.`);
+      console.log('Continue: kspec build\n');
+    }
   },
 
   async verify(args) {
@@ -1222,6 +1247,9 @@ Report:
 - Tasks: X/Y completed
 - Tests: PASS/FAIL
 - Gaps: [list any]`, 'kspec-verify');
+
+    console.log('\nIf verification passed:');
+    console.log('  kspec done  (to complete spec and harvest learnings)\n');
   },
 
   async refresh(args) {
@@ -1368,15 +1396,23 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
       if (stats) {
         console.log(`Tasks: ${stats.done}/${stats.total} completed`);
         if (stats.remaining > 0) {
-          console.log(`\nNext: kspec build`);
+          console.log(`\nNext step:`);
+          console.log(`  kspec build`);
+          console.log(`  or inside kiro-cli: /agent swap kspec-build`);
         } else {
-          console.log(`\nNext: kspec verify`);
+          console.log(`\nNext step:`);
+          console.log(`  kspec verify`);
+          console.log(`  or inside kiro-cli: /agent swap kspec-verify`);
         }
       } else {
-        console.log(`\nNext: kspec tasks`);
+        console.log(`\nNext step:`);
+        console.log(`  kspec tasks`);
+        console.log(`  or inside kiro-cli: /agent swap kspec-tasks`);
       }
     } else {
-      console.log(`\nNo current spec. Run: kspec spec "Feature Name"`);
+      console.log(`\nNo current spec.`);
+      console.log(`  kspec spec "Feature Name"`);
+      console.log(`  or inside kiro-cli: /agent swap kspec-spec`);
     }
     console.log('');
   },
