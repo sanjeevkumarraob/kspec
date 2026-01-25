@@ -908,6 +908,52 @@ const commands = {
       }
     }
 
+    // Create MCP template (safe to commit, no secrets)
+    const mcpTemplatePath = path.join('.kiro', 'mcp.json.template');
+    if (!fs.existsSync(mcpTemplatePath)) {
+      ensureDir('.kiro');
+      const mcpTemplate = {
+        mcpServers: {
+          atlassian: {
+            command: 'npx',
+            args: ['-y', '@anthropic/mcp-atlassian'],
+            env: {
+              ATLASSIAN_HOST: '${ATLASSIAN_HOST}',
+              ATLASSIAN_EMAIL: '${ATLASSIAN_EMAIL}',
+              ATLASSIAN_API_TOKEN: '${ATLASSIAN_API_TOKEN}'
+            }
+          }
+        }
+      };
+      fs.writeFileSync(mcpTemplatePath, JSON.stringify(mcpTemplate, null, 2));
+      log(`Created ${mcpTemplatePath} (commit this, set env vars for secrets)`);
+    }
+
+    // Update .gitignore for kspec (append if exists, create if not)
+    const kspecGitignore = `
+# kspec local state (don't commit - personal working state)
+.kspec/.current
+.kspec/CONTEXT.md
+
+# DO commit these for team collaboration:
+# .kspec/config.json - project preferences
+# .kspec/specs/ - specifications, tasks, memory
+# .kiro/steering/ - product, tech, testing guidelines
+# .kiro/agents/ - agent configurations
+# .kiro/mcp.json.template - MCP template (no secrets)
+`;
+    const gitignorePath = '.gitignore';
+    if (fs.existsSync(gitignorePath)) {
+      const existing = fs.readFileSync(gitignorePath, 'utf8');
+      if (!existing.includes('.kspec/.current')) {
+        fs.appendFileSync(gitignorePath, kspecGitignore);
+        log('Updated .gitignore with kspec entries');
+      }
+    } else {
+      fs.writeFileSync(gitignorePath, kspecGitignore.trim() + '\n');
+      log('Created .gitignore with kspec entries');
+    }
+
     console.log('\n✅ kspec initialized!\n');
     console.log('Next step:');
     console.log('  kspec analyse');

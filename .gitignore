@@ -1,6 +1,17 @@
 node_modules/
-.kspec/
-.kiro/
 *.log
 .DS_Store
 coverage/
+
+# kspec local state (don't commit - personal working state)
+.kspec/.current
+.kspec/CONTEXT.md
+
+# DO commit these for team collaboration:
+# .kspec/config.json - project preferences
+# .kspec/specs/ - specifications, tasks, memory
+# .kiro/steering/ - product, tech, testing guidelines
+# .kiro/agents/ - agent configurations
+
+# MCP secrets template (commit template, not actual secrets)
+# Use .kiro/mcp.json.template and environment variables
