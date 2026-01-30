@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions, hasAtlassianMcp, getMcpConfig;
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, compareVersions, hasAtlassianMcp, getMcpConfig } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig } = require('../src/index.js'));
   });
 
   after(() => {
@@ -242,6 +242,43 @@ describe('kspec', () => {
     });
   });
 
+  describe('getCurrentSpec', () => {
+    it('returns null when no .current file', () => {
+      const currentFile = path.join('.kspec', '.current');
+      if (fs.existsSync(currentFile)) fs.unlinkSync(currentFile);
+
+      const result = getCurrentSpec();
+      assert.strictEqual(result, null);
+    });
+
+    it('handles full path format', () => {
+      const specFolder = path.join('.kspec', 'specs', '2026-01-25-full-path-test');
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(path.join('.kspec', '.current'), specFolder);
+
+      const result = getCurrentSpec();
+      assert.strictEqual(result, specFolder);
+    });
+
+    it('handles just folder name (agent mode)', () => {
+      const specName = '2026-01-25-agent-mode-test';
+      const specFolder = path.join('.kspec', 'specs', specName);
+      fs.mkdirSync(specFolder, { recursive: true });
+      // Agent mode writes just the folder name
+      fs.writeFileSync(path.join('.kspec', '.current'), specName);
+
+      const result = getCurrentSpec();
+      assert.strictEqual(result, specFolder);
+    });
+
+    it('returns null for non-existent spec', () => {
+      fs.writeFileSync(path.join('.kspec', '.current'), 'non-existent-spec-folder');
+
+      const result = getCurrentSpec();
+      assert.strictEqual(result, null);
+    });
+  });
+
   describe('refreshContext', () => {
     it('creates CONTEXT.md with no active spec', () => {
       // Clear any existing .current file
@@ -376,6 +413,93 @@ describe('kspec', () => {
     });
   });
 
+  describe('slugify', () => {
+    let slugify;
+
+    before(() => {
+      ({ slugify } = require('../src/index.js'));
+    });
+
+    it('extracts todo from "to do"', () => {
+      const result = slugify('Create a to do application');
+      assert(result.includes('todo'), `Expected "todo" in "${result}"`);
+    });
+
+    it('prioritizes tech terms', () => {
+      const result = slugify('Build app with nextjs and shadcn');
+      assert(result.includes('nextjs') || result.includes('shadcn'), `Expected tech terms in "${result}"`);
+    });
+
+    it('removes filler words', () => {
+      const result = slugify('Create a simple application using React');
+      assert(!result.includes('create'), `Should not contain "create" in "${result}"`);
+      assert(!result.includes('simple'), `Should not contain "simple" in "${result}"`);
+      assert(!result.includes('using'), `Should not contain "using" in "${result}"`);
+    });
+
+    it('handles e-commerce', () => {
+      const result = slugify('Build e-commerce cart');
+      assert(result.includes('ecommerce'), `Expected "ecommerce" in "${result}"`);
+    });
+
+    it('returns feature for empty input', () => {
+      const result = slugify('');
+      assert.strictEqual(result, 'feature');
+    });
+
+    it('produces meaningful names', () => {
+      const result = slugify('Create a to do application using nextjs and shadcn');
+      assert.strictEqual(result, 'todo-nextjs-shadcn');
+    });
+  });
+
+  describe('isSpecStale', () => {
+    let isSpecStale;
+
+    before(() => {
+      ({ isSpecStale } = require('../src/index.js'));
+    });
+
+    it('returns false when no spec.md', () => {
+      const folder = path.join('.kspec', 'specs', 'no-spec-test');
+      fs.mkdirSync(folder, { recursive: true });
+      const result = isSpecStale(folder);
+      assert.strictEqual(result, false);
+    });
+
+    it('returns true when no spec-lite.md', () => {
+      const folder = path.join('.kspec', 'specs', 'no-spec-lite-test');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec');
+      const result = isSpecStale(folder);
+      assert.strictEqual(result, true);
+    });
+
+    it('returns false when spec-lite is newer', () => {
+      const folder = path.join('.kspec', 'specs', 'spec-lite-newer');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec');
+      // Wait a bit to ensure different mtime
+      const now = new Date();
+      fs.utimesSync(path.join(folder, 'spec.md'), now, new Date(now.getTime() - 10000));
+      fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Spec Lite');
+      const result = isSpecStale(folder);
+      assert.strictEqual(result, false);
+    });
+
+    it('returns true when spec.md is newer', () => {
+      const folder = path.join('.kspec', 'specs', 'spec-newer');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Spec Lite');
+      // Wait a bit to ensure different mtime
+      const now = new Date();
+      fs.utimesSync(path.join(folder, 'spec-lite.md'), now, new Date(now.getTime() - 10000));
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec Updated');
+      const result = isSpecStale(folder);
+      assert.strictEqual(result, true);
+    });
+  });
+
   describe('MCP detection', () => {
     it('hasAtlassianMcp returns boolean', () => {
       const result = hasAtlassianMcp();
@@ -393,10 +517,11 @@ describe('kspec', () => {
       assert(agentTemplates['kspec-jira.json'], 'Missing kspec-jira agent');
     });
 
-    it('kspec-jira has mcp tool', () => {
+    it('kspec-jira has atlassian mcp access', () => {
       const jiraAgent = agentTemplates['kspec-jira.json'];
-      assert(jiraAgent.tools.includes('mcp'), 'kspec-jira should include mcp tool');
-      assert(jiraAgent.allowedTools.includes('mcp'), 'kspec-jira should allow mcp tool');
+      assert(jiraAgent.tools.includes('@atlassian'), 'kspec-jira should include @atlassian tool');
+      assert(jiraAgent.allowedTools.includes('@atlassian'), 'kspec-jira should allow @atlassian tool');
+      assert(jiraAgent.includeMcpJson === true, 'kspec-jira should have includeMcpJson: true');
     });
 
     it('kspec-jira has correct keyboard shortcut', () => {

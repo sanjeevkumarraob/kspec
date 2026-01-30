@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test:*)",
+      "WebFetch(domain:kiro.dev)",
+      "Bash(node -e:*)",
+      "Bash(node -p:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix requireCli infinite recursion and align agents with Kiro CLI format\n\n- Fix: requireCli\\(\\) was calling itself instead of detectCli\\(\\), causing\n  \"Maximum call stack size exceeded\" error on all chat commands\n- Update agent templates to use Kiro CLI standard format:\n  - Add model field \\(claude-sonnet-4\\)\n  - Add resources field with file:// protocol for steering files\n  - Add tools array \\(available tools\\)\n  - Keep allowedTools \\(pre-approved tools\\)\n  - Remove non-standard toolsSettings\n- Export detectCli, requireCli, agentTemplates for testing\n- Add tests for CLI detection, stack overflow prevention, and agent format\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "WebSearch",
+      "WebFetch(domain:unsplash.com)",
+      "Bash(git checkout:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(gh pr view:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(npm publish)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(npm view:*)"
+    ]
+  }
+}

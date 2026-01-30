@@ -9,7 +9,10 @@ const STEERING_DIR = '.kiro/steering';
 const AGENTS_DIR = '.kiro/agents';
 const CONFIG_FILE = path.join(KSPEC_DIR, 'config.json');
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
-const KIRO_MCP_CONFIG = path.join(os.homedir(), '.kiro', 'mcp.json');
+const KIRO_MCP_CONFIG_USER = path.join(os.homedir(), '.kiro', 'settings', 'mcp.json');
+const KIRO_MCP_CONFIG_WORKSPACE = path.join('.kiro', 'settings', 'mcp.json');
+// Legacy path for backwards compatibility
+const KIRO_MCP_CONFIG_LEGACY = path.join(os.homedir(), '.kiro', 'mcp.json');
 
 // Default config
 const defaultConfig = {
@@ -95,11 +98,20 @@ async function checkForUpdates() {
 
 // MCP Integration Detection
 function getMcpConfig() {
-  try {
-    if (fs.existsSync(KIRO_MCP_CONFIG)) {
-      return JSON.parse(fs.readFileSync(KIRO_MCP_CONFIG, 'utf8'));
-    }
-  } catch {}
+  // Check in order: workspace, user, legacy
+  const configPaths = [
+    KIRO_MCP_CONFIG_WORKSPACE,
+    KIRO_MCP_CONFIG_USER,
+    KIRO_MCP_CONFIG_LEGACY
+  ];
+
+  for (const configPath of configPaths) {
+    try {
+      if (fs.existsSync(configPath)) {
+        return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+    } catch {}
+  }
   return null;
 }
 
@@ -130,26 +142,24 @@ function requireAtlassianMcp() {
   if (!hasAtlassianMcp()) {
     die(`Atlassian MCP not configured.
 
-To use Jira integration, you need to:
-1. Install the Atlassian MCP server
-2. Configure it in ~/.kiro/mcp.json
+To use Jira integration, configure Atlassian MCP in one of these locations:
+- Workspace: .kiro/settings/mcp.json
+- User: ~/.kiro/settings/mcp.json
 
-Example ~/.kiro/mcp.json:
+Example configuration:
 {
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["-y", "@anthropic/mcp-atlassian"],
-      "env": {
-        "ATLASSIAN_HOST": "https://your-domain.atlassian.net",
-        "ATLASSIAN_EMAIL": "your-email@example.com",
-        "ATLASSIAN_API_TOKEN": "your-api-token"
-      }
+      "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/sse"],
+      "timeout": 120000
     }
   }
 }
 
-Get your API token: https://id.atlassian.com/manage-profile/security/api-tokens`);
+Or run: kiro-cli mcp add --name atlassian
+
+See: https://kiro.dev/docs/cli/mcp/`);
   }
   return getAtlassianMcpName();
 }
@@ -167,25 +177,71 @@ function formatDate(format) {
 }
 
 function slugify(text) {
-  // Extract key words and create a meaningful short identifier
-  const words = text.toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ') // Replace non-alphanumeric with spaces
-    .split(/\s+/)
-    .filter(word => word.length > 2) // Remove short words
-    .filter(word => !['the', 'and', 'for', 'with', 'app', 'web', 'api'].includes(word)); // Remove common words
-  
-  // Take first 3-4 meaningful words and truncate to max 25 chars total
-  let slug = words.slice(0, 4).join('-');
-  if (slug.length > 25) {
-    slug = words.slice(0, 3).join('-');
+  // Filler words to remove (action verbs, articles, prepositions, generic terms)
+  const fillerWords = new Set([
+    'a', 'an', 'the', 'and', 'or', 'but', 'for', 'with', 'using', 'via',
+    'create', 'build', 'make', 'implement', 'add', 'develop', 'write',
+    'application', 'app', 'system', 'feature', 'functionality', 'module',
+    'that', 'this', 'which', 'will', 'should', 'can', 'could', 'would',
+    'new', 'simple', 'basic', 'full', 'complete'
+  ]);
+
+  // Tech terms to prioritize (frameworks, libraries, tools)
+  const techTerms = new Set([
+    'react', 'nextjs', 'next', 'vue', 'angular', 'svelte', 'node', 'express',
+    'typescript', 'javascript', 'python', 'rust', 'go', 'java',
+    'tailwind', 'shadcn', 'prisma', 'drizzle', 'supabase', 'firebase',
+    'postgres', 'mysql', 'mongodb', 'redis', 'graphql', 'rest', 'trpc',
+    'docker', 'kubernetes', 'aws', 'vercel', 'netlify'
+  ]);
+
+  // Normalize text: handle "to do" -> "todo", lowercase, clean
+  let normalized = text.toLowerCase()
+    .replace(/to\s*do/g, 'todo')
+    .replace(/e[\s-]?commerce/g, 'ecommerce')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const words = normalized.split(' ').filter(w => w.length > 0);
+
+  // Separate into tech terms and other meaningful words
+  const tech = [];
+  const meaningful = [];
+
+  for (const word of words) {
+    if (fillerWords.has(word)) continue;
+    if (techTerms.has(word)) {
+      tech.push(word);
+    } else if (word.length > 2) {
+      meaningful.push(word);
+    }
   }
-  if (slug.length > 25) {
-    slug = words.slice(0, 2).join('-');
+
+  // Prioritize: first meaningful word + tech terms (max 3-4 words total)
+  const selected = [];
+  if (meaningful.length > 0) selected.push(meaningful[0]);
+  selected.push(...tech.slice(0, 2));
+  if (selected.length < 3 && meaningful.length > 1) {
+    selected.push(meaningful[1]);
   }
-  if (slug.length > 25) {
-    slug = slug.slice(0, 25);
+
+  // Fallback if nothing meaningful
+  if (selected.length === 0) {
+    const fallback = words.filter(w => w.length > 2).slice(0, 2);
+    selected.push(...fallback);
   }
-  
+
+  let slug = selected.join('-');
+
+  // Truncate if still too long
+  if (slug.length > 30) {
+    slug = selected.slice(0, 2).join('-');
+  }
+  if (slug.length > 30) {
+    slug = slug.slice(0, 30);
+  }
+
   return slug.replace(/^-+|-+$/g, '') || 'feature';
 }
 
@@ -200,6 +256,49 @@ function requireCli() {
   const cli = detectCli();
   if (!cli) die("Neither 'kiro-cli' nor 'q' found. Install Kiro CLI first.");
   return cli;
+}
+
+// Generate meaningful slug using LLM, fallback to regex
+async function generateSlug(featureName) {
+  const cli = detectCli();
+  if (!cli) {
+    return slugify(featureName);
+  }
+
+  try {
+    const prompt = `Generate a short folder name (2-4 words, lowercase, hyphenated) for this feature: "${featureName}"
+
+Rules:
+- Extract the core concept (e.g., "todo app", "user auth", "shopping cart")
+- Include key tech if mentioned (e.g., "nextjs", "react")
+- No filler words (create, build, implement, application)
+- Max 30 characters
+- Only lowercase letters, numbers, hyphens
+
+Reply with ONLY the folder name, nothing else. Example: todo-nextjs-shadcn`;
+
+    const result = execSync(`${cli} chat "${prompt.replace(/"/g, '\\"')}" --no-interactive 2>/dev/null`, {
+      encoding: 'utf8',
+      timeout: 15000,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    // Extract just the slug from response (first line that looks like a slug)
+    const lines = result.trim().split('\n');
+    for (const line of lines) {
+      const cleaned = line.trim().toLowerCase();
+      // Valid slug: only lowercase, numbers, hyphens, 3-30 chars
+      if (/^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/.test(cleaned) && !cleaned.includes(' ')) {
+        return cleaned;
+      }
+    }
+
+    // If no valid slug found, fallback
+    return slugify(featureName);
+  } catch {
+    // CLI failed, use regex fallback
+    return slugify(featureName);
+  }
 }
 
 async function prompt(question, choices) {
@@ -248,7 +347,17 @@ function getCurrentSpec() {
   const file = path.join(KSPEC_DIR, '.current');
   if (fs.existsSync(file)) {
     const spec = fs.readFileSync(file, 'utf8').trim();
+    // Handle full path format
     if (fs.existsSync(spec)) return spec;
+    // Handle just folder name (from agent mode)
+    const fullPath = path.join(getSpecsDir(), spec);
+    if (fs.existsSync(fullPath)) return fullPath;
+    // Handle folder name without date prefix - find matching spec
+    const specsDir = getSpecsDir();
+    if (fs.existsSync(specsDir)) {
+      const match = fs.readdirSync(specsDir).find(d => d.includes(spec) || spec.includes(d));
+      if (match) return path.join(specsDir, match);
+    }
   }
   return null;
 }
@@ -312,6 +421,34 @@ function getCurrentTask(folder) {
   return null;
 }
 
+// Check if spec.md has been modified after spec-lite.md
+function isSpecStale(folder) {
+  const specFile = path.join(folder, 'spec.md');
+  const specLiteFile = path.join(folder, 'spec-lite.md');
+
+  if (!fs.existsSync(specFile)) return false;
+  if (!fs.existsSync(specLiteFile)) return true; // No spec-lite means stale
+
+  const specMtime = fs.statSync(specFile).mtime;
+  const specLiteMtime = fs.statSync(specLiteFile).mtime;
+
+  return specMtime > specLiteMtime;
+}
+
+// Check staleness and prompt user before proceeding
+async function checkStaleness(folder) {
+  if (!isSpecStale(folder)) return true; // Not stale, proceed
+
+  console.log('\n⚠️  spec.md has been modified since spec-lite.md was generated.');
+  console.log('   This may cause outdated information to be used.\n');
+  console.log('   Options:');
+  console.log('   1. Run `kspec refresh` to update spec-lite.md first (recommended)');
+  console.log('   2. Continue anyway with potentially stale context\n');
+
+  const proceed = await confirm('Continue with potentially stale spec?');
+  return proceed;
+}
+
 function refreshContext() {
   const contextFile = path.join(KSPEC_DIR, 'CONTEXT.md');
   const current = getCurrentSpec();
@@ -330,11 +467,22 @@ No active spec. Run: \`kspec spec "Feature Name"\`
   const specName = path.basename(current);
   const stats = getTaskStats(current);
   const currentTask = getCurrentTask(current);
+  const stale = isSpecStale(current);
 
-  // Read spec-lite if exists
+  // Read spec-lite if exists, or fall back to spec.md if stale
   const specLiteFile = path.join(current, 'spec-lite.md');
+  const specFile = path.join(current, 'spec.md');
   let specLite = '';
-  if (fs.existsSync(specLiteFile)) {
+  let usingSpecFallback = false;
+
+  if (stale && fs.existsSync(specFile)) {
+    // Use spec.md directly when stale (truncate if too long)
+    const specContent = fs.readFileSync(specFile, 'utf8');
+    specLite = specContent.length > 3000
+      ? specContent.slice(0, 3000) + '\n\n... (truncated, run `kspec refresh` for full summary)'
+      : specContent;
+    usingSpecFallback = true;
+  } else if (fs.existsSync(specLiteFile)) {
     specLite = fs.readFileSync(specLiteFile, 'utf8');
   }
 
@@ -361,8 +509,17 @@ No active spec. Run: \`kspec spec "Feature Name"\`
 ## Current Spec
 **${specName}**
 Path: \`${current}\`
+`;
+
+  if (stale) {
+    content += `
+**NOTE: spec.md was modified. Using spec.md directly for context.**
+Run \`kspec refresh\` to generate optimized spec-lite.md summary.
 
 `;
+  } else {
+    content += '\n';
+  }
 
   if (stats) {
     content += `## Progress
@@ -508,13 +665,14 @@ WORKFLOW (do this autonomously):
    - Constraints
    - High-level design
    - Acceptance criteria
+   - Contract (JSON block with output_files and checks)
 4. Create spec-lite.md (CRITICAL - under 500 words):
    - Concise version for context retention after compression
    - Key requirements only
 5. Update .kspec/.current with the spec folder path
 6. Update .kspec/CONTEXT.md with current state
 
-After completion, suggest: "Switch to kspec-tasks agent to generate implementation tasks"`,
+Next step: Run \`/agent swap kspec-tasks\` or \`kspec tasks\` to generate implementation tasks.`,
     keyboardShortcut: 'ctrl+shift+s',
     welcomeMessage: 'Ready to create specification. Describe your feature.'
   },
@@ -546,7 +704,7 @@ WORKFLOW:
 
 Tasks must be atomic and independently verifiable.
 
-After completion, suggest: "Switch to kspec-build agent to start implementing tasks"`,
+Next step: Run \`/agent swap kspec-build\` or \`kspec build\` to start implementing tasks.`,
     keyboardShortcut: 'ctrl+shift+t',
     welcomeMessage: 'Reading current spec and generating tasks...'
   },
@@ -583,7 +741,7 @@ CRITICAL:
 - NEVER delete .kiro or .kspec folders
 - Use non-interactive flags for commands (--yes, -y)
 
-When all tasks complete, suggest: "Switch to kspec-verify agent to verify implementation"`,
+When all tasks complete: Run \`/agent swap kspec-verify\` or \`kspec verify\` to verify implementation.`,
     keyboardShortcut: 'ctrl+shift+b',
     welcomeMessage: 'Reading current task and building...'
   },
@@ -602,6 +760,8 @@ When all tasks complete, suggest: "Switch to kspec-verify agent to verify implem
     prompt: `You are the kspec verifier.
 
 FIRST: Read .kspec/CONTEXT.md for current spec and progress.
+If contract validation results are provided, verify they match your observations.
+
 
 Based on what you're asked to verify:
 
@@ -662,8 +822,9 @@ Output: APPROVE / REQUEST_CHANGES with specific issues.`,
     name: 'kspec-jira',
     description: 'Jira integration for specs',
     model: 'claude-sonnet-4',
-    tools: ['read', 'write', 'mcp'],
-    allowedTools: ['read', 'write', 'mcp'],
+    tools: ['read', 'write', '@atlassian'],
+    allowedTools: ['read', 'write', '@atlassian'],
+    includeMcpJson: true,
     resources: [
       'file://.kspec/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
@@ -711,6 +872,95 @@ IMPORTANT:
     welcomeMessage: 'Jira integration ready. Provide issue keys to pull, or say "sync" to push spec to Jira.'
   }
 };
+
+function validateContract(folder) {
+  const specFile = path.join(folder, 'spec.md');
+  if (!fs.existsSync(specFile)) return { success: true, checks: [], errors: [] };
+
+  const content = fs.readFileSync(specFile, 'utf8');
+  // Extract JSON block from ## Contract section
+  const match = content.match(/## Contract\s+```json\n([\s\S]*?)\n```/);
+  
+  if (!match) return { success: true, checks: [], errors: [] };
+
+  let contract;
+  try {
+    // Strip comments to allow user annotations
+    const jsonStr = match[1].replace(/\/\/.*$/gm, '');
+    contract = JSON.parse(jsonStr);
+  } catch (e) {
+    return { success: false, checks: [], errors: ['Invalid JSON in Contract section'] };
+  }
+
+  const errors = [];
+  const checks = [];
+
+  // Check API Schema
+  if (contract.api_schema) {
+    if (contract.api_schema.file) {
+      if (!fs.existsSync(contract.api_schema.file)) {
+        errors.push(`Missing API Schema file: ${contract.api_schema.file}`);
+      } else {
+        checks.push(`API Schema exists: ${contract.api_schema.file}`);
+        // Basic parse check if JSON/YAML
+        if (contract.api_schema.file.endsWith('.json')) {
+          try {
+            JSON.parse(fs.readFileSync(contract.api_schema.file, 'utf8'));
+            checks.push(`API Schema is valid JSON`);
+          } catch {
+            errors.push(`API Schema is invalid JSON`);
+          }
+        }
+      }
+    }
+  }
+
+  // Check output files
+  if (contract.output_files) {
+    for (const file of contract.output_files) {
+      if (!fs.existsSync(file)) {
+        errors.push(`Missing required file: ${file}`);
+      } else {
+        checks.push(`File exists: ${file}`);
+      }
+    }
+  }
+
+  // Check custom checks
+  if (contract.checks) {
+    for (const check of contract.checks) {
+      if (!check.file || !check.type || !check.text) continue;
+      
+      const filePath = check.file;
+      if (!fs.existsSync(filePath)) {
+        errors.push(`Check failed: File not found ${filePath}`);
+        continue;
+      }
+
+      const fileContent = fs.readFileSync(filePath, 'utf8');
+      
+      if (check.type === 'contains') {
+        if (!fileContent.includes(check.text)) {
+          errors.push(`Check failed: ${filePath} should contain "${check.text}"`);
+        } else {
+          checks.push(`Content match: ${filePath} contains text`);
+        }
+      } else if (check.type === 'not_contains') {
+        if (fileContent.includes(check.text)) {
+          errors.push(`Check failed: ${filePath} should NOT contain "${check.text}"`);
+        } else {
+          checks.push(`Content check: ${filePath} does not contain text`);
+        }
+      }
+    }
+  }
+
+  return {
+    success: errors.length === 0,
+    errors,
+    checks
+  };
+}
 
 // Commands
 const commands = {
@@ -761,7 +1011,7 @@ const commands = {
       }
     }
 
-    // Create MCP template (safe to commit, no secrets)
+    // Create MCP template (safe to commit, uses OAuth via mcp-remote)
     const mcpTemplatePath = path.join('.kiro', 'mcp.json.template');
     if (!fs.existsSync(mcpTemplatePath)) {
       ensureDir('.kiro');
@@ -769,17 +1019,13 @@ const commands = {
         mcpServers: {
           atlassian: {
             command: 'npx',
-            args: ['-y', '@anthropic/mcp-atlassian'],
-            env: {
-              ATLASSIAN_HOST: '${ATLASSIAN_HOST}',
-              ATLASSIAN_EMAIL: '${ATLASSIAN_EMAIL}',
-              ATLASSIAN_API_TOKEN: '${ATLASSIAN_API_TOKEN}'
-            }
+            args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/sse'],
+            timeout: 120000
           }
         }
       };
       fs.writeFileSync(mcpTemplatePath, JSON.stringify(mcpTemplate, null, 2));
-      log(`Created ${mcpTemplatePath} (commit this, set env vars for secrets)`);
+      log(`Created ${mcpTemplatePath} (commit this, OAuth handles auth)`);
     }
 
     // Update .gitignore for kspec (append if exists, create if not)
@@ -808,7 +1054,9 @@ const commands = {
     }
 
     console.log('\n✅ kspec initialized!\n');
-    console.log('Next: kspec analyse');
+    console.log('Next step:');
+    console.log('  kspec analyse');
+    console.log('  or inside kiro-cli: /agent swap kspec-analyse\n');
   },
 
   async analyse() {
@@ -847,7 +1095,10 @@ Update steering docs as needed.`, 'kspec-analyse');
 
     const date = formatDate(config.dateFormat || 'YYYY-MM-DD');
     const featureName = feature || `jira-${jiraIssues.split(',')[0].toLowerCase()}`;
-    const folder = path.join(getSpecsDir(), `${date}-${slugify(featureName)}`);
+
+    log('Generating spec folder name...');
+    const slug = await generateSlug(featureName);
+    const folder = path.join(getSpecsDir(), `${date}-${slug}`);
     ensureDir(folder);
     setCurrentSpec(folder);
 
@@ -888,6 +1139,10 @@ Folder: ${folder}
 
 spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec');
     }
+
+    console.log('\nNext step:');
+    console.log('  kspec tasks');
+    console.log('  or inside kiro-cli: /agent swap kspec-tasks\n');
   },
 
   async 'verify-spec'(args) {
@@ -1021,6 +1276,9 @@ Report created subtasks with their URLs.`, 'kspec-jira');
 
   async tasks(args) {
     const folder = getOrSelectSpec(args.join(' '));
+
+    if (!await checkStaleness(folder)) return;
+
     log(`Generating tasks: ${folder}`);
 
     await chat(`Generate tasks from specification.
@@ -1033,12 +1291,19 @@ Create ${folder}/tasks.md with:
 - TDD approach (test first)
 - Logical order
 - File paths for each task`, 'kspec-tasks');
+
+    console.log('\nNext step:');
+    console.log('  kspec build');
+    console.log('  or inside kiro-cli: /agent swap kspec-build\n');
   },
 
   async 'verify-tasks'(args) {
     const folder = getOrSelectSpec(args.join(' '));
+
+    if (!await checkStaleness(folder)) return;
+
     const stats = getTaskStats(folder);
-    
+
     log(`Verifying tasks: ${folder}`);
     if (stats) log(`Progress: ${stats.done}/${stats.total} tasks completed`);
 
@@ -1054,12 +1319,18 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
 
   async build(args) {
     const folder = getOrSelectSpec(args.join(' '));
+
+    if (!await checkStaleness(folder)) return;
+
     const stats = getTaskStats(folder);
 
     log(`Building: ${folder}`);
     if (stats) {
       if (stats.remaining === 0) {
-        log('All tasks completed! Run: kspec verify');
+        log('All tasks completed!');
+        console.log('\nNext step:');
+        console.log('  kspec verify');
+        console.log('  or inside kiro-cli: /agent swap kspec-verify\n');
         return;
       }
       log(`Progress: ${stats.done}/${stats.total} (${stats.remaining} remaining)`);
@@ -1084,16 +1355,44 @@ ${execNote}
 
 CRITICAL: Update tasks.md after each task completion.
 NEVER delete .kiro or .kspec folders.`, 'kspec-build');
+
+    // Show next step based on remaining tasks
+    const updatedStats = getTaskStats(folder);
+    if (updatedStats && updatedStats.remaining === 0) {
+      console.log('\nAll tasks completed!');
+      console.log('Next step:');
+      console.log('  kspec verify');
+      console.log('  or inside kiro-cli: /agent swap kspec-verify\n');
+    } else if (updatedStats && updatedStats.remaining > 0) {
+      console.log(`\n${updatedStats.remaining} tasks remaining.`);
+      console.log('Continue: kspec build\n');
+    }
   },
 
   async verify(args) {
     const folder = getOrSelectSpec(args.join(' '));
+
+    if (!await checkStaleness(folder)) return;
+
     const stats = getTaskStats(folder);
 
     log(`Verifying implementation: ${folder}`);
     if (stats) log(`Tasks: ${stats.done}/${stats.total}`);
 
+    // Verify contract if exists
+    console.log('Validating contract...');
+    const contractResult = validateContract(folder);
+    if (!contractResult.success) {
+      console.log('\n❌ Contract checks failed:');
+      contractResult.errors.forEach(e => console.log(`  - ${e}`));
+    } else if (contractResult.checks.length > 0) {
+      console.log('✅ Contract checks passed');
+    }
+
     await chat(`Verify implementation for ${folder}:
+
+CONTRACT VALIDATION RESULTS:
+${JSON.stringify(contractResult, null, 2)}
 
 1. Read spec.md - list all requirements
 2. Read tasks.md - check all marked [x]
@@ -1103,9 +1402,76 @@ NEVER delete .kiro or .kspec folders.`, 'kspec-build');
 
 Report:
 - Requirements: X/Y implemented
-- Tasks: X/Y completed  
+- Tasks: X/Y completed
 - Tests: PASS/FAIL
+- Contract: ${contractResult.success ? 'PASS' : 'FAIL'}
 - Gaps: [list any]`, 'kspec-verify');
+
+    console.log('\nIf verification passed:');
+    console.log('  kspec done  (to complete spec and harvest learnings)\n');
+  },
+
+  async refresh(args) {
+    // Parse --force flag
+    const forceIndex = args.indexOf('--force');
+    const force = forceIndex !== -1;
+    if (force) args.splice(forceIndex, 1);
+
+    const folder = getOrSelectSpec(args.join(' '));
+    const specFile = path.join(folder, 'spec.md');
+    const specLiteFile = path.join(folder, 'spec-lite.md');
+
+    if (!fs.existsSync(specFile)) {
+      die(`No spec.md found in ${folder}`);
+    }
+
+    const stale = isSpecStale(folder);
+    if (!stale && !force) {
+      log('spec-lite.md is up to date with spec.md');
+      log('Use --force to regenerate anyway');
+      return;
+    }
+
+    // Read the current spec.md content
+    const specContent = fs.readFileSync(specFile, 'utf8');
+
+    log(`Refreshing spec-lite.md from ${folder}/spec.md...`);
+
+    await chat(`URGENT: Regenerate spec-lite.md NOW.
+
+TARGET FILE: ${specLiteFile}
+
+CURRENT spec.md CONTENT (source of truth):
+---
+${specContent}
+---
+
+YOUR TASK:
+1. Write a NEW ${specLiteFile} file immediately
+2. Summarize the above spec.md content (under 500 words)
+3. MUST include:
+   - All tech stack with EXACT versions (e.g., Next.js 16+, NOT 14+)
+   - Key requirements and acceptance criteria
+   - Any Jira references
+
+DO THIS NOW:
+- Use your write tool to create ${specLiteFile}
+- Copy the tech stack details EXACTLY as shown above
+- Do not read the old spec-lite.md, replace it completely
+
+After writing, show me what you wrote.`, 'kspec-spec');
+
+    // Verify spec-lite.md was updated
+    if (isSpecStale(folder)) {
+      console.log('\n⚠️  spec-lite.md may not have been updated correctly.');
+      console.log('   Please verify the file was written with updated content.\n');
+    } else {
+      log('spec-lite.md updated successfully');
+    }
+
+    // Update CONTEXT.md with new spec-lite
+    refreshContext();
+    log('Context refreshed');
   },
 
   async done(args) {
@@ -1189,15 +1555,23 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
       if (stats) {
         console.log(`Tasks: ${stats.done}/${stats.total} completed`);
         if (stats.remaining > 0) {
-          console.log(`\nNext: kspec build`);
+          console.log(`\nNext step:`);
+          console.log(`  kspec build`);
+          console.log(`  or inside kiro-cli: /agent swap kspec-build`);
         } else {
-          console.log(`\nNext: kspec verify`);
+          console.log(`\nNext step:`);
+          console.log(`  kspec verify`);
+          console.log(`  or inside kiro-cli: /agent swap kspec-verify`);
         }
       } else {
-        console.log(`\nNext: kspec tasks`);
+        console.log(`\nNext step:`);
+        console.log(`  kspec tasks`);
+        console.log(`  or inside kiro-cli: /agent swap kspec-tasks`);
       }
     } else {
-      console.log(`\nNo current spec. Run: kspec spec "Feature Name"`);
+      console.log(`\nNo current spec.`);
+      console.log(`  kspec spec "Feature Name"`);
+      console.log(`  or inside kiro-cli: /agent swap kspec-spec`);
     }
     console.log('');
   },
@@ -1291,6 +1665,7 @@ Jira Integration (requires Atlassian MCP):
                           Create subtasks under specific issue
 
 Other:
+  kspec refresh           Regenerate spec-lite.md after editing spec.md
   kspec context           Refresh/view context file
   kspec review [target]   Code review
   kspec list              List all specs
@@ -1333,4 +1708,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale };

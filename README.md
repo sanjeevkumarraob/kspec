@@ -107,6 +107,29 @@ init → analyse → spec → verify-spec → tasks → verify-tasks → build �
 | `kspec jira-subtasks` | Create Jira subtasks from tasks.md |
 | `kspec jira-subtasks PROJ-123` | Create subtasks under specific issue |
 
+## Contracts (Beta)
+
+Enforce structured outputs and non-negotiable checks in your spec. This prevents context loss and regression by ensuring specific files and patterns exist before verification proceeds.
+
+Add a `## Contract` section to your `spec.md`:
+
+```markdown
+## Contract
+
+\`\`\`json
+{
+  "output_files": ["package.json", "src/index.js"],
+  "checks": [
+    { "type": "contains", "file": "package.json", "text": "\"name\": \"my-app\"" }
+  ]
+}
+\`\`\`
+```
+
+`kspec verify` will automatically validate these rules.
+
+See [Contracts Documentation](docs/contracts.md) for full details.
+
 ## Context Management
 
 kspec maintains context that survives AI context compression:
@@ -181,47 +204,29 @@ kspec is designed for team collaboration. Most files should be committed to shar
 
 ### Setting Up MCP for Teams
 
-**Problem**: API tokens should never be committed, but teams need consistent MCP configuration.
+`kspec init` creates `.kiro/mcp.json.template` which uses mcp-remote with OAuth (no API tokens needed):
 
-**Solution**: Use environment variables with a committed template.
+```json
+{
+  "mcpServers": {
+    "atlassian": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/sse"],
+      "timeout": 120000
+    }
+  }
+}
+```
 
-1. Commit a template file (`.kiro/mcp.json.template`):
-   ```json
-   {
-     "mcpServers": {
-       "atlassian": {
-         "command": "npx",
-         "args": ["-y", "@anthropic/mcp-atlassian"],
-         "env": {
-           "ATLASSIAN_HOST": "${ATLASSIAN_HOST}",
-           "ATLASSIAN_EMAIL": "${ATLASSIAN_EMAIL}",
-           "ATLASSIAN_API_TOKEN": "${ATLASSIAN_API_TOKEN}"
-         }
-       }
-     }
-   }
-   ```
+Each team member copies to their settings:
+```bash
+mkdir -p ~/.kiro/settings
+cp .kiro/mcp.json.template ~/.kiro/settings/mcp.json
+```
 
-2. Each team member creates their personal config:
-   ```bash
-   # Copy template to home directory
-   mkdir -p ~/.kiro && chmod 700 ~/.kiro
-   cp .kiro/mcp.json.template ~/.kiro/mcp.json
-   chmod 600 ~/.kiro/mcp.json
+Or add via CLI: `kiro-cli mcp add --name atlassian`
 
-   # Edit with real credentials
-   nano ~/.kiro/mcp.json
-   ```
-
-3. Or use environment variables directly:
-   ```bash
-   # Add to ~/.bashrc or ~/.zshrc
-   export ATLASSIAN_HOST="https://your-domain.atlassian.net"
-   export ATLASSIAN_EMAIL="your-email@example.com"
-   export ATLASSIAN_API_TOKEN="your-api-token"
-   ```
-
-See [SECURITY.md](SECURITY.md) for detailed security best practices.
+See [SECURITY.md](SECURITY.md) for security best practices.
 
 ## Jira Integration
 
@@ -254,37 +259,32 @@ Generate Jira subtasks from tasks.md for progress tracking.
 
 ### Prerequisites
 
-`kspec init` creates `.kiro/mcp.json.template` automatically. To enable Jira integration:
+Configure Atlassian MCP using one of these methods:
 
+**Option 1: Use kiro-cli** (recommended)
 ```bash
-# Copy template to your home directory (keeps secrets out of repo)
-mkdir -p ~/.kiro && chmod 700 ~/.kiro
-cp .kiro/mcp.json.template ~/.kiro/mcp.json
-chmod 600 ~/.kiro/mcp.json
-
-# Edit with your real credentials
-nano ~/.kiro/mcp.json
+kiro-cli mcp add --name atlassian
 ```
 
-Replace the `${...}` placeholders with your actual values:
+**Option 2: Manual configuration**
+
+Add to `.kiro/settings/mcp.json` (workspace) or `~/.kiro/settings/mcp.json` (user):
 
 ```json
 {
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["-y", "@anthropic/mcp-atlassian"],
-      "env": {
-        "ATLASSIAN_HOST": "https://your-domain.atlassian.net",
-        "ATLASSIAN_EMAIL": "your-email@example.com",
-        "ATLASSIAN_API_TOKEN": "your-api-token"
-      }
+      "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/sse"],
+      "timeout": 120000
     }
   }
 }
 ```
 
-Get your API token: https://id.atlassian.com/manage-profile/security/api-tokens
+Or add via CLI: `kiro-cli mcp add --name atlassian`
+
+See: https://kiro.dev/docs/cli/mcp/
 
 See [Team Collaboration](#team-collaboration) for secure team setup with environment variables.
 
