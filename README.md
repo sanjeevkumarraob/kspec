@@ -107,6 +107,29 @@ init → analyse → spec → verify-spec → tasks → verify-tasks → build �
 | `kspec jira-subtasks` | Create Jira subtasks from tasks.md |
 | `kspec jira-subtasks PROJ-123` | Create subtasks under specific issue |
 
+## Contracts (Beta)
+
+Enforce structured outputs and non-negotiable checks in your spec. This prevents context loss and regression by ensuring specific files and patterns exist before verification proceeds.
+
+Add a `## Contract` section to your `spec.md`:
+
+```markdown
+## Contract
+
+\`\`\`json
+{
+  "output_files": ["package.json", "src/index.js"],
+  "checks": [
+    { "type": "contains", "file": "package.json", "text": "\"name\": \"my-app\"" }
+  ]
+}
+\`\`\`
+```
+
+`kspec verify` will automatically validate these rules.
+
+See [Contracts Documentation](docs/contracts.md) for full details.
+
 ## Context Management
 
 kspec maintains context that survives AI context compression:

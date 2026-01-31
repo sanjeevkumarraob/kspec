@@ -593,4 +593,310 @@ describe('kspec', () => {
       }
     });
   });
+
+  describe('validateContract', () => {
+    let validateContract;
+
+    before(() => {
+      ({ validateContract } = require('../src/index.js'));
+    });
+
+    it('returns success when no contract section', () => {
+      const folder = path.join('.kspec', 'specs', 'no-contract');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec\n\nNo contract here.');
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.checks.length, 0);
+      assert.strictEqual(result.errors.length, 0);
+    });
+
+    it('returns success when spec.md does not exist', () => {
+      const folder = path.join('.kspec', 'specs', 'no-spec-file');
+      fs.mkdirSync(folder, { recursive: true });
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, true);
+    });
+
+    it('detects missing output files', () => {
+      const folder = path.join('.kspec', 'specs', 'missing-files');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "output_files": ["non-existent-file.js", "another-missing.ts"]
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.errors.length, 2);
+      assert(result.errors[0].includes('Missing required file'));
+      assert(result.errors[1].includes('Missing required file'));
+    });
+
+    it('validates existing output files', () => {
+      const folder = path.join('.kspec', 'specs', 'existing-files');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'existing.js'), 'console.log("exists");');
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "output_files": ["${folder}/existing.js"]
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, true);
+      assert(result.checks.some(c => c.includes('File exists')));
+    });
+
+    it('validates contains checks - pass', () => {
+      const folder = path.join('.kspec', 'specs', 'contains-pass');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'target.js'), 'export function myFunction() {}');
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "checks": [
+    { "type": "contains", "file": "${folder}/target.js", "text": "export function" }
+  ]
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, true);
+      assert(result.checks.some(c => c.includes('Content match')));
+    });
+
+    it('validates contains checks - fail', () => {
+      const folder = path.join('.kspec', 'specs', 'contains-fail');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'target.js'), 'const x = 1;');
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "checks": [
+    { "type": "contains", "file": "${folder}/target.js", "text": "export function" }
+  ]
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, false);
+      assert(result.errors.some(e => e.includes('should contain')));
+    });
+
+    it('validates not_contains checks - pass', () => {
+      const folder = path.join('.kspec', 'specs', 'not-contains-pass');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'clean.js'), 'const x = 1;');
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "checks": [
+    { "type": "not_contains", "file": "${folder}/clean.js", "text": "console.log" }
+  ]
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, true);
+      assert(result.checks.some(c => c.includes('does not contain')));
+    });
+
+    it('validates not_contains checks - fail', () => {
+      const folder = path.join('.kspec', 'specs', 'not-contains-fail');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'dirty.js'), 'console.log("debug");');
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "checks": [
+    { "type": "not_contains", "file": "${folder}/dirty.js", "text": "console.log" }
+  ]
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, false);
+      assert(result.errors.some(e => e.includes('should NOT contain')));
+    });
+
+    it('handles JSON with comments', () => {
+      const folder = path.join('.kspec', 'specs', 'json-comments');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'file.js'), 'content');
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  // This is a comment
+  "output_files": ["${folder}/file.js"]  // Another comment
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, true);
+    });
+
+    it('returns error for invalid JSON', () => {
+      const folder = path.join('.kspec', 'specs', 'invalid-json');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{ invalid json here
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, false);
+      assert(result.errors.some(e => e.includes('Invalid JSON')));
+    });
+
+    it('validates api_schema existence', () => {
+      const folder = path.join('.kspec', 'specs', 'api-schema-missing');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "api_schema": {
+    "type": "openapi",
+    "file": "non-existent-openapi.json"
+  }
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, false);
+      assert(result.errors.some(e => e.includes('Missing API Schema file')));
+    });
+
+    it('validates api_schema JSON syntax', () => {
+      const folder = path.join('.kspec', 'specs', 'api-schema-valid');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'openapi.json'), '{"openapi": "3.0.0"}');
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "api_schema": {
+    "type": "openapi",
+    "file": "${folder}/openapi.json"
+  }
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, true);
+      assert(result.checks.some(c => c.includes('API Schema exists')));
+      assert(result.checks.some(c => c.includes('valid JSON')));
+    });
+
+    it('detects invalid api_schema JSON', () => {
+      const folder = path.join('.kspec', 'specs', 'api-schema-invalid');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'bad-openapi.json'), '{ invalid json }');
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "api_schema": {
+    "type": "openapi",
+    "file": "${folder}/bad-openapi.json"
+  }
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, false);
+      assert(result.errors.some(e => e.includes('invalid JSON')));
+    });
+
+    it('handles check for non-existent file', () => {
+      const folder = path.join('.kspec', 'specs', 'check-no-file');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "checks": [
+    { "type": "contains", "file": "does-not-exist.js", "text": "something" }
+  ]
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, false);
+      assert(result.errors.some(e => e.includes('File not found')));
+    });
+
+    it('skips checks with missing fields', () => {
+      const folder = path.join('.kspec', 'specs', 'incomplete-check');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
+
+## Contract
+
+\`\`\`json
+{
+  "checks": [
+    { "type": "contains" },
+    { "file": "test.js" },
+    { "text": "something" }
+  ]
+}
+\`\`\`
+`);
+
+      const result = validateContract(folder);
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.errors.length, 0);
+    });
+  });
 });

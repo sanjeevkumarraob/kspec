@@ -665,6 +665,7 @@ WORKFLOW (do this autonomously):
    - Constraints
    - High-level design
    - Acceptance criteria
+   - Contract (JSON block with output_files and checks)
 4. Create spec-lite.md (CRITICAL - under 500 words):
    - Concise version for context retention after compression
    - Key requirements only
@@ -759,6 +760,8 @@ When all tasks complete: Run \`/agent swap kspec-verify\` or \`kspec verify\` to
     prompt: `You are the kspec verifier.
 
 FIRST: Read .kspec/CONTEXT.md for current spec and progress.
+If contract validation results are provided, verify they match your observations.
+
 
 Based on what you're asked to verify:
 
@@ -869,6 +872,95 @@ IMPORTANT:
     welcomeMessage: 'Jira integration ready. Provide issue keys to pull, or say "sync" to push spec to Jira.'
   }
 };
+
+function validateContract(folder) {
+  const specFile = path.join(folder, 'spec.md');
+  if (!fs.existsSync(specFile)) return { success: true, checks: [], errors: [] };
+
+  const content = fs.readFileSync(specFile, 'utf8');
+  // Extract JSON block from ## Contract section
+  const match = content.match(/## Contract\s+```json\n([\s\S]*?)\n```/);
+  
+  if (!match) return { success: true, checks: [], errors: [] };
+
+  let contract;
+  try {
+    // Strip comments to allow user annotations
+    const jsonStr = match[1].replace(/\/\/.*$/gm, '');
+    contract = JSON.parse(jsonStr);
+  } catch (e) {
+    return { success: false, checks: [], errors: ['Invalid JSON in Contract section'] };
+  }
+
+  const errors = [];
+  const checks = [];
+
+  // Check API Schema
+  if (contract.api_schema) {
+    if (contract.api_schema.file) {
+      if (!fs.existsSync(contract.api_schema.file)) {
+        errors.push(`Missing API Schema file: ${contract.api_schema.file}`);
+      } else {
+        checks.push(`API Schema exists: ${contract.api_schema.file}`);
+        // Basic parse check if JSON/YAML
+        if (contract.api_schema.file.endsWith('.json')) {
+          try {
+            JSON.parse(fs.readFileSync(contract.api_schema.file, 'utf8'));
+            checks.push(`API Schema is valid JSON`);
+          } catch {
+            errors.push(`API Schema is invalid JSON`);
+          }
+        }
+      }
+    }
+  }
+
+  // Check output files
+  if (contract.output_files) {
+    for (const file of contract.output_files) {
+      if (!fs.existsSync(file)) {
+        errors.push(`Missing required file: ${file}`);
+      } else {
+        checks.push(`File exists: ${file}`);
+      }
+    }
+  }
+
+  // Check custom checks
+  if (contract.checks) {
+    for (const check of contract.checks) {
+      if (!check.file || !check.type || !check.text) continue;
+      
+      const filePath = check.file;
+      if (!fs.existsSync(filePath)) {
+        errors.push(`Check failed: File not found ${filePath}`);
+        continue;
+      }
+
+      const fileContent = fs.readFileSync(filePath, 'utf8');
+      
+      if (check.type === 'contains') {
+        if (!fileContent.includes(check.text)) {
+          errors.push(`Check failed: ${filePath} should contain "${check.text}"`);
+        } else {
+          checks.push(`Content match: ${filePath} contains text`);
+        }
+      } else if (check.type === 'not_contains') {
+        if (fileContent.includes(check.text)) {
+          errors.push(`Check failed: ${filePath} should NOT contain "${check.text}"`);
+        } else {
+          checks.push(`Content check: ${filePath} does not contain text`);
+        }
+      }
+    }
+  }
+
+  return {
+    success: errors.length === 0,
+    errors,
+    checks
+  };
+}
 
 // Commands
 const commands = {
@@ -1287,7 +1379,20 @@ NEVER delete .kiro or .kspec folders.`, 'kspec-build');
     log(`Verifying implementation: ${folder}`);
     if (stats) log(`Tasks: ${stats.done}/${stats.total}`);
 
+    // Verify contract if exists
+    console.log('Validating contract...');
+    const contractResult = validateContract(folder);
+    if (!contractResult.success) {
+      console.log('\n❌ Contract checks failed:');
+      contractResult.errors.forEach(e => console.log(`  - ${e}`));
+    } else if (contractResult.checks.length > 0) {
+      console.log('✅ Contract checks passed');
+    }
+
     await chat(`Verify implementation for ${folder}:
+
+CONTRACT VALIDATION RESULTS:
+${JSON.stringify(contractResult, null, 2)}
 
 1. Read spec.md - list all requirements
 2. Read tasks.md - check all marked [x]
@@ -1299,6 +1404,7 @@ Report:
 - Requirements: X/Y implemented
 - Tasks: X/Y completed
 - Tests: PASS/FAIL
+- Contract: ${contractResult.success ? 'PASS' : 'FAIL'}
 - Gaps: [list any]`, 'kspec-verify');
 
     console.log('\nIf verification passed:');
@@ -1602,4 +1708,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale, validateContract };

@@ -40,8 +40,22 @@ $ kspec spec "CLI Todo App with Categories"
 ```
 
 This creates two files:
-- `spec.md` - Full specification (see [spec.md](./spec.md))
+- `spec.md` - Full specification with auto-generated contract (see [spec.md](./spec.md))
 - `spec-lite.md` - Concise version (see [spec-lite.md](./spec-lite.md))
+
+The spec agent automatically generates a **Contract** section based on your requirements:
+
+```json
+{
+  "output_files": ["package.json", "bin/todo.js", "src/store.js", ...],
+  "checks": [
+    { "type": "contains", "file": "bin/todo.js", "text": "#!/usr/bin/env node" },
+    { "type": "not_contains", "file": "src/store.js", "text": "console.log" }
+  ]
+}
+```
+
+This ensures deterministic validation before AI verification runs.
 
 ## Step 4: Verify Specification
 
@@ -97,11 +111,24 @@ The AI executes each task:
 ```bash
 $ kspec verify
 
+Validating contract...
+✅ Contract checks passed
+  - File exists: package.json
+  - File exists: bin/todo.js
+  - File exists: src/store.js
+  - File exists: src/commands.js
+  - File exists: test/todo.test.js
+  - Content match: package.json contains "bin"
+  - Content match: bin/todo.js contains shebang
+  - Content check: src/store.js does not contain console.log
+
 ✅ Implementation verification passed
 - All tests passing (24/24)
 - All spec requirements implemented
 - No drift detected from specification
 ```
+
+Contract validation runs **before** AI verification, catching missing files and forbidden patterns instantly.
 
 ## Step 9: Complete and Harvest Learnings
 
@@ -123,6 +150,7 @@ Creates/updates `memory.md` (see [memory.md](./memory.md)) with learnings for fu
 ## Key Takeaways
 
 1. **Spec first** - We defined exactly what we wanted before any code
-2. **Verification at each step** - Caught issues early, not after implementation
-3. **TDD built-in** - Every task writes tests first
-4. **Learnings captured** - Future todo apps benefit from this experience
+2. **Contracts auto-generated** - The spec agent creates deterministic checks from requirements
+3. **Verification at each step** - Caught issues early, not after implementation
+4. **TDD built-in** - Every task writes tests first
+5. **Learnings captured** - Future todo apps benefit from this experience
