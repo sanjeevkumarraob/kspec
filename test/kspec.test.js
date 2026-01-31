@@ -601,6 +601,9 @@ describe('kspec', () => {
       ({ validateContract } = require('../src/index.js'));
     });
 
+    // Helper to create cross-platform paths in JSON
+    const jsonPath = (...parts) => path.join(...parts).replace(/\\/g, '/');
+
     it('returns success when no contract section', () => {
       const folder = path.join('.kspec', 'specs', 'no-contract');
       fs.mkdirSync(folder, { recursive: true });
@@ -651,7 +654,7 @@ describe('kspec', () => {
 
 \`\`\`json
 {
-  "output_files": ["${folder}/existing.js"]
+  "output_files": ["${jsonPath(folder, 'existing.js')}"]
 }
 \`\`\`
 `);
@@ -672,7 +675,7 @@ describe('kspec', () => {
 \`\`\`json
 {
   "checks": [
-    { "type": "contains", "file": "${folder}/target.js", "text": "export function" }
+    { "type": "contains", "file": "${jsonPath(folder, 'target.js')}", "text": "export function" }
   ]
 }
 \`\`\`
@@ -694,7 +697,7 @@ describe('kspec', () => {
 \`\`\`json
 {
   "checks": [
-    { "type": "contains", "file": "${folder}/target.js", "text": "export function" }
+    { "type": "contains", "file": "${jsonPath(folder, 'target.js')}", "text": "export function" }
   ]
 }
 \`\`\`
@@ -716,7 +719,7 @@ describe('kspec', () => {
 \`\`\`json
 {
   "checks": [
-    { "type": "not_contains", "file": "${folder}/clean.js", "text": "console.log" }
+    { "type": "not_contains", "file": "${jsonPath(folder, 'clean.js')}", "text": "console.log" }
   ]
 }
 \`\`\`
@@ -738,7 +741,7 @@ describe('kspec', () => {
 \`\`\`json
 {
   "checks": [
-    { "type": "not_contains", "file": "${folder}/dirty.js", "text": "console.log" }
+    { "type": "not_contains", "file": "${jsonPath(folder, 'dirty.js')}", "text": "console.log" }
   ]
 }
 \`\`\`
@@ -760,7 +763,7 @@ describe('kspec', () => {
 \`\`\`json
 {
   // This is a comment
-  "output_files": ["${folder}/file.js"]  // Another comment
+  "output_files": ["${jsonPath(folder, 'file.js')}"]  // Another comment
 }
 \`\`\`
 `);
@@ -820,7 +823,7 @@ describe('kspec', () => {
 {
   "api_schema": {
     "type": "openapi",
-    "file": "${folder}/openapi.json"
+    "file": "${jsonPath(folder, 'openapi.json')}"
   }
 }
 \`\`\`
@@ -844,7 +847,7 @@ describe('kspec', () => {
 {
   "api_schema": {
     "type": "openapi",
-    "file": "${folder}/bad-openapi.json"
+    "file": "${jsonPath(folder, 'bad-openapi.json')}"
   }
 }
 \`\`\`
