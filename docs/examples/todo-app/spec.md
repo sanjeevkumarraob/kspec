@@ -116,6 +116,49 @@ $ todo categories
 - GUI / web interface
 - Subtasks / nested todos
 
+## Contract
+
+The spec agent automatically generates this contract based on the requirements. `kspec verify` validates these rules before AI verification.
+
+```json
+{
+  "output_files": [
+    "package.json",
+    "bin/todo.js",
+    "src/store.js",
+    "src/commands.js",
+    "test/todo.test.js"
+  ],
+  "checks": [
+    {
+      "type": "contains",
+      "file": "package.json",
+      "text": "\"bin\":"
+    },
+    {
+      "type": "contains",
+      "file": "bin/todo.js",
+      "text": "#!/usr/bin/env node"
+    },
+    {
+      "type": "contains",
+      "file": "src/commands.js",
+      "text": "function add("
+    },
+    {
+      "type": "contains",
+      "file": "src/commands.js",
+      "text": "function list("
+    },
+    {
+      "type": "not_contains",
+      "file": "src/store.js",
+      "text": "console.log"
+    }
+  ]
+}
+```
+
 ## Acceptance Criteria
 
 1. All FR requirements pass automated tests
