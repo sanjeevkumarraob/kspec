@@ -18,7 +18,11 @@ const KIRO_MCP_CONFIG_LEGACY = path.join(os.homedir(), '.kiro', 'mcp.json');
 const defaultConfig = {
   dateFormat: 'YYYY-MM-DD',
   autoExecute: 'ask',
-  initialized: false
+  initialized: false,
+  jira: {
+    project: null,
+    enabled: false
+  }
 };
 
 function loadConfig() {
@@ -136,6 +140,22 @@ function getAtlassianMcpName() {
     name.toLowerCase().includes('atlassian') ||
     name.toLowerCase().includes('jira')
   );
+}
+
+function getJiraProject() {
+  const cfg = loadConfig();
+  return cfg.jira?.project || null;
+}
+
+function requireJiraProject() {
+  const project = getJiraProject();
+  if (!project) {
+    die(`Jira project not configured.
+
+Run 'kspec init' to configure your default Jira project.
+Or specify the project explicitly: kspec sync-jira --project PROJ`);
+  }
+  return project;
 }
 
 function requireAtlassianMcp() {
@@ -981,8 +1001,32 @@ const commands = {
 
     const createSteering = await confirm('Create steering doc templates?');
 
+    // Check for Jira integration
+    let jiraConfig = { project: null, enabled: false };
+    const hasMcp = hasAtlassianMcp();
+
+    if (hasMcp) {
+      console.log('\n✅ Atlassian MCP detected!');
+      const setupJira = await confirm('Configure Jira integration?');
+
+      if (setupJira) {
+        const projectKey = await prompt('Default Jira project key (e.g., SECOPS, PROJ): ');
+        if (projectKey && projectKey.trim()) {
+          jiraConfig = {
+            project: projectKey.trim().toUpperCase(),
+            enabled: true
+          };
+          console.log(`  Jira project set to: ${jiraConfig.project}`);
+        }
+      }
+    } else {
+      console.log('\n📋 Jira integration: Not configured');
+      console.log('   To enable, run: kiro-cli mcp add --name atlassian');
+      console.log('   Then run: kspec init (again to configure project)');
+    }
+
     // Save config
-    const cfg = { dateFormat, autoExecute, initialized: true };
+    const cfg = { dateFormat, autoExecute, initialized: true, jira: jiraConfig };
     saveConfig(cfg);
     Object.assign(config, cfg);
 
@@ -1169,7 +1213,23 @@ Report: PASS/FAIL with specific issues.`, 'kspec-verify');
     // Parse flags
     const createFlag = args.includes('--create');
     const updateIndex = args.findIndex(a => a === '--update' || a.startsWith('--update='));
+    const projectIndex = args.findIndex(a => a === '--project' || a.startsWith('--project='));
     let updateIssue = null;
+    let project = null;
+
+    // Parse --project flag
+    if (projectIndex !== -1) {
+      if (args[projectIndex].startsWith('--project=')) {
+        project = args[projectIndex].split('=')[1].toUpperCase();
+      } else if (args[projectIndex + 1] && !args[projectIndex + 1].startsWith('-')) {
+        project = args[projectIndex + 1].toUpperCase();
+      }
+    }
+
+    // Fall back to configured project
+    if (!project) {
+      project = getJiraProject();
+    }
 
     if (updateIndex !== -1) {
       if (args[updateIndex].startsWith('--update=')) {
@@ -1184,9 +1244,18 @@ Report: PASS/FAIL with specific issues.`, 'kspec-verify');
     if (!createFlag && !updateIssue) {
       // Default to create
       log('No flag specified, will create new Jira issue');
+      if (!project) {
+        die(`No Jira project configured.
+
+Run 'kspec init' to set a default project, or specify with --project:
+  kspec sync-jira --project SECOPS`);
+      }
     }
 
     log(`Syncing spec to Jira: ${folder}`);
+    if (project && !updateIssue) {
+      log(`Target project: ${project}`);
+    }
 
     if (updateIssue) {
       await chat(`Update existing Jira issue with specification.
@@ -1208,11 +1277,12 @@ Report the updated issue URL.`, 'kspec-jira');
       await chat(`Create new Jira issue from specification.
 
 Spec folder: ${folder}
+Target project: ${project}
 
 WORKFLOW:
 1. Read ${folder}/spec.md and ${folder}/spec-lite.md
 2. Check ${folder}/jira-links.json for source issues to link
-3. Use Atlassian MCP to create new issue:
+3. Use Atlassian MCP to create new issue in project ${project}:
    - Type: Task or Story (based on project settings)
    - Summary: Extract from spec title
    - Description: Include spec-lite.md content
@@ -1542,12 +1612,20 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
 
   status() {
     const current = getCurrentSpec();
+    const jiraProject = getJiraProject();
+    const hasMcp = hasAtlassianMcp();
 
     console.log('\nkspec Status\n');
     console.log(`CLI: ${detectCli() || '(not installed)'}`);
     console.log(`Initialized: ${config.initialized ? 'yes' : 'no'}`);
     console.log(`Date format: ${config.dateFormat || 'YYYY-MM-DD'}`);
     console.log(`Auto-execute: ${config.autoExecute || 'ask'}`);
+    console.log(`Jira MCP: ${hasMcp ? '✅ configured' : '❌ not configured'}`);
+    if (jiraProject) {
+      console.log(`Jira project: ${jiraProject}`);
+    } else if (hasMcp) {
+      console.log(`Jira project: (not configured - run kspec init)`);
+    }
 
     if (current) {
       console.log(`\nCurrent spec: ${path.basename(current)}`);
@@ -1657,7 +1735,9 @@ Inside kiro-cli (recommended):
 Jira Integration (requires Atlassian MCP):
   kspec spec --jira PROJ-123,PROJ-456 "Feature"
                           Create spec from Jira issues
-  kspec sync-jira         Create/update Jira issue from spec
+  kspec sync-jira         Create Jira issue (uses configured project)
+  kspec sync-jira --project SECOPS
+                          Create in specific project
   kspec sync-jira --update PROJ-123
                           Update existing Jira issue
   kspec jira-subtasks     Create Jira subtasks from tasks.md
@@ -1708,4 +1788,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale, validateContract };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract };
