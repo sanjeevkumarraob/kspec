@@ -4,12 +4,13 @@ node_modules/
 coverage/
 
 # kspec local state (don't commit - personal working state)
-.kspec/.current
-.kspec/CONTEXT.md
+.kiro/.current
+.kiro/CONTEXT.md
+.kiro/settings/
 
 # DO commit these for team collaboration:
-# .kspec/config.json - project preferences
-# .kspec/specs/ - specifications, tasks, memory
+# .kiro/config.json - project preferences
+# .kiro/specs/ - specifications, tasks, memory
 # .kiro/steering/ - product, tech, testing guidelines
 # .kiro/agents/ - agent configurations
 
