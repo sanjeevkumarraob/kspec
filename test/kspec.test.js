@@ -601,6 +601,22 @@ describe('kspec', () => {
         console.log = originalLog;
       }
     });
+
+    it('includes Powers section', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('Powers'), 'Help should mention Powers');
+        assert(output.includes('contract'), 'Help should mention contract power');
+        assert(output.includes('document'), 'Help should mention document power');
+        assert(output.includes('tdd'), 'Help should mention tdd power');
+      } finally {
+        console.log = originalLog;
+      }
+    });
   });
 
   describe('agents command', () => {
@@ -613,6 +629,19 @@ describe('kspec', () => {
         commands.agents();
         assert(output.includes('kspec-jira'), 'Should list kspec-jira agent');
         assert(output.includes('Ctrl+Shift+J'), 'Should show Jira agent shortcut');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('mentions Powers', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.agents();
+        assert(output.includes('Powers'), 'Agents output should mention Powers');
       } finally {
         console.log = originalLog;
       }

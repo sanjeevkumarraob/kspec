@@ -1,6 +1,8 @@
 ---
 name: kspec-contract
-description: Enforce structured outputs and checks in kspec
+displayName: "Contracts"
+description: "Enforce structured outputs and checks in kspec specifications"
+keywords: ["contract", "verification", "output-files", "checks", "invariants"]
 author: kspec
 version: 1.0.0
 ---

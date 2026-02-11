@@ -1199,6 +1199,8 @@ const commands = {
     }
 
     console.log('\n✅ kspec initialized!\n');
+    console.log('Available powers (browse powers/ directory):');
+    console.log('  contract, document, tdd, code-review, code-intelligence\n');
     console.log('Next step:');
     console.log('  kspec analyse');
     console.log('  or inside kiro-cli: /agent swap kspec-analyse\n');
@@ -1742,6 +1744,9 @@ kspec-review    Ctrl+Shift+R    Code review
 kspec-jira      Ctrl+Shift+J    Jira integration (requires Atlassian MCP)
 
 Switch: /agent swap or use keyboard shortcuts
+
+Powers: contract, document, tdd, code-review, code-intelligence
+  Browse: powers/ directory in kspec repo
 `);
   },
 
@@ -1818,6 +1823,13 @@ Other:
   kspec agents            List agents
   kspec update            Check for updates
   kspec help              Show this help
+
+Powers (in powers/ directory):
+  contract                Enforce structured outputs in specs
+  document                Documentation best practices
+  tdd                     Test-driven development patterns
+  code-review             Code review checklists
+  code-intelligence       Code intelligence setup guide
 
 Examples:
   kspec init                        # First time setup

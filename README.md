@@ -130,6 +130,24 @@ Add a `## Contract` section to your `spec.md`:
 
 See [Contracts Documentation](docs/contracts.md) for full details.
 
+## Powers
+
+Powers are modular knowledge files that enhance AI agent capabilities. kspec ships with 5 powers:
+
+| Power | Description |
+|-------|-------------|
+| [contract](powers/contract/) | Enforce structured outputs and checks in specs |
+| [document](powers/document/) | Documentation best practices (README, CONTRIBUTING, CHANGELOG, ADRs) |
+| [tdd](powers/tdd/) | Test-driven development patterns and workflows |
+| [code-review](powers/code-review/) | Code review checklists and quality standards |
+| [code-intelligence](powers/code-intelligence/) | Tree-sitter and LSP setup for enhanced AI assistance |
+
+**In Kiro IDE:** Open the Powers panel and install from this repository's `powers/` directory.
+
+**With kspec CLI:** Powers are reference documentation in the `powers/` directory. Agents can read them for context.
+
+**Custom Powers:** Create your own in `powers/{name}/POWER.md` following the [Kiro power format](https://kiro.dev/docs/powers/create/).
+
 ## Context Management
 
 kspec maintains context that survives AI context compression:
@@ -162,6 +180,44 @@ kspec context    # View and refresh context manually
 | kspec-jira | Ctrl+Shift+J | Jira integration |
 
 Switch agents in kiro-cli: `/agent swap kspec-build` or use keyboard shortcuts.
+
+## ACP (Agent Client Protocol)
+
+ACP enables Kiro to work with JetBrains IDEs (IntelliJ, WebStorm, PyCharm) and Zed editor.
+
+### JetBrains Setup
+
+Create or edit `~/.jetbrains/acp.json`:
+
+```json
+{
+  "agent_servers": {
+    "Kiro Agent": {
+      "command": "/full/path/to/kiro-cli",
+      "args": ["acp"]
+    }
+  }
+}
+```
+
+Replace `/full/path/to/kiro-cli` with the actual path (find with `which kiro-cli`). Restart your IDE after configuration.
+
+Once ACP is configured, kspec agents work the same way as in Kiro IDE. Your `.kiro/agents/` configurations are loaded automatically.
+
+See: https://kiro.dev/docs/cli/acp/
+
+## Code Intelligence
+
+Kiro includes built-in code intelligence powered by tree-sitter, with optional LSP integration for deeper analysis.
+
+```
+/code init      # Index your project
+/code status    # Check indexing status
+```
+
+This enables structural code understanding (symbols, references, definitions) for 18 languages. See the [code-intelligence power](powers/code-intelligence/) for detailed setup and usage guide.
+
+See: https://kiro.dev/docs/cli/code-intelligence/
 
 ## Structure
 
