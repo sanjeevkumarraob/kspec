@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig;
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR } = require('../src/index.js'));
   });
 
   after(() => {
@@ -27,8 +27,8 @@ describe('kspec', () => {
     });
 
     it('loads config from file', () => {
-      fs.mkdirSync('.kspec', { recursive: true });
-      fs.writeFileSync('.kspec/config.json', JSON.stringify({
+      fs.mkdirSync('.kiro', { recursive: true });
+      fs.writeFileSync('.kiro/config.json', JSON.stringify({
         dateFormat: 'DD-MM-YYYY',
         autoExecute: 'auto',
         initialized: true
@@ -40,8 +40,8 @@ describe('kspec', () => {
     });
 
     it('returns defaults on corrupted config', () => {
-      fs.mkdirSync('.kspec', { recursive: true });
-      fs.writeFileSync('.kspec/config.json', 'invalid json {{{');
+      fs.mkdirSync('.kiro', { recursive: true });
+      fs.writeFileSync('.kiro/config.json', 'invalid json {{{');
 
       // Should not throw, should return defaults
       const cfg = loadConfig();
@@ -56,7 +56,7 @@ describe('kspec', () => {
     });
 
     it('lists specs when they exist', () => {
-      fs.mkdirSync('.kspec/specs/2026-01-22-test-feature', { recursive: true });
+      fs.mkdirSync('.kiro/specs/2026-01-22-test-feature', { recursive: true });
       assert.doesNotThrow(() => commands.list());
     });
   });
@@ -93,7 +93,7 @@ describe('kspec', () => {
       let output = '';
       const originalLog = console.log;
       console.log = (...args) => { output += args.join(' ') + '\n'; };
-      
+
       try {
         await run(['-h']);
         assert(output.includes('kspec - Spec-driven development for Kiro CLI'));
@@ -137,10 +137,10 @@ describe('kspec', () => {
       let errorOutput = '';
       const originalError = console.error;
       const originalExit = process.exit;
-      
+
       console.error = (...args) => { errorOutput += args.join(' ') + '\n'; };
       process.exit = () => { throw new Error('EXIT_CALLED'); };
-      
+
       try {
         await assert.rejects(
           () => run(['unknown-command']),
@@ -210,32 +210,32 @@ describe('kspec', () => {
 
   describe('getTaskStats', () => {
     it('returns null for missing tasks.md', () => {
-      fs.mkdirSync('.kspec/specs/test-spec', { recursive: true });
-      const stats = getTaskStats('.kspec/specs/test-spec');
+      fs.mkdirSync('.kiro/specs/test-spec', { recursive: true });
+      const stats = getTaskStats('.kiro/specs/test-spec');
       assert.strictEqual(stats, null);
     });
 
     it('counts tasks correctly', () => {
-      fs.mkdirSync('.kspec/specs/task-test', { recursive: true });
-      fs.writeFileSync('.kspec/specs/task-test/tasks.md', `# Tasks
+      fs.mkdirSync('.kiro/specs/task-test', { recursive: true });
+      fs.writeFileSync('.kiro/specs/task-test/tasks.md', `# Tasks
 - [ ] Pending task 1
 - [x] Done task 1
 - [ ] Pending task 2
 `);
-      const stats = getTaskStats('.kspec/specs/task-test');
+      const stats = getTaskStats('.kiro/specs/task-test');
       assert.strictEqual(stats.total, 3);
       assert.strictEqual(stats.done, 1);
       assert.strictEqual(stats.remaining, 2);
     });
 
     it('handles uppercase [X] markers', () => {
-      fs.mkdirSync('.kspec/specs/uppercase-test', { recursive: true });
-      fs.writeFileSync('.kspec/specs/uppercase-test/tasks.md', `# Tasks
+      fs.mkdirSync('.kiro/specs/uppercase-test', { recursive: true });
+      fs.writeFileSync('.kiro/specs/uppercase-test/tasks.md', `# Tasks
 - [ ] Pending
 - [x] Done lowercase
 - [X] Done uppercase
 `);
-      const stats = getTaskStats('.kspec/specs/uppercase-test');
+      const stats = getTaskStats('.kiro/specs/uppercase-test');
       assert.strictEqual(stats.total, 3);
       assert.strictEqual(stats.done, 2);
       assert.strictEqual(stats.remaining, 1);
@@ -244,7 +244,7 @@ describe('kspec', () => {
 
   describe('getCurrentSpec', () => {
     it('returns null when no .current file', () => {
-      const currentFile = path.join('.kspec', '.current');
+      const currentFile = path.join('.kiro', '.current');
       if (fs.existsSync(currentFile)) fs.unlinkSync(currentFile);
 
       const result = getCurrentSpec();
@@ -252,9 +252,9 @@ describe('kspec', () => {
     });
 
     it('handles full path format', () => {
-      const specFolder = path.join('.kspec', 'specs', '2026-01-25-full-path-test');
+      const specFolder = path.join('.kiro', 'specs', '2026-01-25-full-path-test');
       fs.mkdirSync(specFolder, { recursive: true });
-      fs.writeFileSync(path.join('.kspec', '.current'), specFolder);
+      fs.writeFileSync(path.join('.kiro', '.current'), specFolder);
 
       const result = getCurrentSpec();
       assert.strictEqual(result, specFolder);
@@ -262,17 +262,17 @@ describe('kspec', () => {
 
     it('handles just folder name (agent mode)', () => {
       const specName = '2026-01-25-agent-mode-test';
-      const specFolder = path.join('.kspec', 'specs', specName);
+      const specFolder = path.join('.kiro', 'specs', specName);
       fs.mkdirSync(specFolder, { recursive: true });
       // Agent mode writes just the folder name
-      fs.writeFileSync(path.join('.kspec', '.current'), specName);
+      fs.writeFileSync(path.join('.kiro', '.current'), specName);
 
       const result = getCurrentSpec();
       assert.strictEqual(result, specFolder);
     });
 
     it('returns null for non-existent spec', () => {
-      fs.writeFileSync(path.join('.kspec', '.current'), 'non-existent-spec-folder');
+      fs.writeFileSync(path.join('.kiro', '.current'), 'non-existent-spec-folder');
 
       const result = getCurrentSpec();
       assert.strictEqual(result, null);
@@ -282,20 +282,20 @@ describe('kspec', () => {
   describe('refreshContext', () => {
     it('creates CONTEXT.md with no active spec', () => {
       // Clear any existing .current file
-      const currentFile = '.kspec/.current';
+      const currentFile = '.kiro/.current';
       if (fs.existsSync(currentFile)) fs.unlinkSync(currentFile);
 
       const content = refreshContext();
       assert(content.includes('No active spec'));
-      assert(fs.existsSync('.kspec/CONTEXT.md'));
+      assert(fs.existsSync('.kiro/CONTEXT.md'));
     });
 
     it('includes spec info when spec exists', () => {
       // Create a spec with spec-lite
-      const specFolder = '.kspec/specs/2026-01-24-test-context';
+      const specFolder = '.kiro/specs/2026-01-24-test-context';
       fs.mkdirSync(specFolder, { recursive: true });
       fs.writeFileSync(`${specFolder}/spec-lite.md`, '# Test Spec\n- Requirement 1\n- Requirement 2');
-      fs.writeFileSync('.kspec/.current', specFolder);
+      fs.writeFileSync('.kiro/.current', specFolder);
 
       const content = refreshContext();
       assert(content.includes('2026-01-24-test-context'));
@@ -304,9 +304,9 @@ describe('kspec', () => {
     });
 
     it('includes task progress when tasks exist', () => {
-      const specFolder = '.kspec/specs/2026-01-24-test-context';
+      const specFolder = '.kiro/specs/2026-01-24-test-context';
       fs.writeFileSync(`${specFolder}/tasks.md`, '- [x] Task 1\n- [ ] Task 2\n- [ ] Task 3');
-      fs.writeFileSync('.kspec/.current', specFolder);
+      fs.writeFileSync('.kiro/.current', specFolder);
 
       const content = refreshContext();
       assert(content.includes('1/3 completed'));
@@ -350,19 +350,19 @@ describe('kspec', () => {
       }
     });
 
-    it('agents include steering and kspec resources', () => {
+    it('agents include steering and specs resources', () => {
       for (const [filename, agent] of Object.entries(agentTemplates)) {
         const hasSteeringResource = agent.resources.some(r => r.includes('.kiro/steering'));
-        const hasKspecResource = agent.resources.some(r => r.includes('.kspec'));
+        const hasSpecsResource = agent.resources.some(r => r.includes('.kiro/specs'));
 
         assert(hasSteeringResource, `${filename}: should include .kiro/steering resource`);
-        assert(hasKspecResource, `${filename}: should include .kspec resource`);
+        assert(hasSpecsResource, `${filename}: should include .kiro/specs resource`);
       }
     });
 
     it('agents include CONTEXT.md as first resource', () => {
       for (const [filename, agent] of Object.entries(agentTemplates)) {
-        assert(agent.resources[0] === 'file://.kspec/CONTEXT.md',
+        assert(agent.resources[0] === 'file://.kiro/CONTEXT.md',
           `${filename}: CONTEXT.md should be first resource for context restoration`);
       }
     });
@@ -373,6 +373,15 @@ describe('kspec', () => {
         const agent = agentTemplates[filename];
         assert(agent.prompt.includes('CONTEXT.md') || agent.prompt.includes('WORKFLOW'),
           `${filename}: prompt should reference context or workflow`);
+      }
+    });
+
+    it('no agent references .kspec in resources', () => {
+      for (const [filename, agent] of Object.entries(agentTemplates)) {
+        for (const resource of agent.resources) {
+          assert(!resource.includes('.kspec'),
+            `${filename}: resource should not reference .kspec: ${resource}`);
+        }
       }
     });
   });
@@ -386,7 +395,7 @@ describe('kspec', () => {
       try {
         commands.context();
         assert(output.includes('kspec Context'));
-        assert(output.includes('CONTEXT.md'));
+        assert(output.includes('.kiro/CONTEXT.md'));
       } finally {
         console.log = originalLog;
       }
@@ -461,14 +470,14 @@ describe('kspec', () => {
     });
 
     it('returns false when no spec.md', () => {
-      const folder = path.join('.kspec', 'specs', 'no-spec-test');
+      const folder = path.join('.kiro', 'specs', 'no-spec-test');
       fs.mkdirSync(folder, { recursive: true });
       const result = isSpecStale(folder);
       assert.strictEqual(result, false);
     });
 
     it('returns true when no spec-lite.md', () => {
-      const folder = path.join('.kspec', 'specs', 'no-spec-lite-test');
+      const folder = path.join('.kiro', 'specs', 'no-spec-lite-test');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec');
       const result = isSpecStale(folder);
@@ -476,7 +485,7 @@ describe('kspec', () => {
     });
 
     it('returns false when spec-lite is newer', () => {
-      const folder = path.join('.kspec', 'specs', 'spec-lite-newer');
+      const folder = path.join('.kiro', 'specs', 'spec-lite-newer');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec');
       // Wait a bit to ensure different mtime
@@ -488,7 +497,7 @@ describe('kspec', () => {
     });
 
     it('returns true when spec.md is newer', () => {
-      const folder = path.join('.kspec', 'specs', 'spec-newer');
+      const folder = path.join('.kiro', 'specs', 'spec-newer');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Spec Lite');
       // Wait a bit to ensure different mtime
@@ -509,6 +518,22 @@ describe('kspec', () => {
     it('getMcpConfig returns object or null', () => {
       const result = getMcpConfig();
       assert(result === null || typeof result === 'object');
+    });
+
+    it('detects .kiro/mcp.json workspace root config', () => {
+      fs.mkdirSync('.kiro', { recursive: true });
+      fs.writeFileSync('.kiro/mcp.json', JSON.stringify({
+        mcpServers: {
+          atlassian: { command: 'npx', args: ['mcp-remote'] }
+        }
+      }));
+
+      const result = getMcpConfig();
+      assert(result !== null, 'Should detect .kiro/mcp.json');
+      assert(result.mcpServers.atlassian, 'Should find atlassian server');
+
+      // Clean up
+      fs.unlinkSync('.kiro/mcp.json');
     });
   });
 
@@ -532,7 +557,7 @@ describe('kspec', () => {
 
   describe('refreshContext with Jira links', () => {
     it('includes Jira links when jira-links.json exists', () => {
-      const specFolder = '.kspec/specs/2026-01-24-jira-test';
+      const specFolder = '.kiro/specs/2026-01-24-jira-test';
       fs.mkdirSync(specFolder, { recursive: true });
       fs.writeFileSync(`${specFolder}/spec-lite.md`, '# Jira Test Spec');
       fs.writeFileSync(`${specFolder}/jira-links.json`, JSON.stringify({
@@ -540,7 +565,7 @@ describe('kspec', () => {
         specIssue: 'PROJ-789',
         subtasks: ['PROJ-790', 'PROJ-791']
       }));
-      fs.writeFileSync('.kspec/.current', specFolder);
+      fs.writeFileSync('.kiro/.current', specFolder);
 
       const content = refreshContext();
       assert(content.includes('Jira Links'), 'Should include Jira Links section');
@@ -550,10 +575,10 @@ describe('kspec', () => {
     });
 
     it('omits Jira section when no jira-links.json', () => {
-      const specFolder = '.kspec/specs/2026-01-24-no-jira';
+      const specFolder = '.kiro/specs/2026-01-24-no-jira';
       fs.mkdirSync(specFolder, { recursive: true });
       fs.writeFileSync(`${specFolder}/spec-lite.md`, '# No Jira Spec');
-      fs.writeFileSync('.kspec/.current', specFolder);
+      fs.writeFileSync('.kiro/.current', specFolder);
 
       const content = refreshContext();
       assert(!content.includes('Jira Links'), 'Should not include Jira Links section');
@@ -576,6 +601,22 @@ describe('kspec', () => {
         console.log = originalLog;
       }
     });
+
+    it('includes Powers section', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('Powers'), 'Help should mention Powers');
+        assert(output.includes('contract'), 'Help should mention contract power');
+        assert(output.includes('document'), 'Help should mention document power');
+        assert(output.includes('tdd'), 'Help should mention tdd power');
+      } finally {
+        console.log = originalLog;
+      }
+    });
   });
 
   describe('agents command', () => {
@@ -591,6 +632,68 @@ describe('kspec', () => {
       } finally {
         console.log = originalLog;
       }
+    });
+
+    it('mentions Powers', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.agents();
+        assert(output.includes('Powers'), 'Agents output should mention Powers');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('migrateV1toV2', () => {
+    it('skips when no .kspec directory exists', async () => {
+      // Ensure no .kspec exists
+      if (fs.existsSync('.kspec')) fs.rmSync('.kspec', { recursive: true });
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        await migrateV1toV2();
+        // Should complete silently without any migration output
+        assert(!output.includes('Migration'), 'Should not show migration prompt');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('cleans up empty .kspec directory', async () => {
+      fs.mkdirSync('.kspec', { recursive: true });
+
+      await migrateV1toV2();
+      assert(!fs.existsSync('.kspec'), 'Empty .kspec should be removed');
+    });
+  });
+
+  describe('resetToDefaultAgent', () => {
+    it('does not throw when called', () => {
+      // resetToDefaultAgent is best-effort, should never throw
+      assert.doesNotThrow(() => {
+        resetToDefaultAgent('nonexistent-cli');
+      });
+    });
+  });
+
+  describe('constants', () => {
+    it('KIRO_DIR is .kiro', () => {
+      assert.strictEqual(KIRO_DIR, '.kiro');
+    });
+
+    it('SPECS_DIR is .kiro/specs', () => {
+      assert.strictEqual(SPECS_DIR, path.join('.kiro', 'specs'));
+    });
+
+    it('LEGACY_KSPEC_DIR is .kspec', () => {
+      assert.strictEqual(LEGACY_KSPEC_DIR, '.kspec');
     });
   });
 

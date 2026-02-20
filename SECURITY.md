@@ -48,15 +48,16 @@ Authentication is handled via OAuth when you first use Jira commands.
 kspec creates a `.gitignore` during initialization that:
 
 **Commits (for team collaboration):**
+- `.kiro/config.json` - Project preferences
+- `.kiro/specs/` - Specifications, tasks, memory
 - `.kiro/steering/` - Product, tech, testing guidelines
 - `.kiro/agents/` - Agent configurations
 - `.kiro/mcp.json.template` - MCP template (no secrets)
-- `.kspec/config.json` - Project preferences
-- `.kspec/specs/` - Specifications, tasks, memory
 
 **Ignores (local state & secrets):**
-- `.kspec/.current` - Your personal working spec
-- `.kspec/CONTEXT.md` - Auto-generated state file
+- `.kiro/.current` - Your personal working spec
+- `.kiro/CONTEXT.md` - Auto-generated state file
+- `.kiro/settings/` - Local MCP config
 - `~/.kiro/mcp.json` - Personal MCP config with real tokens
 
 ### 3. API Token Best Practices
@@ -75,7 +76,7 @@ Get tokens at: https://id.atlassian.com/manage-profile/security/api-tokens
 Specifications may contain sensitive business information:
 
 - **Private repos**: Commit specs freely
-- **Public repos**: Consider keeping `.kspec/specs/` in `.gitignore`
+- **Public repos**: Consider keeping `.kiro/specs/` in `.gitignore`
 - **Enterprise**: Use Jira integration for requirement traceability instead of committing specs
 
 ### 5. Agent Security

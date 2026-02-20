@@ -4,14 +4,19 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 const readline = require('readline');
 
-const KSPEC_DIR = '.kspec';
-const STEERING_DIR = '.kiro/steering';
-const AGENTS_DIR = '.kiro/agents';
-const CONFIG_FILE = path.join(KSPEC_DIR, 'config.json');
+const KIRO_DIR = '.kiro';
+const SPECS_DIR = path.join(KIRO_DIR, 'specs');
+const STEERING_DIR = path.join(KIRO_DIR, 'steering');
+const AGENTS_DIR = path.join(KIRO_DIR, 'agents');
+const CONFIG_FILE = path.join(KIRO_DIR, 'config.json');
+const CONTEXT_FILE = path.join(KIRO_DIR, 'CONTEXT.md');
+const CURRENT_FILE = path.join(KIRO_DIR, '.current');
+const MEMORY_FILE = path.join(KIRO_DIR, 'memory.md');
+const LEGACY_KSPEC_DIR = '.kspec';
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
+const KIRO_MCP_CONFIG_WORKSPACE_SETTINGS = path.join(KIRO_DIR, 'settings', 'mcp.json');
+const KIRO_MCP_CONFIG_WORKSPACE_ROOT = path.join(KIRO_DIR, 'mcp.json');
 const KIRO_MCP_CONFIG_USER = path.join(os.homedir(), '.kiro', 'settings', 'mcp.json');
-const KIRO_MCP_CONFIG_WORKSPACE = path.join('.kiro', 'settings', 'mcp.json');
-// Legacy path for backwards compatibility
 const KIRO_MCP_CONFIG_LEGACY = path.join(os.homedir(), '.kiro', 'mcp.json');
 
 // Default config
@@ -38,7 +43,7 @@ function loadConfig() {
 }
 
 function saveConfig(cfg) {
-  ensureDir(KSPEC_DIR);
+  ensureDir(KIRO_DIR);
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
 }
 
@@ -102,9 +107,10 @@ async function checkForUpdates() {
 
 // MCP Integration Detection
 function getMcpConfig() {
-  // Check in order: workspace, user, legacy
+  // Check in order: workspace settings, workspace root, user, legacy
   const configPaths = [
-    KIRO_MCP_CONFIG_WORKSPACE,
+    KIRO_MCP_CONFIG_WORKSPACE_SETTINGS,
+    KIRO_MCP_CONFIG_WORKSPACE_ROOT,
     KIRO_MCP_CONFIG_USER,
     KIRO_MCP_CONFIG_LEGACY
   ];
@@ -164,6 +170,7 @@ function requireAtlassianMcp() {
 
 To use Jira integration, configure Atlassian MCP in one of these locations:
 - Workspace: .kiro/settings/mcp.json
+- Workspace: .kiro/mcp.json
 - User: ~/.kiro/settings/mcp.json
 
 Example configuration:
@@ -344,6 +351,15 @@ async function confirm(question) {
   return !answer || answer.toLowerCase() === 'y';
 }
 
+function resetToDefaultAgent(cli) {
+  try {
+    const child = spawn(cli, ['agent', 'swap', 'kiro_default'], { stdio: 'ignore' });
+    child.on('error', () => {}); // Best-effort — silently ignore errors
+  } catch {
+    // Best-effort — silently ignore if spawn fails
+  }
+}
+
 function chat(message, agent) {
   // Refresh context before each chat to ensure LLM has latest state
   refreshContext();
@@ -356,15 +372,18 @@ function chat(message, agent) {
       console.error(`Failed to start ${cli}: ${err.message}`);
       reject(err);
     });
-    child.on('close', resolve);
+    child.on('close', code => {
+      resetToDefaultAgent(cli);
+      resolve(code);
+    });
   });
 }
 
 // Spec management
-function getSpecsDir() { return path.join(KSPEC_DIR, 'specs'); }
+function getSpecsDir() { return SPECS_DIR; }
 
 function getCurrentSpec() {
-  const file = path.join(KSPEC_DIR, '.current');
+  const file = CURRENT_FILE;
   if (fs.existsSync(file)) {
     const spec = fs.readFileSync(file, 'utf8').trim();
     // Handle full path format
@@ -383,8 +402,8 @@ function getCurrentSpec() {
 }
 
 function setCurrentSpec(folder) {
-  ensureDir(KSPEC_DIR);
-  fs.writeFileSync(path.join(KSPEC_DIR, '.current'), folder);
+  ensureDir(KIRO_DIR);
+  fs.writeFileSync(CURRENT_FILE, folder);
 }
 
 function findSpec(name) {
@@ -470,7 +489,7 @@ async function checkStaleness(folder) {
 }
 
 function refreshContext() {
-  const contextFile = path.join(KSPEC_DIR, 'CONTEXT.md');
+  const contextFile = CONTEXT_FILE;
   const current = getCurrentSpec();
 
   if (!current) {
@@ -479,7 +498,7 @@ function refreshContext() {
 
 No active spec. Run: \`kspec spec "Feature Name"\`
 `;
-    ensureDir(KSPEC_DIR);
+    ensureDir(KIRO_DIR);
     fs.writeFileSync(contextFile, content);
     return content;
   }
@@ -592,7 +611,7 @@ ${memory}
 - \`kspec context\` - Refresh this file
 `;
 
-  ensureDir(KSPEC_DIR);
+  ensureDir(KIRO_DIR);
   fs.writeFileSync(contextFile, content);
   return content;
 }
@@ -643,13 +662,13 @@ const agentTemplates = {
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
-      'file://.kspec/CONTEXT.md',
+      'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kspec/**/*.md'
+      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec analyser.
 
-FIRST: Read .kspec/CONTEXT.md for current state and spec summary.
+FIRST: Read .kiro/CONTEXT.md for current state and spec summary.
 
 Your job:
 1. Analyse the codebase structure, tech stack, patterns
@@ -669,15 +688,15 @@ Output a clear analysis report. Propose specific steering doc updates.`,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
-      'file://.kspec/CONTEXT.md',
+      'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kspec/**/*.md'
+      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec specification writer.
 
 WORKFLOW (do this autonomously):
 1. Read .kiro/steering/ for project context
-2. Create spec folder: .kspec/specs/YYYY-MM-DD-{feature-slug}/
+2. Create spec folder: .kiro/specs/YYYY-MM-DD-{feature-slug}/
    - Use today's date and a short slug (2-4 words from feature name)
 3. Create spec.md in that folder with:
    - Problem/Context
@@ -689,8 +708,8 @@ WORKFLOW (do this autonomously):
 4. Create spec-lite.md (CRITICAL - under 500 words):
    - Concise version for context retention after compression
    - Key requirements only
-5. Update .kspec/.current with the spec folder path
-6. Update .kspec/CONTEXT.md with current state
+5. Update .kiro/.current with the spec folder path
+6. Update .kiro/CONTEXT.md with current state
 
 Next step: Run \`/agent swap kspec-tasks\` or \`kspec tasks\` to generate implementation tasks.`,
     keyboardShortcut: 'ctrl+shift+s',
@@ -704,15 +723,15 @@ Next step: Run \`/agent swap kspec-tasks\` or \`kspec tasks\` to generate implem
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
-      'file://.kspec/CONTEXT.md',
+      'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kspec/**/*.md'
+      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec task generator.
 
 WORKFLOW:
-1. Read .kspec/CONTEXT.md for current spec location
-2. Read .kspec/.current to get spec folder path
+1. Read .kiro/CONTEXT.md for current spec location
+2. Read .kiro/.current to get spec folder path
 3. Read spec.md and spec-lite.md from that folder
 4. Generate tasks.md in the spec folder with:
    - Checkbox format: "- [ ] Task description"
@@ -720,7 +739,7 @@ WORKFLOW:
    - Logical ordering (models → services → API → UI)
    - Dependencies noted
    - File paths where changes occur
-5. Update .kspec/CONTEXT.md with task count
+5. Update .kiro/CONTEXT.md with task count
 
 Tasks must be atomic and independently verifiable.
 
@@ -736,15 +755,15 @@ Next step: Run \`/agent swap kspec-build\` or \`kspec build\` to start implement
     tools: ['read', 'write', 'shell'],
     allowedTools: ['read', 'write', 'shell'],
     resources: [
-      'file://.kspec/CONTEXT.md',
+      'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kspec/**/*.md'
+      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec builder.
 
 WORKFLOW:
-1. Read .kspec/CONTEXT.md for current spec and task progress
-2. Read .kspec/.current to get spec folder path
+1. Read .kiro/CONTEXT.md for current spec and task progress
+2. Read .kiro/.current to get spec folder path
 3. Read tasks.md from spec folder, find first uncompleted task (- [ ])
 4. For each task:
    a) Write test first (TDD)
@@ -752,13 +771,13 @@ WORKFLOW:
    c) Run tests
    d) Mark task complete: change "- [ ]" to "- [x]"
    e) Update tasks.md file
-   f) Update .kspec/CONTEXT.md with new progress
+   f) Update .kiro/CONTEXT.md with new progress
 5. Commit after each task with descriptive message
 
 CRITICAL:
 - Always update tasks.md after completing each task
-- Update .kspec/CONTEXT.md with current task and progress
-- NEVER delete .kiro or .kspec folders
+- Update .kiro/CONTEXT.md with current task and progress
+- NEVER delete .kiro folders
 - Use non-interactive flags for commands (--yes, -y)
 
 When all tasks complete: Run \`/agent swap kspec-verify\` or \`kspec verify\` to verify implementation.`,
@@ -773,13 +792,13 @@ When all tasks complete: Run \`/agent swap kspec-verify\` or \`kspec verify\` to
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
-      'file://.kspec/CONTEXT.md',
+      'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kspec/**/*.md'
+      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec verifier.
 
-FIRST: Read .kspec/CONTEXT.md for current spec and progress.
+FIRST: Read .kiro/CONTEXT.md for current spec and progress.
 If contract validation results are provided, verify they match your observations.
 
 
@@ -815,13 +834,13 @@ Output a clear verification report with pass/fail status.`,
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
-      'file://.kspec/CONTEXT.md',
+      'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kspec/**/*.md'
+      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec code reviewer.
 
-FIRST: Read .kspec/CONTEXT.md for current spec context.
+FIRST: Read .kiro/CONTEXT.md for current spec context.
 
 Your job:
 1. Review code changes (git diff or specified files)
@@ -846,9 +865,9 @@ Output: APPROVE / REQUEST_CHANGES with specific issues.`,
     allowedTools: ['read', 'write', '@atlassian'],
     includeMcpJson: true,
     resources: [
-      'file://.kspec/CONTEXT.md',
+      'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kspec/**/*.md'
+      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec Jira integration agent.
 
@@ -878,10 +897,10 @@ CAPABILITIES:
    - Include task details and acceptance criteria
 
 WORKFLOW:
-1. Read .kspec/CONTEXT.md for current spec state
+1. Read .kiro/CONTEXT.md for current spec state
 2. Identify what user wants (pull/sync/subtasks)
 3. Use Atlassian MCP for Jira operations
-4. Update .kspec/CONTEXT.md with Jira links
+4. Update .kiro/CONTEXT.md with Jira links
 5. Report what was created/updated
 
 IMPORTANT:
@@ -982,6 +1001,131 @@ function validateContract(folder) {
   };
 }
 
+// V1 → V2 Migration (.kspec → .kiro)
+async function migrateV1toV2() {
+  if (!fs.existsSync(LEGACY_KSPEC_DIR)) return;
+
+  // Inventory what exists in .kspec/
+  const items = [];
+  const filesToMigrate = ['config.json', '.current', 'CONTEXT.md', 'memory.md'];
+  for (const file of filesToMigrate) {
+    if (fs.existsSync(path.join(LEGACY_KSPEC_DIR, file))) {
+      items.push(file);
+    }
+  }
+  const specsDir = path.join(LEGACY_KSPEC_DIR, 'specs');
+  let specFolders = [];
+  if (fs.existsSync(specsDir)) {
+    specFolders = fs.readdirSync(specsDir).filter(d =>
+      fs.statSync(path.join(specsDir, d)).isDirectory()
+    );
+    if (specFolders.length > 0) {
+      items.push(`specs/ (${specFolders.length} spec${specFolders.length > 1 ? 's' : ''})`);
+    }
+  }
+
+  if (items.length === 0) {
+    // .kspec exists but is empty — clean up
+    try { fs.rmSync(LEGACY_KSPEC_DIR, { recursive: true }); } catch {}
+    return;
+  }
+
+  console.log('\n📦 kspec v2.0 Migration\n');
+  console.log('kspec now stores everything under .kiro/ instead of .kspec/');
+  console.log('\nFiles to migrate:');
+  items.forEach(item => console.log(`  - ${item}`));
+  console.log('');
+
+  const proceed = await confirm('Migrate .kspec/ to .kiro/ now?');
+
+  if (!proceed) {
+    console.log('\nTo migrate manually, run:');
+    console.log('  mkdir -p .kiro/specs');
+    console.log('  mv .kspec/config.json .kiro/ 2>/dev/null');
+    console.log('  mv .kspec/.current .kiro/ 2>/dev/null');
+    console.log('  mv .kspec/CONTEXT.md .kiro/ 2>/dev/null');
+    console.log('  mv .kspec/memory.md .kiro/ 2>/dev/null');
+    console.log('  mv .kspec/specs/* .kiro/specs/ 2>/dev/null');
+    console.log('  rm -rf .kspec');
+    console.log('');
+    process.exit(0);
+  }
+
+  // Perform migration
+  ensureDir(KIRO_DIR);
+  ensureDir(SPECS_DIR);
+
+  // Migrate individual files (skip if destination already exists)
+  for (const file of filesToMigrate) {
+    const src = path.join(LEGACY_KSPEC_DIR, file);
+    const dest = path.join(KIRO_DIR, file);
+    if (fs.existsSync(src) && !fs.existsSync(dest)) {
+      fs.copyFileSync(src, dest);
+      fs.unlinkSync(src);
+      log(`Migrated ${file}`);
+    } else if (fs.existsSync(src) && fs.existsSync(dest)) {
+      log(`Skipped ${file} (already exists in .kiro/)`);
+    }
+  }
+
+  // Fix .current file contents — replace .kspec/ paths with .kiro/
+  const currentFile = path.join(KIRO_DIR, '.current');
+  if (fs.existsSync(currentFile)) {
+    let content = fs.readFileSync(currentFile, 'utf8');
+    if (content.includes('.kspec/')) {
+      content = content.replace(/\.kspec\//g, '.kiro/');
+      fs.writeFileSync(currentFile, content);
+      log('Updated .current paths');
+    }
+  }
+
+  // Migrate spec folders
+  for (const folder of specFolders) {
+    const src = path.join(specsDir, folder);
+    const dest = path.join(SPECS_DIR, folder);
+    if (!fs.existsSync(dest)) {
+      fs.cpSync(src, dest, { recursive: true });
+      fs.rmSync(src, { recursive: true });
+      log(`Migrated specs/${folder}`);
+    } else {
+      log(`Skipped specs/${folder} (already exists)`);
+    }
+  }
+
+  // Update .gitignore entries
+  const gitignorePath = '.gitignore';
+  if (fs.existsSync(gitignorePath)) {
+    let gitignore = fs.readFileSync(gitignorePath, 'utf8');
+    if (gitignore.includes('.kspec/')) {
+      gitignore = gitignore.replace(/\.kspec\//g, '.kiro/');
+      fs.writeFileSync(gitignorePath, gitignore);
+      log('Updated .gitignore entries');
+    }
+  }
+
+  // Remove empty .kspec/ directory
+  try {
+    const remaining = fs.readdirSync(LEGACY_KSPEC_DIR);
+    if (remaining.length === 0 || (remaining.length === 1 && remaining[0] === 'specs')) {
+      // Check if specs dir is also empty
+      if (remaining.includes('specs')) {
+        const specsRemaining = fs.readdirSync(path.join(LEGACY_KSPEC_DIR, 'specs'));
+        if (specsRemaining.length === 0) {
+          fs.rmSync(LEGACY_KSPEC_DIR, { recursive: true });
+        } else {
+          console.log(`\n⚠️  .kspec/ not fully empty after migration. Please review manually.`);
+        }
+      } else {
+        fs.rmSync(LEGACY_KSPEC_DIR, { recursive: true });
+      }
+    } else {
+      console.log(`\n⚠️  .kspec/ not fully empty after migration. Remaining: ${remaining.join(', ')}`);
+    }
+  } catch {}
+
+  console.log('\n✅ Migration complete! All data now in .kiro/\n');
+}
+
 // Commands
 const commands = {
   async init() {
@@ -1031,7 +1175,7 @@ const commands = {
     Object.assign(config, cfg);
 
     // Create directories
-    ensureDir(path.join(KSPEC_DIR, 'specs'));
+    ensureDir(SPECS_DIR);
     ensureDir(AGENTS_DIR);
 
     // Create steering templates
@@ -1075,12 +1219,13 @@ const commands = {
     // Update .gitignore for kspec (append if exists, create if not)
     const kspecGitignore = `
 # kspec local state (don't commit - personal working state)
-.kspec/.current
-.kspec/CONTEXT.md
+.kiro/.current
+.kiro/CONTEXT.md
+.kiro/settings/
 
 # DO commit these for team collaboration:
-# .kspec/config.json - project preferences
-# .kspec/specs/ - specifications, tasks, memory
+# .kiro/config.json - project preferences
+# .kiro/specs/ - specifications, tasks, memory
 # .kiro/steering/ - product, tech, testing guidelines
 # .kiro/agents/ - agent configurations
 # .kiro/mcp.json.template - MCP template (no secrets)
@@ -1088,7 +1233,7 @@ const commands = {
     const gitignorePath = '.gitignore';
     if (fs.existsSync(gitignorePath)) {
       const existing = fs.readFileSync(gitignorePath, 'utf8');
-      if (!existing.includes('.kspec/.current')) {
+      if (!existing.includes('.kiro/.current')) {
         fs.appendFileSync(gitignorePath, kspecGitignore);
         log('Updated .gitignore with kspec entries');
       }
@@ -1098,6 +1243,8 @@ const commands = {
     }
 
     console.log('\n✅ kspec initialized!\n');
+    console.log('Available powers (browse powers/ directory):');
+    console.log('  contract, document, tdd, code-review, code-intelligence\n');
     console.log('Next step:');
     console.log('  kspec analyse');
     console.log('  or inside kiro-cli: /agent swap kspec-analyse\n');
@@ -1270,7 +1417,7 @@ WORKFLOW:
    - Add label: kspec-spec
    - Add comment: "Technical specification updated via kspec"
 3. Update ${folder}/jira-links.json with the issue key
-4. Update .kspec/CONTEXT.md with Jira link
+4. Update .kiro/CONTEXT.md with Jira link
 
 Report the updated issue URL.`, 'kspec-jira');
     } else {
@@ -1290,7 +1437,7 @@ WORKFLOW:
    - Link to source issues if any
 4. Add comment requesting BA/PM review
 5. Save new issue key to ${folder}/jira-links.json
-6. Update .kspec/CONTEXT.md with new Jira link
+6. Update .kiro/CONTEXT.md with new Jira link
 
 Report the created issue URL.`, 'kspec-jira');
     }
@@ -1339,7 +1486,7 @@ WORKFLOW:
    - Description: Include any details, file paths mentioned
    - Labels: kspec-task
 3. Save created subtask keys to ${folder}/jira-links.json
-4. Update .kspec/CONTEXT.md with subtask links
+4. Update .kiro/CONTEXT.md with subtask links
 
 Report created subtasks with their URLs.`, 'kspec-jira');
   },
@@ -1424,7 +1571,7 @@ ${execNote}
 7. Continue to next task
 
 CRITICAL: Update tasks.md after each task completion.
-NEVER delete .kiro or .kspec folders.`, 'kspec-build');
+NEVER delete .kiro folders.`, 'kspec-build');
 
     // Show next step based on remaining tasks
     const updatedStats = getTaskStats(folder);
@@ -1565,7 +1712,7 @@ After writing, show me what you wrote.`, 'kspec-spec');
    - Lessons learned
    - Follow-ups needed
 
-3. Update .kspec/memory.md (project-level) with:
+3. Update .kiro/memory.md (project-level) with:
    - New glossary terms
    - Reusable patterns
    - Cross-cutting learnings`, 'kspec-analyse');
@@ -1657,7 +1804,7 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
   context() {
     const content = refreshContext();
     console.log(content);
-    console.log(`Context saved to: .kspec/CONTEXT.md\n`);
+    console.log(`Context saved to: .kiro/CONTEXT.md\n`);
   },
 
   agents() {
@@ -1675,6 +1822,9 @@ kspec-review    Ctrl+Shift+R    Code review
 kspec-jira      Ctrl+Shift+J    Jira integration (requires Atlassian MCP)
 
 Switch: /agent swap or use keyboard shortcuts
+
+Powers: contract, document, tdd, code-review, code-intelligence
+  Browse: powers/ directory in kspec repo
 `);
   },
 
@@ -1730,7 +1880,7 @@ Inside kiro-cli (recommended):
   /agent swap kspec-build   → Builds tasks with TDD
   /agent swap kspec-verify  → Verifies implementation
 
-  Agents read .kspec/CONTEXT.md automatically for state.
+  Agents read .kiro/CONTEXT.md automatically for state.
 
 Jira Integration (requires Atlassian MCP):
   kspec spec --jira PROJ-123,PROJ-456 "Feature"
@@ -1754,6 +1904,13 @@ Other:
   kspec update            Check for updates
   kspec help              Show this help
 
+Powers (in powers/ directory):
+  contract                Enforce structured outputs in specs
+  document                Documentation best practices
+  tdd                     Test-driven development patterns
+  code-review             Code review checklists
+  code-intelligence       Code intelligence setup guide
+
 Examples:
   kspec init                        # First time setup
   kspec spec "User Auth"            # CLI mode
@@ -1766,6 +1923,9 @@ Examples:
 async function run(args) {
   // Check for updates (non-blocking, cached for 24h)
   checkForUpdates();
+
+  // Migrate v1 (.kspec/) to v2 (.kiro/) if needed
+  await migrateV1toV2();
 
   // Handle standard CLI flags first
   if (args.includes('--help') || args.includes('-h')) {
@@ -1788,4 +1948,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR };

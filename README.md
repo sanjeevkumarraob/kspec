@@ -68,7 +68,7 @@ $ kiro-cli
   (reads CONTEXT.md → continues from current task)
 ```
 
-This approach solves the **context loss problem** — agents read `.kspec/CONTEXT.md` automatically to restore state after context compression.
+This approach solves the **context loss problem** — agents read `.kiro/CONTEXT.md` automatically to restore state after context compression.
 
 ## Workflow
 
@@ -130,12 +130,30 @@ Add a `## Contract` section to your `spec.md`:
 
 See [Contracts Documentation](docs/contracts.md) for full details.
 
+## Powers
+
+Powers are modular knowledge files that enhance AI agent capabilities. kspec ships with 5 powers:
+
+| Power | Description |
+|-------|-------------|
+| [contract](powers/contract/) | Enforce structured outputs and checks in specs |
+| [document](powers/document/) | Documentation best practices (README, CONTRIBUTING, CHANGELOG, ADRs) |
+| [tdd](powers/tdd/) | Test-driven development patterns and workflows |
+| [code-review](powers/code-review/) | Code review checklists and quality standards |
+| [code-intelligence](powers/code-intelligence/) | Tree-sitter and LSP setup for enhanced AI assistance |
+
+**In Kiro IDE:** Open the Powers panel and install from this repository's `powers/` directory.
+
+**With kspec CLI:** Powers are reference documentation in the `powers/` directory. Agents can read them for context.
+
+**Custom Powers:** Create your own in `powers/{name}/POWER.md` following the [Kiro power format](https://kiro.dev/docs/powers/create/).
+
 ## Context Management
 
 kspec maintains context that survives AI context compression:
 
 ```
-.kspec/CONTEXT.md (auto-generated)
+.kiro/CONTEXT.md (auto-generated)
 ├── Current Spec: 2026-01-24-user-auth
 ├── Task: 3/12 - Implement JWT validation
 ├── Requirements Summary (from spec-lite)
@@ -163,25 +181,62 @@ kspec context    # View and refresh context manually
 
 Switch agents in kiro-cli: `/agent swap kspec-build` or use keyboard shortcuts.
 
+## ACP (Agent Client Protocol)
+
+ACP enables Kiro to work with JetBrains IDEs (IntelliJ, WebStorm, PyCharm) and Zed editor.
+
+### JetBrains Setup
+
+Create or edit `~/.jetbrains/acp.json`:
+
+```json
+{
+  "agent_servers": {
+    "Kiro Agent": {
+      "command": "/full/path/to/kiro-cli",
+      "args": ["acp"]
+    }
+  }
+}
+```
+
+Replace `/full/path/to/kiro-cli` with the actual path (find with `which kiro-cli`). Restart your IDE after configuration.
+
+Once ACP is configured, kspec agents work the same way as in Kiro IDE. Your `.kiro/agents/` configurations are loaded automatically.
+
+See: https://kiro.dev/docs/cli/acp/
+
+## Code Intelligence
+
+Kiro includes built-in code intelligence powered by tree-sitter, with optional LSP integration for deeper analysis.
+
+```
+/code init      # Index your project
+/code status    # Check indexing status
+```
+
+This enables structural code understanding (symbols, references, definitions) for 18 languages. See the [code-intelligence power](powers/code-intelligence/) for detailed setup and usage guide.
+
+See: https://kiro.dev/docs/cli/code-intelligence/
+
 ## Structure
 
 ```
-.kspec/
+.kiro/
 ├── config.json           # User preferences (commit)
 ├── .current              # Current active spec path (local only)
 ├── CONTEXT.md            # Auto-generated context (local only)
 ├── memory.md             # Project learnings (commit)
-└── specs/
-    └── 2026-01-22-feature/
-        ├── spec.md       # Full specification (commit)
-        ├── spec-lite.md  # Concise (for context compression)
-        ├── tasks.md      # Implementation tasks (commit)
-        ├── memory.md     # Feature learnings (commit)
-        └── jira-links.json # Jira issue links (commit)
-
-.kiro/
+├── specs/
+│   └── 2026-01-22-feature/
+│       ├── spec.md       # Full specification (commit)
+│       ├── spec-lite.md  # Concise (for context compression)
+│       ├── tasks.md      # Implementation tasks (commit)
+│       ├── memory.md     # Feature learnings (commit)
+│       └── jira-links.json # Jira issue links (commit)
 ├── steering/             # Project rules (commit)
 ├── agents/               # kspec-generated agents (commit)
+├── settings/mcp.json     # MCP config (local only)
 └── mcp.json.template     # MCP config template (commit, no secrets)
 ```
 
@@ -193,13 +248,15 @@ kspec is designed for team collaboration. Most files should be committed to shar
 
 | Path | Commit? | Why |
 |------|---------|-----|
+| `.kiro/config.json` | Yes | Project preferences |
+| `.kiro/specs/` | Yes | Specifications, tasks, memory |
 | `.kiro/steering/` | Yes | Shared product, tech, testing guidelines |
 | `.kiro/agents/` | Yes | Consistent agent configurations |
 | `.kiro/mcp.json.template` | Yes | MCP setup template (no secrets) |
-| `.kspec/config.json` | Yes | Project preferences |
-| `.kspec/specs/` | Yes | Specifications, tasks, memory |
-| `.kspec/.current` | No | Personal working state |
-| `.kspec/CONTEXT.md` | No | Auto-generated, local state |
+| `.kiro/memory.md` | Yes | Project learnings |
+| `.kiro/.current` | No | Personal working state |
+| `.kiro/CONTEXT.md` | No | Auto-generated, local state |
+| `.kiro/settings/` | No | Local MCP config |
 | `~/.kiro/mcp.json` | N/A | Personal secrets in home directory |
 
 ### Setting Up MCP for Teams
@@ -287,6 +344,28 @@ Or add via CLI: `kiro-cli mcp add --name atlassian`
 See: https://kiro.dev/docs/cli/mcp/
 
 See [Team Collaboration](#team-collaboration) for secure team setup with environment variables.
+
+## Migrating from v1
+
+kspec v2.0 consolidates everything into `.kiro/` (previously split between `.kspec/` and `.kiro/`).
+
+When you run any kspec command, it will automatically detect `.kspec/` and offer to migrate:
+
+```
+$ kspec status
+
+  kspec v2.0 Migration
+
+  kspec now stores everything under .kiro/ instead of .kspec/
+
+  Files to migrate:
+    - config.json
+    - specs/ (3 specs)
+
+  Migrate .kspec/ to .kiro/ now? (Y/n):
+```
+
+Migration moves `config.json`, `.current`, `CONTEXT.md`, `memory.md`, and `specs/` from `.kspec/` to `.kiro/`, then removes the empty `.kspec/` directory.
 
 ## Configuration
 
