@@ -212,7 +212,7 @@ metadata:
 Maintains immutable audit logs for compliance and debugging.
 
 ## Log Location
-`.kspec/audit/YYYY-MM-DD.jsonl`
+`.kiro/audit/YYYY-MM-DD.jsonl`
 
 ## Log Format
 ```json
@@ -230,7 +230,7 @@ Maintains immutable audit logs for compliance and debugging.
 ```
 
 ## Retention
-Logs retained for 90 days by default. Configure in `.kspec/config.json`:
+Logs retained for 90 days by default. Configure in `.kiro/config.json`:
 ```json
 {
   "audit": {
@@ -412,7 +412,7 @@ Enterprise contracts require additional tooling:
 
 ## Configuration
 
-### Enterprise Config (`.kspec/config.json`)
+### Enterprise Config (`.kiro/config.json`)
 
 ```json
 {
@@ -451,7 +451,7 @@ Update kspec agents to include enterprise skills:
 ```json
 {
   "resources": [
-    "file://.kspec/CONTEXT.md",
+    "file://.kiro/CONTEXT.md",
     "file://.kiro/steering/**/*.md",
     "skill://.kiro/skills/kspec-enterprise/**/SKILL.md"
   ]

@@ -708,7 +708,7 @@ describe('kspec', () => {
     const jsonPath = (...parts) => path.join(...parts).replace(/\\/g, '/');
 
     it('returns success when no contract section', () => {
-      const folder = path.join('.kspec', 'specs', 'no-contract');
+      const folder = path.join('.kiro', 'specs', 'no-contract');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec\n\nNo contract here.');
 
@@ -719,7 +719,7 @@ describe('kspec', () => {
     });
 
     it('returns success when spec.md does not exist', () => {
-      const folder = path.join('.kspec', 'specs', 'no-spec-file');
+      const folder = path.join('.kiro', 'specs', 'no-spec-file');
       fs.mkdirSync(folder, { recursive: true });
 
       const result = validateContract(folder);
@@ -727,7 +727,7 @@ describe('kspec', () => {
     });
 
     it('detects missing output files', () => {
-      const folder = path.join('.kspec', 'specs', 'missing-files');
+      const folder = path.join('.kiro', 'specs', 'missing-files');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
 
@@ -748,7 +748,7 @@ describe('kspec', () => {
     });
 
     it('validates existing output files', () => {
-      const folder = path.join('.kspec', 'specs', 'existing-files');
+      const folder = path.join('.kiro', 'specs', 'existing-files');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'existing.js'), 'console.log("exists");');
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
@@ -768,7 +768,7 @@ describe('kspec', () => {
     });
 
     it('validates contains checks - pass', () => {
-      const folder = path.join('.kspec', 'specs', 'contains-pass');
+      const folder = path.join('.kiro', 'specs', 'contains-pass');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'target.js'), 'export function myFunction() {}');
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
@@ -790,7 +790,7 @@ describe('kspec', () => {
     });
 
     it('validates contains checks - fail', () => {
-      const folder = path.join('.kspec', 'specs', 'contains-fail');
+      const folder = path.join('.kiro', 'specs', 'contains-fail');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'target.js'), 'const x = 1;');
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
@@ -812,7 +812,7 @@ describe('kspec', () => {
     });
 
     it('validates not_contains checks - pass', () => {
-      const folder = path.join('.kspec', 'specs', 'not-contains-pass');
+      const folder = path.join('.kiro', 'specs', 'not-contains-pass');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'clean.js'), 'const x = 1;');
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
@@ -834,7 +834,7 @@ describe('kspec', () => {
     });
 
     it('validates not_contains checks - fail', () => {
-      const folder = path.join('.kspec', 'specs', 'not-contains-fail');
+      const folder = path.join('.kiro', 'specs', 'not-contains-fail');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'dirty.js'), 'console.log("debug");');
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
@@ -856,7 +856,7 @@ describe('kspec', () => {
     });
 
     it('handles JSON with comments', () => {
-      const folder = path.join('.kspec', 'specs', 'json-comments');
+      const folder = path.join('.kiro', 'specs', 'json-comments');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'file.js'), 'content');
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
@@ -876,7 +876,7 @@ describe('kspec', () => {
     });
 
     it('returns error for invalid JSON', () => {
-      const folder = path.join('.kspec', 'specs', 'invalid-json');
+      const folder = path.join('.kiro', 'specs', 'invalid-json');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
 
@@ -893,7 +893,7 @@ describe('kspec', () => {
     });
 
     it('validates api_schema existence', () => {
-      const folder = path.join('.kspec', 'specs', 'api-schema-missing');
+      const folder = path.join('.kiro', 'specs', 'api-schema-missing');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
 
@@ -915,7 +915,7 @@ describe('kspec', () => {
     });
 
     it('validates api_schema JSON syntax', () => {
-      const folder = path.join('.kspec', 'specs', 'api-schema-valid');
+      const folder = path.join('.kiro', 'specs', 'api-schema-valid');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'openapi.json'), '{"openapi": "3.0.0"}');
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
@@ -939,7 +939,7 @@ describe('kspec', () => {
     });
 
     it('detects invalid api_schema JSON', () => {
-      const folder = path.join('.kspec', 'specs', 'api-schema-invalid');
+      const folder = path.join('.kiro', 'specs', 'api-schema-invalid');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'bad-openapi.json'), '{ invalid json }');
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
@@ -962,7 +962,7 @@ describe('kspec', () => {
     });
 
     it('handles check for non-existent file', () => {
-      const folder = path.join('.kspec', 'specs', 'check-no-file');
+      const folder = path.join('.kiro', 'specs', 'check-no-file');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
 
@@ -983,7 +983,7 @@ describe('kspec', () => {
     });
 
     it('skips checks with missing fields', () => {
-      const folder = path.join('.kspec', 'specs', 'incomplete-check');
+      const folder = path.join('.kiro', 'specs', 'incomplete-check');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), `# Spec
 

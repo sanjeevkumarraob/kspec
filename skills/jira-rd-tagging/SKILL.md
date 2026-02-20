@@ -138,7 +138,7 @@ Additional labels to always apply:
 - `quarter:Q1-2026`
 ```
 
-### Config: `.kspec/config.json`
+### Config: `.kiro/config.json`
 
 ```json
 {
