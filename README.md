@@ -13,7 +13,7 @@ AI coding assistants forget context, drift from requirements, and repeat mistake
 |---------|---------------|
 | **Context loss** | `CONTEXT.md` survives AI context compression |
 | **Scope creep** | Specs define boundaries before coding |
-| **No verification** | Verify at every step (spec → tasks → build) |
+| **No verification** | Verify at every step (spec → design → tasks → build) |
 | **Lost learnings** | `memory.md` compounds knowledge across projects |
 | **Enterprise silos** | Jira integration bridges BA/PM and developers |
 
@@ -31,6 +31,7 @@ npm install -g kspec
 kspec init                    # Interactive setup
 kspec analyse                 # Analyse codebase
 kspec spec "User Auth API"    # Create specification
+kspec design                  # Create technical design (optional)
 kspec tasks                   # Generate tasks
 kspec build                   # Execute with TDD
 kspec verify                  # Verify implementation
@@ -46,13 +47,14 @@ Run kspec commands from your terminal:
 ```bash
 kspec init
 kspec spec "User Authentication"
+kspec design                       # optional — creates design.md
 kspec tasks
 kspec build
 ```
 
 ### 2. Agent Mode (Inside kiro-cli) — Recommended
 
-Stay inside your kiro-cli session and switch between specialized agents:
+Stay inside your kiro-cli session and switch between specialized agents. Every agent includes **pipeline navigation** suggesting the next step:
 
 ```
 $ kiro-cli
@@ -60,52 +62,117 @@ $ kiro-cli
 > /agent swap kspec-spec
 > Build a todo app with categories
   (agent creates spec.md, spec-lite.md, updates context)
+  → Next: /agent swap kspec-design or /agent swap kspec-tasks
+
+> /agent swap kspec-design
+  (reads spec → creates design.md with architecture)
+  → Next: /agent swap kspec-tasks
 
 > /agent swap kspec-tasks
-  (reads CONTEXT.md → knows current spec → generates tasks)
+  (reads CONTEXT.md + design.md → generates tasks)
+  → Next: /agent swap kspec-build
 
 > /agent swap kspec-build
   (reads CONTEXT.md → continues from current task)
+  → Next: /agent swap kspec-verify
 ```
 
-This approach solves the **context loss problem** — agents read `.kiro/CONTEXT.md` automatically to restore state after context compression.
+This approach solves the **context loss problem** — agents read `.kiro/CONTEXT.md` automatically to restore state after context compression. You never need to exit kiro-cli; the full pipeline is available through agent swapping.
 
 ## Workflow
 
 ```
-init → analyse → spec → verify-spec → tasks → verify-tasks → build → verify → done
+init → analyse → spec → verify-spec → design (optional) → tasks → verify-tasks → build → verify → done
 ```
 
 ## Commands
 
+### Core Workflow
+
 | Command | Description |
 |---------|-------------|
-| `kspec init` | Interactive setup (date format, execution mode) |
+| `kspec init` | Interactive setup (date format, execution mode, Jira project) |
 | `kspec analyse` | Analyse codebase, update steering docs |
 | `kspec spec "Name"` | Create spec.md + spec-lite.md |
-| `kspec verify-spec` | Verify spec covers requirements |
-| `kspec tasks` | Generate tasks.md from spec |
+| `kspec verify-spec` | Interactively review and shape spec with clarifying questions |
+| `kspec design` | Create technical design from spec (optional) |
+| `kspec verify-design` | Verify design against spec requirements |
+| `kspec tasks` | Generate tasks.md from spec (uses design.md if present) |
 | `kspec verify-tasks` | Verify tasks cover spec |
 | `kspec build` | Execute tasks with TDD |
 | `kspec verify` | Verify implementation matches spec |
 | `kspec done` | Complete spec, harvest memory |
-| `kspec context` | View/refresh context file |
-| `kspec review` | Code review |
-| `kspec list` | List all specs |
-| `kspec status` | Current status |
-| `kspec agents` | List available agents |
-| `kspec update` | Check for updates |
-| `kspec help` | Show help |
 
 ### Jira Integration (requires Atlassian MCP)
 
 | Command | Description |
 |---------|-------------|
 | `kspec spec --jira PROJ-123,PROJ-456 "Feature"` | Create spec from Jira issues |
-| `kspec sync-jira` | Create Jira issue from spec |
+| `kspec sync-jira` | Smart sync — updates existing issue or creates new |
+| `kspec sync-jira --create` | Force create new Jira issue |
+| `kspec sync-jira --project SECOPS` | Create in specific project |
 | `kspec sync-jira --update PROJ-123` | Update existing Jira issue |
+| `kspec jira-pull` | Pull latest updates from linked Jira issues |
 | `kspec jira-subtasks` | Create Jira subtasks from tasks.md |
 | `kspec jira-subtasks PROJ-123` | Create subtasks under specific issue |
+
+### Other
+
+| Command | Description |
+|---------|-------------|
+| `kspec refresh` | Regenerate spec-lite.md after editing spec.md |
+| `kspec context` | View/refresh context file |
+| `kspec review [target]` | Code review |
+| `kspec list` | List all specs |
+| `kspec status` | Pipeline-aware status with next step suggestion |
+| `kspec agents` | List available agents |
+| `kspec update` | Check for updates |
+| `kspec help` | Show help |
+
+## Design Pipeline
+
+The optional **design** step sits between `spec` and `tasks`, enabling technical architecture planning before implementation:
+
+```bash
+kspec spec "Payment Processing"    # Create spec
+kspec design                       # Create design.md (architecture, data models, APIs)
+kspec verify-design                # Verify design covers spec
+kspec tasks                        # Generate tasks (uses design.md for ordering)
+```
+
+`design.md` includes:
+- Architecture Overview
+- Component Breakdown
+- Data Models
+- API Contracts
+- Dependency Mapping
+- Technical Decisions
+- Risk Assessment
+
+The design step is optional — run `kspec tasks` directly to skip it. When `design.md` exists, the tasks agent uses it for architecture guidance and dependency ordering.
+
+## Interactive Spec Shaping
+
+`kspec verify-spec` goes beyond simple PASS/FAIL verification. It interactively shapes your spec:
+
+1. Reads your spec.md thoroughly
+2. Asks 4-8 targeted clarifying questions with sensible defaults
+3. Proposes assumptions: *"I assume X, is that correct?"*
+4. Waits for your responses
+5. Suggests specific updates to spec.md
+6. Gets your confirmation before making changes
+
+This ensures specs are complete and unambiguous before moving to design or tasks.
+
+## Jira Pull Updates
+
+Keep specs in sync with evolving Jira requirements:
+
+```bash
+kspec jira-pull
+```
+
+This fetches the latest state of all linked Jira issues, generates a **change report** showing new/modified criteria, status changes, and comments, then presents changes for your approval before modifying spec.md. Specs are never auto-updated.
 
 ## Contracts (Beta)
 
@@ -155,13 +222,15 @@ kspec maintains context that survives AI context compression:
 ```
 .kiro/CONTEXT.md (auto-generated)
 ├── Current Spec: 2026-01-24-user-auth
-├── Task: 3/12 - Implement JWT validation
+├── Progress: 3/12 tasks completed
+├── Design: present / not yet created
 ├── Requirements Summary (from spec-lite)
 ├── Decisions & Learnings
-└── Jira Links (if integrated)
+├── Jira Links (if integrated)
+└── Quick Commands (design, tasks, build, verify...)
 ```
 
-Agents read CONTEXT.md first, automatically restoring state after context compression.
+Agents read CONTEXT.md first, automatically restoring state after context compression. CONTEXT.md is refreshed both before and after agent chat sessions.
 
 ```bash
 kspec context    # View and refresh context manually
@@ -171,15 +240,18 @@ kspec context    # View and refresh context manually
 
 | Agent | Shortcut | Purpose |
 |-------|----------|---------|
-| kspec-analyse | Ctrl+Shift+A | Analyse codebase |
+| kspec-analyse | Ctrl+Shift+A | Analyse codebase, update steering |
 | kspec-spec | Ctrl+Shift+S | Create specifications |
-| kspec-tasks | Ctrl+Shift+T | Generate tasks |
-| kspec-build | Ctrl+Shift+B | Execute with TDD |
-| kspec-verify | Ctrl+Shift+V | Verify spec/tasks/impl |
+| kspec-design | Ctrl+Shift+D | Create technical design from spec |
+| kspec-tasks | Ctrl+Shift+T | Generate tasks (uses design if present) |
+| kspec-build | Ctrl+Shift+B | Execute tasks with TDD |
+| kspec-verify | Ctrl+Shift+V | Verify spec/design/tasks/implementation |
 | kspec-review | Ctrl+Shift+R | Code review |
-| kspec-jira | Ctrl+Shift+J | Jira integration |
+| kspec-jira | Ctrl+Shift+J | Jira integration (pull, sync, subtasks) |
 
 Switch agents in kiro-cli: `/agent swap kspec-build` or use keyboard shortcuts.
+
+Every agent includes a **PIPELINE** section suggesting contextual next steps — so you can navigate the full workflow without leaving kiro-cli.
 
 ## ACP (Agent Client Protocol)
 
@@ -231,6 +303,7 @@ See: https://kiro.dev/docs/cli/code-intelligence/
 │   └── 2026-01-22-feature/
 │       ├── spec.md       # Full specification (commit)
 │       ├── spec-lite.md  # Concise (for context compression)
+│       ├── design.md     # Technical design (commit, optional)
 │       ├── tasks.md      # Implementation tasks (commit)
 │       ├── memory.md     # Feature learnings (commit)
 │       └── jira-links.json # Jira issue links (commit)
@@ -249,7 +322,7 @@ kspec is designed for team collaboration. Most files should be committed to shar
 | Path | Commit? | Why |
 |------|---------|-----|
 | `.kiro/config.json` | Yes | Project preferences |
-| `.kiro/specs/` | Yes | Specifications, tasks, memory |
+| `.kiro/specs/` | Yes | Specifications, designs, tasks, memory |
 | `.kiro/steering/` | Yes | Shared product, tech, testing guidelines |
 | `.kiro/agents/` | Yes | Consistent agent configurations |
 | `.kiro/mcp.json.template` | Yes | MCP setup template (no secrets) |
@@ -300,11 +373,21 @@ This fetches issue details, extracts acceptance criteria, and creates a unified 
 ### Push Specs to Jira
 
 ```bash
-kspec sync-jira                      # Create new issue
-kspec sync-jira --update PROJ-789    # Update existing issue
+kspec sync-jira                      # Smart: updates existing or creates new
+kspec sync-jira --create             # Force create new issue
+kspec sync-jira --project SECOPS     # Create in specific project
+kspec sync-jira --update PROJ-789    # Update specific issue
 ```
 
-Create or update Jira issues with spec content for BA/PM review.
+`sync-jira` is smart — it checks `jira-links.json` for an existing linked issue and updates it by default. Use `--create` to force a new issue.
+
+### Pull Latest Updates
+
+```bash
+kspec jira-pull
+```
+
+Fetches the latest state of linked Jira issues, generates a change report, and presents changes for approval before modifying spec.md.
 
 ### Create Subtasks
 
@@ -373,6 +456,7 @@ Set during `kspec init`:
 
 - **Date format**: YYYY-MM-DD, DD-MM-YYYY, or MM-DD-YYYY
 - **Auto-execute**: ask (default), auto, or dry-run
+- **Jira project**: Default project key for `sync-jira` (when Atlassian MCP detected)
 
 ## Auto-Updates
 
@@ -398,6 +482,8 @@ kspec --version
 
 - [Methodology](docs/methodology.md) — Why spec-driven development works
 - [Example: Todo App](docs/examples/todo-app/) — Complete walkthrough with real files
+- [Contracts](docs/contracts.md) — Enforce structured outputs in specs
+- [CHANGELOG](CHANGELOG.md) — Version history and release notes
 - [SECURITY.md](SECURITY.md) — Secure MCP configuration and best practices
 
 ## License

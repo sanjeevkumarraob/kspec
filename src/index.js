@@ -374,6 +374,7 @@ function chat(message, agent) {
     });
     child.on('close', code => {
       resetToDefaultAgent(cli);
+      refreshContext();
       resolve(code);
     });
   });
@@ -386,24 +387,21 @@ function getCurrentSpec() {
   const file = CURRENT_FILE;
   if (fs.existsSync(file)) {
     const spec = fs.readFileSync(file, 'utf8').trim();
+    if (!spec) return null;
     // Handle full path format
     if (fs.existsSync(spec)) return spec;
     // Handle just folder name (from agent mode)
     const fullPath = path.join(getSpecsDir(), spec);
     if (fs.existsSync(fullPath)) return fullPath;
-    // Handle folder name without date prefix - find matching spec
-    const specsDir = getSpecsDir();
-    if (fs.existsSync(specsDir)) {
-      const match = fs.readdirSync(specsDir).find(d => d.includes(spec) || spec.includes(d));
-      if (match) return path.join(specsDir, match);
-    }
   }
   return null;
 }
 
 function setCurrentSpec(folder) {
   ensureDir(KIRO_DIR);
-  fs.writeFileSync(CURRENT_FILE, folder);
+  const basename = path.basename(folder);
+  const normalized = path.join(SPECS_DIR, basename);
+  fs.writeFileSync(CURRENT_FILE, normalized);
 }
 
 function findSpec(name) {
@@ -428,11 +426,11 @@ function getOrSelectSpec(name) {
   if (name) {
     const found = findSpec(name);
     if (found) return found;
-    die(`Spec "${name}" not found.`);
+    die(`Spec "${name}" not found. Run \`kspec list\` to see available specs.`);
   }
   const current = getCurrentSpec();
   if (current) return current;
-  die('No current spec. Run: kspec spec "Feature Name"');
+  die('No current spec. .kiro/.current may be stale or empty.\nRun `kspec list` to see available specs, or `kspec spec "Feature Name"` to create one.');
 }
 
 function getTaskStats(folder) {
@@ -604,7 +602,18 @@ ${memory}
     content += '\n';
   }
 
+  // Design status
+  const designFile = path.join(current, 'design.md');
+  const hasDesign = fs.existsSync(designFile);
+  content += `## Design
+- Status: ${hasDesign ? 'present' : 'not yet created'}
+${hasDesign ? '- Run `kspec verify-design` to review' : '- Run `kspec design` to create (optional)'}
+
+`;
+
   content += `## Quick Commands
+- \`kspec design\` - Create technical design (optional)
+- \`kspec tasks\` - Generate implementation tasks
 - \`kspec build\` - Continue building tasks
 - \`kspec verify\` - Verify implementation
 - \`kspec status\` - Show current status
@@ -658,7 +667,7 @@ const agentTemplates = {
   'kspec-analyse.json': {
     name: 'kspec-analyse',
     description: 'Analyse codebase and update steering docs',
-    model: 'claude-sonnet-4',
+    model: 'claude-sonnet-4.6',
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -676,7 +685,11 @@ Your job:
 3. Suggest updates to steering based on actual codebase
 4. Identify risks, tech debt, improvement areas
 
-Output a clear analysis report. Propose specific steering doc updates.`,
+Output a clear analysis report. Propose specific steering doc updates.
+
+PIPELINE (suggest next steps):
+- Create spec: \`/agent swap kspec-spec\` or \`kspec spec "Feature"\`
+- Review code: \`/agent swap kspec-review\` or \`kspec review\``,
     keyboardShortcut: 'ctrl+shift+a',
     welcomeMessage: 'Analysing codebase...'
   },
@@ -684,7 +697,7 @@ Output a clear analysis report. Propose specific steering doc updates.`,
   'kspec-spec.json': {
     name: 'kspec-spec',
     description: 'Create feature specifications',
-    model: 'claude-sonnet-4',
+    model: 'claude-sonnet-4.6',
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -708,10 +721,13 @@ WORKFLOW (do this autonomously):
 4. Create spec-lite.md (CRITICAL - under 500 words):
    - Concise version for context retention after compression
    - Key requirements only
-5. Update .kiro/.current with the spec folder path
-6. Update .kiro/CONTEXT.md with current state
+5. Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)
+6. Regenerate .kiro/CONTEXT.md with current spec name, path, and progress
 
-Next step: Run \`/agent swap kspec-tasks\` or \`kspec tasks\` to generate implementation tasks.`,
+PIPELINE (suggest next steps):
+- Verify spec: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
+- Create design: \`/agent swap kspec-design\` or \`kspec design\`
+- Generate tasks: \`/agent swap kspec-tasks\` or \`kspec tasks\` (skip design)`,
     keyboardShortcut: 'ctrl+shift+s',
     welcomeMessage: 'Ready to create specification. Describe your feature.'
   },
@@ -719,7 +735,7 @@ Next step: Run \`/agent swap kspec-tasks\` or \`kspec tasks\` to generate implem
   'kspec-tasks.json': {
     name: 'kspec-tasks',
     description: 'Generate implementation tasks from spec',
-    model: 'claude-sonnet-4',
+    model: 'claude-sonnet-4.6',
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -733,17 +749,20 @@ WORKFLOW:
 1. Read .kiro/CONTEXT.md for current spec location
 2. Read .kiro/.current to get spec folder path
 3. Read spec.md and spec-lite.md from that folder
-4. Generate tasks.md in the spec folder with:
+4. If design.md exists in the spec folder, read it for architecture guidance and dependency ordering
+5. Generate tasks.md in the spec folder with:
    - Checkbox format: "- [ ] Task description"
    - TDD approach: test first, then implement
    - Logical ordering (models → services → API → UI)
    - Dependencies noted
    - File paths where changes occur
-5. Update .kiro/CONTEXT.md with task count
+6. Regenerate .kiro/CONTEXT.md with updated task count from tasks.md
 
 Tasks must be atomic and independently verifiable.
 
-Next step: Run \`/agent swap kspec-build\` or \`kspec build\` to start implementing tasks.`,
+PIPELINE (suggest next steps):
+- Verify tasks: \`/agent swap kspec-verify\` or \`kspec verify-tasks\`
+- Start building: \`/agent swap kspec-build\` or \`kspec build\``,
     keyboardShortcut: 'ctrl+shift+t',
     welcomeMessage: 'Reading current spec and generating tasks...'
   },
@@ -751,7 +770,7 @@ Next step: Run \`/agent swap kspec-build\` or \`kspec build\` to start implement
   'kspec-build.json': {
     name: 'kspec-build',
     description: 'Execute tasks with TDD',
-    model: 'claude-sonnet-4',
+    model: 'claude-sonnet-4.6',
     tools: ['read', 'write', 'shell'],
     allowedTools: ['read', 'write', 'shell'],
     resources: [
@@ -771,7 +790,7 @@ WORKFLOW:
    c) Run tests
    d) Mark task complete: change "- [ ]" to "- [x]"
    e) Update tasks.md file
-   f) Update .kiro/CONTEXT.md with new progress
+   f) After completing tasks, regenerate .kiro/CONTEXT.md with updated progress
 5. Commit after each task with descriptive message
 
 CRITICAL:
@@ -780,7 +799,10 @@ CRITICAL:
 - NEVER delete .kiro folders
 - Use non-interactive flags for commands (--yes, -y)
 
-When all tasks complete: Run \`/agent swap kspec-verify\` or \`kspec verify\` to verify implementation.`,
+PIPELINE (suggest next steps):
+- When all tasks complete: \`/agent swap kspec-verify\` or \`kspec verify\`
+- Review code: \`/agent swap kspec-review\` or \`kspec review\`
+- Sync to Jira: \`/agent swap kspec-jira\` or \`kspec sync-jira\``,
     keyboardShortcut: 'ctrl+shift+b',
     welcomeMessage: 'Reading current task and building...'
   },
@@ -788,7 +810,7 @@ When all tasks complete: Run \`/agent swap kspec-verify\` or \`kspec verify\` to
   'kspec-verify.json': {
     name: 'kspec-verify',
     description: 'Verify spec, tasks, or implementation',
-    model: 'claude-sonnet-4',
+    model: 'claude-sonnet-4.6',
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
@@ -801,14 +823,26 @@ When all tasks complete: Run \`/agent swap kspec-verify\` or \`kspec verify\` to
 FIRST: Read .kiro/CONTEXT.md for current spec and progress.
 If contract validation results are provided, verify they match your observations.
 
-
 Based on what you're asked to verify:
 
-VERIFY-SPEC:
-- Check spec covers all requirements
-- Identify gaps or ambiguities
-- Suggest splitting large requirements
-- Confirm implementability with current codebase
+VERIFY-SPEC (Interactive Spec Shaping):
+1. Read spec.md thoroughly
+2. Generate 4-8 targeted, NUMBERED clarifying questions:
+   - Propose sensible assumptions: "I assume X, is that correct?"
+   - Suggest reasonable defaults for each question
+   - Make it easy for user to confirm or provide alternatives
+   - End with an open question about exclusions
+3. Wait for user responses
+4. Based on answers, suggest specific updates to spec.md
+5. Get user confirmation before making changes
+6. Update spec.md and regenerate spec-lite.md
+
+VERIFY-DESIGN:
+- Check design.md covers all spec requirements
+- Verify architecture decisions are sound
+- Check component breakdown is complete
+- Confirm data models and API contracts are well-defined
+- Report: PASS/FAIL with specific issues
 
 VERIFY-TASKS:
 - Check tasks cover all spec requirements
@@ -822,7 +856,13 @@ VERIFY-IMPLEMENTATION:
 - Run tests, report results
 - List any gaps between spec and implementation
 
-Output a clear verification report with pass/fail status.`,
+Output a clear verification report with pass/fail status.
+
+PIPELINE (suggest next steps based on verification type):
+- After verify-spec: \`/agent swap kspec-design\` or \`kspec design\`
+- After verify-design: \`/agent swap kspec-tasks\` or \`kspec tasks\`
+- After verify-tasks: \`/agent swap kspec-build\` or \`kspec build\`
+- After verify-implementation: \`kspec done\` or \`/agent swap kspec-review\``,
     keyboardShortcut: 'ctrl+shift+v',
     welcomeMessage: 'What should I verify?'
   },
@@ -830,7 +870,7 @@ Output a clear verification report with pass/fail status.`,
   'kspec-review.json': {
     name: 'kspec-review',
     description: 'Code review',
-    model: 'claude-sonnet-4',
+    model: 'claude-sonnet-4.6',
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
@@ -852,15 +892,55 @@ Your job:
    - Performance implications
 4. Provide actionable feedback
 
-Output: APPROVE / REQUEST_CHANGES with specific issues.`,
+Output: APPROVE / REQUEST_CHANGES with specific issues.
+
+PIPELINE (suggest next steps):
+- Fix issues: \`/agent swap kspec-build\` or \`kspec build\`
+- Verify implementation: \`/agent swap kspec-verify\` or \`kspec verify\`
+- Sync to Jira: \`/agent swap kspec-jira\` or \`kspec sync-jira\``,
     keyboardShortcut: 'ctrl+shift+r',
     welcomeMessage: 'Ready to review. What should I look at?'
+  },
+
+  'kspec-design.json': {
+    name: 'kspec-design',
+    description: 'Create technical design from spec',
+    model: 'claude-sonnet-4.6',
+    tools: ['read', 'write'],
+    allowedTools: ['read', 'write'],
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kiro/specs/**/*.md'
+    ],
+    prompt: `You are the kspec design architect.
+
+WORKFLOW:
+1. Read .kiro/CONTEXT.md for current spec location
+2. Read .kiro/.current to get spec folder path
+3. Read spec.md from that folder
+4. Create design.md in the spec folder with these sections:
+   - Architecture Overview
+   - Component Breakdown
+   - Data Models
+   - API Contracts
+   - Dependency Mapping
+   - Technical Decisions
+   - Risk Assessment
+5. Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)
+6. Regenerate .kiro/CONTEXT.md with design status
+
+PIPELINE (suggest next steps):
+- Verify design: \`/agent swap kspec-verify\` or \`kspec verify-design\`
+- Generate tasks: \`/agent swap kspec-tasks\` or \`kspec tasks\``,
+    keyboardShortcut: 'ctrl+shift+d',
+    welcomeMessage: 'Reading spec and creating technical design...'
   },
 
   'kspec-jira.json': {
     name: 'kspec-jira',
     description: 'Jira integration for specs',
-    model: 'claude-sonnet-4',
+    model: 'claude-sonnet-4.6',
     tools: ['read', 'write', '@atlassian'],
     allowedTools: ['read', 'write', '@atlassian'],
     includeMcpJson: true,
@@ -883,14 +963,27 @@ CAPABILITIES:
    - Create spec.md with proper attribution to source issues
    - Include Jira links in spec for traceability
 
-2. SYNC TO JIRA (when user asks to sync/push):
+2. PULL UPDATES (when user asks to pull latest or sync from Jira):
+   - Read jira-links.json for linked issue keys
+   - Use MCP to fetch latest state of each linked issue
+   - Compare against current spec.md content
+   - Generate a CHANGE REPORT showing:
+     * New/modified acceptance criteria
+     * Updated descriptions or summaries
+     * New comments with relevant context
+     * Status changes
+   - Present CHANGE REPORT to user for review
+   - NEVER auto-update spec.md — always get user confirmation first
+   - After user approves changes, update spec.md and regenerate spec-lite.md
+
+3. SYNC TO JIRA (when user asks to sync/push):
    - Create new "Technical Specification" issue in Jira
    - Or update existing issue with spec content
    - Link to source stories
    - Add comment requesting BA review
    - Set appropriate labels (kspec, technical-spec)
 
-3. CREATE SUBTASKS (when user asks after tasks.md exists):
+4. CREATE SUBTASKS (when user asks after tasks.md exists):
    - Read tasks.md from current spec
    - Create Jira sub-tasks for each task
    - Link to parent spec issue
@@ -898,15 +991,21 @@ CAPABILITIES:
 
 WORKFLOW:
 1. Read .kiro/CONTEXT.md for current spec state
-2. Identify what user wants (pull/sync/subtasks)
+2. Identify what user wants (pull/sync/subtasks/pull-updates)
 3. Use Atlassian MCP for Jira operations
-4. Update .kiro/CONTEXT.md with Jira links
-5. Report what was created/updated
+4. Update jira-links.json with issue keys
+5. Update .kiro/CONTEXT.md to include Jira issue links from jira-links.json
+6. Report what was created/updated
 
 IMPORTANT:
 - Always include Jira issue links in spec.md
 - Add "Source: JIRA-XXX" attribution for pulled requirements
-- Update CONTEXT.md with linked Jira issues`,
+- NEVER auto-update spec.md on pull-updates — present changes and confirm first
+
+PIPELINE (suggest next steps):
+- After pull: \`/agent swap kspec-spec\` or \`kspec spec\`
+- After sync: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
+- After subtasks: \`kspec status\` to see full picture`,
     keyboardShortcut: 'ctrl+shift+j',
     welcomeMessage: 'Jira integration ready. Provide issue keys to pull, or say "sync" to push spec to Jira.'
   }
@@ -1332,23 +1431,115 @@ spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec'
     }
 
     console.log('\nNext step:');
-    console.log('  kspec tasks');
-    console.log('  or inside kiro-cli: /agent swap kspec-tasks\n');
+    console.log('  kspec design   (create technical design)');
+    console.log('  kspec tasks    (skip design, generate tasks directly)');
+    console.log('  or inside kiro-cli: /agent swap kspec-design\n');
   },
 
   async 'verify-spec'(args) {
     const folder = getOrSelectSpec(args.join(' '));
     log(`Verifying spec: ${folder}`);
-    
-    await chat(`Verify the specification in ${folder}/spec.md:
 
-1. Does it cover all requirements clearly?
-2. Are there gaps or ambiguities?
-3. Should large requirements be split into smaller chunks?
-4. Is it implementable with the current codebase?
+    await chat(`VERIFY-SPEC: Interactively review and shape the specification in ${folder}/spec.md.
 
-Read the codebase to check implementability.
+1. Read spec.md thoroughly
+2. Generate 4-8 targeted, NUMBERED clarifying questions:
+   - Propose sensible assumptions: "I assume X, is that correct?"
+   - Suggest reasonable defaults for each question
+   - Make it easy to confirm or provide alternatives
+   - End with an open question about exclusions
+3. Wait for my responses
+4. Based on answers, suggest specific updates to spec.md
+5. Get my confirmation before making changes
+6. Update spec.md and regenerate spec-lite.md
+
+Read the codebase to check implementability and inform your questions.`, 'kspec-verify');
+  },
+
+  async design(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const specFile = path.join(folder, 'spec.md');
+
+    if (!fs.existsSync(specFile)) {
+      die(`No spec.md found in ${folder}. Run 'kspec spec "Feature"' first.`);
+    }
+
+    log(`Creating design: ${folder}`);
+
+    await chat(`Create technical design from specification.
+
+Spec folder: ${folder}
+Read: ${folder}/spec.md and ${folder}/spec-lite.md
+
+Create ${folder}/design.md with these sections:
+- Architecture Overview
+- Component Breakdown
+- Data Models
+- API Contracts
+- Dependency Mapping
+- Technical Decisions
+- Risk Assessment
+
+Read the codebase to inform your architecture decisions.`, 'kspec-design');
+
+    console.log('\nNext step:');
+    console.log('  kspec verify-design  (review design)');
+    console.log('  kspec tasks          (generate tasks)');
+    console.log('  or inside kiro-cli: /agent swap kspec-tasks\n');
+  },
+
+  async 'verify-design'(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const designFile = path.join(folder, 'design.md');
+
+    if (!fs.existsSync(designFile)) {
+      die(`No design.md found in ${folder}. Run 'kspec design' first.`);
+    }
+
+    log(`Verifying design: ${folder}`);
+
+    await chat(`VERIFY-DESIGN: Review the technical design in ${folder}/design.md against ${folder}/spec.md.
+
+1. Check design covers all spec requirements
+2. Verify architecture decisions are sound
+3. Check component breakdown is complete
+4. Confirm data models and API contracts are well-defined
+5. Identify risks or gaps
+
 Report: PASS/FAIL with specific issues.`, 'kspec-verify');
+  },
+
+  async 'jira-pull'(args) {
+    requireAtlassianMcp();
+
+    const folder = getOrSelectSpec(args.join(' '));
+    const jiraLinksFile = path.join(folder, 'jira-links.json');
+
+    if (!fs.existsSync(jiraLinksFile)) {
+      die(`No jira-links.json found in ${folder}. Run 'kspec spec --jira' or 'kspec sync-jira' first.`);
+    }
+
+    log(`Pulling Jira updates: ${folder}`);
+
+    await chat(`PULL UPDATES: Fetch latest changes from linked Jira issues.
+
+Spec folder: ${folder}
+Jira links: ${jiraLinksFile}
+
+WORKFLOW:
+1. Read ${jiraLinksFile} for linked issue keys
+2. Use Atlassian MCP to fetch latest state of each linked issue
+3. Read current ${folder}/spec.md
+4. Compare and generate a CHANGE REPORT showing:
+   - New/modified acceptance criteria
+   - Updated descriptions or summaries
+   - New comments with relevant context
+   - Status changes
+5. Present the CHANGE REPORT for review
+6. NEVER auto-update spec.md — wait for confirmation
+7. After confirmation, update spec.md and regenerate spec-lite.md
+
+IMPORTANT: Always present changes and get user approval before modifying spec.`, 'kspec-jira');
   },
 
   async 'sync-jira'(args) {
@@ -1389,13 +1580,25 @@ Report: PASS/FAIL with specific issues.`, 'kspec-verify');
     }
 
     if (!createFlag && !updateIssue) {
-      // Default to create
-      log('No flag specified, will create new Jira issue');
-      if (!project) {
-        die(`No Jira project configured.
+      // Smart default: check if spec already has a linked Jira issue
+      const jiraLinksFile = path.join(folder, 'jira-links.json');
+      if (fs.existsSync(jiraLinksFile)) {
+        try {
+          const links = JSON.parse(fs.readFileSync(jiraLinksFile, 'utf8'));
+          if (links.specIssue) {
+            updateIssue = links.specIssue;
+            log(`Found existing issue ${updateIssue}, updating (use --create to force new)`);
+          }
+        } catch {}
+      }
+      if (!updateIssue) {
+        log('No existing Jira issue found, will create new');
+        if (!project) {
+          die(`No Jira project configured.
 
 Run 'kspec init' to set a default project, or specify with --project:
   kspec sync-jira --project SECOPS`);
+        }
       }
     }
 
@@ -1498,10 +1701,14 @@ Report created subtasks with their URLs.`, 'kspec-jira');
 
     log(`Generating tasks: ${folder}`);
 
+    const designFile = path.join(folder, 'design.md');
+    const hasDesign = fs.existsSync(designFile);
+
     await chat(`Generate tasks from specification.
 
 Spec folder: ${folder}
 Read: ${folder}/spec.md and ${folder}/spec-lite.md
+${hasDesign ? `Design: ${folder}/design.md (use for architecture guidance and dependency ordering)` : ''}
 
 Create ${folder}/tasks.md with:
 - Checkbox format: "- [ ] Task description"
@@ -1776,9 +1983,20 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
 
     if (current) {
       console.log(`\nCurrent spec: ${path.basename(current)}`);
+      const specFile = path.join(current, 'spec.md');
+      const designFile = path.join(current, 'design.md');
+      const tasksFile = path.join(current, 'tasks.md');
+      const hasSpec = fs.existsSync(specFile);
+      const hasDesign = fs.existsSync(designFile);
+      const hasTasks = fs.existsSync(tasksFile);
       const stats = getTaskStats(current);
+
+      console.log(`Spec: ${hasSpec ? 'yes' : 'no'}`);
+      console.log(`Design: ${hasDesign ? 'yes' : 'no (optional)'}`);
+      console.log(`Tasks: ${hasTasks ? 'yes' : 'no'}`);
+
       if (stats) {
-        console.log(`Tasks: ${stats.done}/${stats.total} completed`);
+        console.log(`Progress: ${stats.done}/${stats.total} completed`);
         if (stats.remaining > 0) {
           console.log(`\nNext step:`);
           console.log(`  kspec build`);
@@ -1788,10 +2006,19 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
           console.log(`  kspec verify`);
           console.log(`  or inside kiro-cli: /agent swap kspec-verify`);
         }
-      } else {
+      } else if (!hasDesign && hasSpec) {
+        console.log(`\nNext step:`);
+        console.log(`  kspec design   (create technical design)`);
+        console.log(`  kspec tasks    (skip design, generate tasks)`);
+        console.log(`  or inside kiro-cli: /agent swap kspec-design`);
+      } else if (hasDesign && !hasTasks) {
         console.log(`\nNext step:`);
         console.log(`  kspec tasks`);
         console.log(`  or inside kiro-cli: /agent swap kspec-tasks`);
+      } else if (!hasSpec) {
+        console.log(`\nNext step:`);
+        console.log(`  kspec spec "Feature Name"`);
+        console.log(`  or inside kiro-cli: /agent swap kspec-spec`);
       }
     } else {
       console.log(`\nNo current spec.`);
@@ -1815,9 +2042,10 @@ Agent           Shortcut        Purpose
 ─────────────────────────────────────────────────────────
 kspec-analyse   Ctrl+Shift+A    Analyse codebase, update steering
 kspec-spec      Ctrl+Shift+S    Create specifications
+kspec-design    Ctrl+Shift+D    Create technical design from spec
 kspec-tasks     Ctrl+Shift+T    Generate tasks from spec
 kspec-build     Ctrl+Shift+B    Execute tasks with TDD
-kspec-verify    Ctrl+Shift+V    Verify spec/tasks/implementation
+kspec-verify    Ctrl+Shift+V    Verify spec/design/tasks/implementation
 kspec-review    Ctrl+Shift+R    Code review
 kspec-jira      Ctrl+Shift+J    Jira integration (requires Atlassian MCP)
 
@@ -1867,8 +2095,10 @@ CLI Workflow (outside kiro-cli):
   kspec init              Interactive setup
   kspec analyse           Analyse codebase, update steering
   kspec spec "Feature"    Create specification
-  kspec verify-spec       Verify spec is complete
-  kspec tasks             Generate tasks from spec
+  kspec verify-spec       Interactively review and shape spec
+  kspec design            Create technical design from spec
+  kspec verify-design     Verify design against spec
+  kspec tasks             Generate tasks from spec (uses design if exists)
   kspec verify-tasks      Verify tasks cover spec
   kspec build             Execute tasks with TDD
   kspec verify            Verify implementation
@@ -1876,20 +2106,24 @@ CLI Workflow (outside kiro-cli):
 
 Inside kiro-cli (recommended):
   /agent swap kspec-spec    → Describe feature → creates spec
+  /agent swap kspec-design  → Create technical design
   /agent swap kspec-tasks   → Generates tasks from spec
   /agent swap kspec-build   → Builds tasks with TDD
-  /agent swap kspec-verify  → Verifies implementation
+  /agent swap kspec-verify  → Verifies spec/design/tasks/implementation
 
   Agents read .kiro/CONTEXT.md automatically for state.
 
 Jira Integration (requires Atlassian MCP):
   kspec spec --jira PROJ-123,PROJ-456 "Feature"
                           Create spec from Jira issues
-  kspec sync-jira         Create Jira issue (uses configured project)
+  kspec sync-jira         Smart sync (updates existing or creates new)
+  kspec sync-jira --create
+                          Force create new Jira issue
   kspec sync-jira --project SECOPS
                           Create in specific project
   kspec sync-jira --update PROJ-123
                           Update existing Jira issue
+  kspec jira-pull         Pull latest updates from linked Jira issues
   kspec jira-subtasks     Create Jira subtasks from tasks.md
   kspec jira-subtasks PROJ-123
                           Create subtasks under specific issue
@@ -1915,6 +2149,8 @@ Examples:
   kspec init                        # First time setup
   kspec spec "User Auth"            # CLI mode
   kspec spec --jira PROJ-123 "Auth" # From Jira story
+  kspec design                      # Create design (optional)
+  kspec jira-pull                   # Pull latest Jira updates
   kiro-cli --agent kspec-spec       # Direct agent mode
 `);
   }
@@ -1948,4 +2184,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR };

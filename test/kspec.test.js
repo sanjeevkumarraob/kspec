@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR;
+  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, compareVersions, hasAtlassianMcp, getMcpConfig, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR } = require('../src/index.js'));
   });
 
   after(() => {
@@ -319,15 +319,18 @@ describe('kspec', () => {
       const expectedAgents = [
         'kspec-analyse.json',
         'kspec-spec.json',
+        'kspec-design.json',
         'kspec-tasks.json',
         'kspec-build.json',
         'kspec-verify.json',
-        'kspec-review.json'
+        'kspec-review.json',
+        'kspec-jira.json'
       ];
 
       for (const agent of expectedAgents) {
         assert(agentTemplates[agent], `Missing agent: ${agent}`);
       }
+      assert.strictEqual(Object.keys(agentTemplates).length, 8, 'Should have exactly 8 agents');
     });
 
     it('agents have Kiro CLI compatible format', () => {
@@ -694,6 +697,339 @@ describe('kspec', () => {
 
     it('LEGACY_KSPEC_DIR is .kspec', () => {
       assert.strictEqual(LEGACY_KSPEC_DIR, '.kspec');
+    });
+  });
+
+  describe('agent model version', () => {
+    it('all agents use claude-sonnet-4.6', () => {
+      for (const [filename, agent] of Object.entries(agentTemplates)) {
+        assert.strictEqual(agent.model, 'claude-sonnet-4.6', `${filename}: should use claude-sonnet-4.6`);
+      }
+    });
+  });
+
+  describe('agent prompt format', () => {
+    it('kspec-spec uses standardized .current format', () => {
+      const agent = agentTemplates['kspec-spec.json'];
+      assert(agent.prompt.includes('.kiro/specs/'), 'Should reference .kiro/specs/ format');
+      assert(agent.prompt.includes('Regenerate .kiro/CONTEXT.md'), 'Should say regenerate CONTEXT.md');
+    });
+
+    it('kspec-tasks references design.md', () => {
+      const agent = agentTemplates['kspec-tasks.json'];
+      assert(agent.prompt.includes('design.md'), 'Should reference design.md');
+    });
+
+    it('kspec-build uses regenerate for CONTEXT.md', () => {
+      const agent = agentTemplates['kspec-build.json'];
+      assert(agent.prompt.includes('regenerate .kiro/CONTEXT.md'), 'Should say regenerate CONTEXT.md');
+    });
+
+    it('kspec-verify has VERIFY-DESIGN section', () => {
+      const agent = agentTemplates['kspec-verify.json'];
+      assert(agent.prompt.includes('VERIFY-DESIGN'), 'Should have VERIFY-DESIGN section');
+    });
+
+    it('kspec-jira references jira-links.json', () => {
+      const agent = agentTemplates['kspec-jira.json'];
+      assert(agent.prompt.includes('jira-links.json'), 'Should reference jira-links.json');
+    });
+
+    it('all agents have PIPELINE section', () => {
+      for (const [filename, agent] of Object.entries(agentTemplates)) {
+        assert(agent.prompt.includes('PIPELINE'), `${filename}: should have PIPELINE section`);
+      }
+    });
+  });
+
+  describe('setCurrentSpec', () => {
+    it('normalizes full paths to relative format', () => {
+      const specFolder = path.join('.kiro', 'specs', '2026-01-25-normalize-test');
+      fs.mkdirSync(specFolder, { recursive: true });
+      setCurrentSpec('/some/absolute/path/2026-01-25-normalize-test');
+      const content = fs.readFileSync(path.join('.kiro', '.current'), 'utf8');
+      assert.strictEqual(content, path.join('.kiro', 'specs', '2026-01-25-normalize-test'));
+    });
+
+    it('normalizes relative paths consistently', () => {
+      const specFolder = path.join('.kiro', 'specs', '2026-01-25-relative-test');
+      fs.mkdirSync(specFolder, { recursive: true });
+      setCurrentSpec('.kiro/specs/2026-01-25-relative-test');
+      const content = fs.readFileSync(path.join('.kiro', '.current'), 'utf8');
+      assert.strictEqual(content, path.join('.kiro', 'specs', '2026-01-25-relative-test'));
+    });
+  });
+
+  describe('getCurrentSpec enhanced', () => {
+    it('returns null for empty .current file', () => {
+      fs.writeFileSync(path.join('.kiro', '.current'), '');
+      const result = getCurrentSpec();
+      assert.strictEqual(result, null);
+    });
+
+    it('returns null for whitespace-only .current file', () => {
+      fs.writeFileSync(path.join('.kiro', '.current'), '   \n  ');
+      const result = getCurrentSpec();
+      assert.strictEqual(result, null);
+    });
+
+    it('does not use fuzzy matching', () => {
+      const specFolder = path.join('.kiro', 'specs', '2026-01-25-fuzzy-test');
+      fs.mkdirSync(specFolder, { recursive: true });
+      // Write a partial name that would have matched with fuzzy matching
+      fs.writeFileSync(path.join('.kiro', '.current'), 'fuzzy-test');
+      const result = getCurrentSpec();
+      assert.strictEqual(result, null, 'Should not fuzzy match partial names');
+    });
+
+    it('handles folder name fallback for backward compat', () => {
+      const specName = '2026-01-25-backward-compat';
+      const specFolder = path.join('.kiro', 'specs', specName);
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(path.join('.kiro', '.current'), specName);
+      const result = getCurrentSpec();
+      assert.strictEqual(result, specFolder);
+    });
+  });
+
+  describe('getOrSelectSpec errors', () => {
+    it('suggests kspec list when spec not found', () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        getOrSelectSpec('nonexistent-feature');
+      } catch (e) {
+        assert(errorOutput.includes('kspec list'), 'Should suggest kspec list');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+
+    it('mentions stale .current when no current spec', () => {
+      // Clear .current
+      if (fs.existsSync(path.join('.kiro', '.current'))) {
+        fs.unlinkSync(path.join('.kiro', '.current'));
+      }
+
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        getOrSelectSpec();
+      } catch (e) {
+        assert(errorOutput.includes('stale'), 'Should mention stale .current');
+        assert(errorOutput.includes('kspec list'), 'Should suggest kspec list');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('sync-jira smart default', () => {
+    it('reads jira-links.json for existing specIssue', () => {
+      const folder = path.join('.kiro', 'specs', '2026-01-25-jira-smart');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'jira-links.json'), JSON.stringify({
+        specIssue: 'PROJ-999'
+      }));
+      // Verify the file exists and has specIssue
+      const links = JSON.parse(fs.readFileSync(path.join(folder, 'jira-links.json'), 'utf8'));
+      assert.strictEqual(links.specIssue, 'PROJ-999');
+    });
+  });
+
+  describe('kspec-design agent', () => {
+    it('exists in agent templates', () => {
+      assert(agentTemplates['kspec-design.json'], 'Missing kspec-design agent');
+    });
+
+    it('has correct structure', () => {
+      const agent = agentTemplates['kspec-design.json'];
+      assert.strictEqual(agent.name, 'kspec-design');
+      assert.strictEqual(agent.model, 'claude-sonnet-4.6');
+      assert(Array.isArray(agent.tools));
+      assert(agent.tools.includes('read'));
+      assert(agent.tools.includes('write'));
+    });
+
+    it('has keyboard shortcut', () => {
+      const agent = agentTemplates['kspec-design.json'];
+      assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+d');
+    });
+
+    it('prompt mentions design sections', () => {
+      const agent = agentTemplates['kspec-design.json'];
+      assert(agent.prompt.includes('Architecture Overview'), 'Should mention Architecture Overview');
+      assert(agent.prompt.includes('Component Breakdown'), 'Should mention Component Breakdown');
+      assert(agent.prompt.includes('Data Models'), 'Should mention Data Models');
+      assert(agent.prompt.includes('API Contracts'), 'Should mention API Contracts');
+    });
+  });
+
+  describe('refreshContext with design', () => {
+    it('shows design not yet created', () => {
+      const specFolder = '.kiro/specs/2026-01-25-no-design';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# No Design Spec');
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const content = refreshContext();
+      assert(content.includes('Design'), 'Should include Design section');
+      assert(content.includes('not yet created'), 'Should show not yet created');
+    });
+
+    it('shows design present', () => {
+      const specFolder = '.kiro/specs/2026-01-25-has-design';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# Has Design Spec');
+      fs.writeFileSync(`${specFolder}/design.md`, '# Design');
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const content = refreshContext();
+      assert(content.includes('Design'), 'Should include Design section');
+      assert(content.includes('present'), 'Should show present');
+    });
+
+    it('quick commands include design', () => {
+      const specFolder = '.kiro/specs/2026-01-25-has-design';
+      fs.writeFileSync('.kiro/.current', specFolder);
+      const content = refreshContext();
+      assert(content.includes('kspec design'), 'Quick commands should include design');
+    });
+  });
+
+  describe('help includes design', () => {
+    it('mentions design and verify-design commands', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('kspec design'), 'Help should mention design command');
+        assert(output.includes('verify-design'), 'Help should mention verify-design');
+        assert(output.includes('jira-pull'), 'Help should mention jira-pull');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('agents includes design', () => {
+    it('lists kspec-design agent', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.agents();
+        assert(output.includes('kspec-design'), 'Should list kspec-design agent');
+        assert(output.includes('Ctrl+Shift+D'), 'Should show design agent shortcut');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('status with design pipeline', () => {
+    it('shows design step when spec exists but no design', () => {
+      const specFolder = '.kiro/specs/2026-01-25-status-design';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec.md`, '# Spec');
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# Lite');
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.status();
+        assert(output.includes('kspec design'), 'Should suggest design as next step');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('shows tasks step when design exists but no tasks', () => {
+      const specFolder = '.kiro/specs/2026-01-25-status-tasks';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec.md`, '# Spec');
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# Lite');
+      fs.writeFileSync(`${specFolder}/design.md`, '# Design');
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.status();
+        assert(output.includes('kspec tasks'), 'Should suggest tasks as next step');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('jira-pull command', () => {
+    it('requires jira-links.json', async () => {
+      const folder = '.kiro/specs/2026-01-25-jira-pull-test';
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands['jira-pull']([]);
+      } catch (e) {
+        assert(errorOutput.includes('jira-links.json'), 'Should mention missing jira-links.json');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('kspec-jira pull-updates', () => {
+    it('agent prompt includes PULL UPDATES capability', () => {
+      const agent = agentTemplates['kspec-jira.json'];
+      assert(agent.prompt.includes('PULL UPDATES'), 'Should have PULL UPDATES capability');
+    });
+
+    it('agent prompt warns against auto-update', () => {
+      const agent = agentTemplates['kspec-jira.json'];
+      assert(agent.prompt.includes('NEVER auto-update'), 'Should warn against auto-updating spec');
+    });
+  });
+
+  describe('verify-spec as spec-shaper', () => {
+    it('verify agent has interactive spec shaping', () => {
+      const agent = agentTemplates['kspec-verify.json'];
+      assert(agent.prompt.includes('Interactive Spec Shaping'), 'Should have Interactive Spec Shaping');
+    });
+
+    it('verify agent asks clarifying questions', () => {
+      const agent = agentTemplates['kspec-verify.json'];
+      assert(agent.prompt.includes('clarifying questions'), 'Should mention clarifying questions');
+    });
+
+    it('verify agent gets user confirmation', () => {
+      const agent = agentTemplates['kspec-verify.json'];
+      assert(agent.prompt.includes('user confirmation') || agent.prompt.includes('Get user confirmation'), 'Should require user confirmation');
     });
   });
 

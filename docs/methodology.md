@@ -18,7 +18,7 @@ These problems compound. A feature that should take hours takes days. Code quali
 kspec enforces a disciplined workflow that makes AI predictable and reliable:
 
 ```
-analyse → spec → verify-spec → tasks → verify-tasks → build → verify → done
+analyse → spec → verify-spec → design (optional) → tasks → verify-tasks → build → verify → done
 ```
 
 ### Principle 1: Specs Before Code
@@ -75,6 +75,7 @@ Bugs found late cost 10x more to fix. kspec verifies at every step:
 | Phase | Verification | Catches |
 |-------|--------------|---------|
 | After spec | `verify-spec` | Missing requirements, ambiguity |
+| After design | `verify-design` | Unsound architecture, missing components |
 | After tasks | `verify-tasks` | Incomplete task coverage |
 | After build | `verify` | Implementation drift from spec |
 
@@ -128,21 +129,27 @@ Creates `spec.md` (detailed) and `spec-lite.md` (concise, for context preservati
 ```bash
 kspec verify-spec
 ```
-AI checks: Are requirements complete? Any ambiguity? Any conflicts with existing code?
+Interactively shapes your spec through targeted clarifying questions with sensible defaults. Asks for confirmation before making changes.
 
-### Phase 4: Generate Tasks
+### Phase 4: Design (Optional)
+```bash
+kspec design
+```
+AI creates `design.md` with architecture overview, component breakdown, data models, API contracts, and technical decisions. Skip this step for simpler features by going directly to `kspec tasks`.
+
+### Phase 5: Generate Tasks
 ```bash
 kspec tasks
 ```
-AI breaks spec into atomic, testable tasks with TDD approach.
+AI breaks spec into atomic, testable tasks with TDD approach. Uses `design.md` for architecture guidance and dependency ordering when present.
 
-### Phase 5: Verify Tasks
+### Phase 6: Verify Tasks
 ```bash
 kspec verify-tasks
 ```
 AI checks: Do tasks cover all spec requirements? Any gaps?
 
-### Phase 6: Build
+### Phase 7: Build
 ```bash
 kspec build
 ```
@@ -153,13 +160,13 @@ AI executes tasks one by one:
 4. Mark task complete
 5. Commit
 
-### Phase 7: Final Verification
+### Phase 8: Final Verification
 ```bash
 kspec verify
 ```
 AI verifies: Does implementation match spec? All tests pass? Any drift?
 
-### Phase 8: Complete
+### Phase 9: Complete
 ```bash
 kspec done
 ```
