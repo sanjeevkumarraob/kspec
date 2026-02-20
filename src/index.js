@@ -12,6 +12,7 @@ const CONFIG_FILE = path.join(KIRO_DIR, 'config.json');
 const CONTEXT_FILE = path.join(KIRO_DIR, 'CONTEXT.md');
 const CURRENT_FILE = path.join(KIRO_DIR, '.current');
 const MEMORY_FILE = path.join(KIRO_DIR, 'memory.md');
+const MILESTONES_DIR = path.join(KIRO_DIR, 'milestones');
 const LEGACY_KSPEC_DIR = '.kspec';
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
 const KIRO_MCP_CONFIG_WORKSPACE_SETTINGS = path.join(KIRO_DIR, 'settings', 'mcp.json');
@@ -24,6 +25,7 @@ const defaultConfig = {
   dateFormat: 'YYYY-MM-DD',
   autoExecute: 'ask',
   initialized: false,
+  testCommand: null,
   jira: {
     project: null,
     enabled: false
@@ -472,6 +474,31 @@ function isSpecStale(folder) {
   return specMtime > specLiteMtime;
 }
 
+// Auto-refresh spec-lite.md when spec.md is modified (truncation fallback)
+function autoRefreshSpecLite(folder) {
+  if (!isSpecStale(folder)) return;
+  log('spec.md changed — auto-refreshing spec-lite.md...');
+  const specContent = fs.readFileSync(path.join(folder, 'spec.md'), 'utf8');
+  const contractIdx = specContent.indexOf('## Contract');
+  const content = contractIdx > 0 ? specContent.slice(0, contractIdx).trim() : specContent;
+  const lite = content.length > 2000
+    ? content.slice(0, 2000) + '\n\n... (truncated, run `kspec refresh` for AI-generated summary)'
+    : content;
+  fs.writeFileSync(path.join(folder, 'spec-lite.md'), lite);
+  log('spec-lite.md updated (truncated copy — run `kspec refresh` for AI summary)');
+}
+
+// Record a metric event with timestamp for observability
+function recordMetric(folder, event) {
+  const metricsFile = path.join(folder, 'metrics.json');
+  let metrics = [];
+  if (fs.existsSync(metricsFile)) {
+    try { metrics = JSON.parse(fs.readFileSync(metricsFile, 'utf8')); } catch {}
+  }
+  metrics.push({ event, timestamp: new Date().toISOString() });
+  fs.writeFileSync(metricsFile, JSON.stringify(metrics, null, 2));
+}
+
 // Check staleness and prompt user before proceeding
 async function checkStaleness(folder) {
   if (!isSpecStale(folder)) return true; // Not stale, proceed
@@ -539,6 +566,28 @@ No active spec. Run: \`kspec spec "Feature Name"\`
     } catch {}
   }
 
+  // Read metadata if exists
+  const metadataFile = path.join(current, 'metadata.json');
+  let metadata = null;
+  if (fs.existsSync(metadataFile)) {
+    try { metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8')); } catch {}
+  }
+
+  // Check milestone membership
+  let milestoneName = null;
+  if (fs.existsSync(MILESTONES_DIR)) {
+    const msFiles = fs.readdirSync(MILESTONES_DIR).filter(f => f.endsWith('.json'));
+    for (const f of msFiles) {
+      try {
+        const ms = JSON.parse(fs.readFileSync(path.join(MILESTONES_DIR, f), 'utf8'));
+        if (ms.specs && ms.specs.includes(current)) {
+          milestoneName = ms.name;
+          break;
+        }
+      } catch {}
+    }
+  }
+
   // Build context
   let content = `# kspec Context
 > Auto-generated. Always read this first after context compression.
@@ -547,6 +596,15 @@ No active spec. Run: \`kspec spec "Feature Name"\`
 **${specName}**
 Path: \`${current}\`
 `;
+
+  if (metadata && metadata.type) {
+    content += `Type: ${metadata.type}
+`;
+  }
+  if (milestoneName) {
+    content += `Milestone: ${milestoneName}
+`;
+  }
 
   if (stale) {
     content += `
@@ -1008,6 +1066,243 @@ PIPELINE (suggest next steps):
 - After subtasks: \`kspec status\` to see full picture`,
     keyboardShortcut: 'ctrl+shift+j',
     welcomeMessage: 'Jira integration ready. Provide issue keys to pull, or say "sync" to push spec to Jira.'
+  },
+
+  'kspec-fix.json': {
+    name: 'kspec-fix',
+    description: 'Fix bugs with abbreviated TDD pipeline',
+    model: 'claude-sonnet-4.6',
+    tools: ['read', 'write', 'bash'],
+    allowedTools: ['read', 'write', 'bash'],
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kiro/specs/**/*.md'
+    ],
+    prompt: `You are the kspec bug fixer.
+
+FIRST: Read .kiro/CONTEXT.md for current state.
+
+WORKFLOW (abbreviated pipeline — no full spec/design/tasks cycle):
+1. Understand the bug from the description
+2. Read the codebase to find the relevant area
+3. Create spec.md in the spec folder with:
+   - Bug description
+   - Steps to reproduce (if inferable)
+   - Expected vs actual behavior
+   - Root cause analysis
+   - Fix approach
+4. Create tasks.md with fix tasks (test-first):
+   - Write failing test that reproduces the bug
+   - Implement fix
+   - Verify fix doesn't break existing tests
+5. Execute tasks immediately (TDD)
+6. Mark tasks complete as you go
+
+CRITICAL: Write test first, then fix. Update tasks.md after each step.
+
+PIPELINE (suggest next steps):
+- Verify fix: \`/agent swap kspec-verify\` or \`kspec verify\`
+- Complete: \`kspec done\``,
+    keyboardShortcut: 'ctrl+shift+f',
+    welcomeMessage: 'Bug fix mode — describe the bug to fix.'
+  },
+
+  'kspec-refactor.json': {
+    name: 'kspec-refactor',
+    description: 'Refactor code with no behavior change',
+    model: 'claude-sonnet-4.6',
+    tools: ['read', 'write', 'bash'],
+    allowedTools: ['read', 'write', 'bash'],
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kiro/specs/**/*.md'
+    ],
+    prompt: `You are the kspec refactoring agent.
+
+FIRST: Read .kiro/CONTEXT.md for current state.
+
+WORKFLOW:
+1. Read the codebase area being refactored
+2. Create spec.md with:
+   - Current state (what exists)
+   - Target state (what it should look like)
+   - Constraints (behavior must not change)
+   - Refactor approach
+3. Create tasks.md with refactor tasks:
+   - Ensure existing tests pass first
+   - Restructure step by step
+   - Run tests after each change
+4. Execute tasks
+
+CRITICAL: Run existing tests before AND after each change. No behavior changes.
+
+PIPELINE (suggest next steps):
+- Verify: \`/agent swap kspec-verify\` or \`kspec verify\`
+- Review: \`/agent swap kspec-review\` or \`kspec review\``,
+    keyboardShortcut: 'ctrl+shift+g',
+    welcomeMessage: 'Refactor mode — describe what to refactor and why.'
+  },
+
+  'kspec-spike.json': {
+    name: 'kspec-spike',
+    description: 'Time-boxed investigation (no implementation)',
+    model: 'claude-sonnet-4.6',
+    tools: ['read', 'write'],
+    allowedTools: ['read', 'write'],
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kiro/specs/**/*.md'
+    ],
+    prompt: `You are the kspec spike/investigation agent.
+
+FIRST: Read .kiro/CONTEXT.md for current state.
+
+This is an INVESTIGATION, not an implementation.
+
+WORKFLOW:
+1. Research the question/problem
+2. Create spec.md as a FINDINGS REPORT with:
+   - Question/hypothesis
+   - Investigation approach
+   - Findings (with code examples if relevant)
+   - Recommendations
+   - Risks identified
+   - Estimated effort for implementation (S/M/L/XL)
+3. Do NOT implement anything — research only
+4. Create memory.md with key learnings
+
+Output findings clearly for decision-making.
+
+PIPELINE (suggest next steps):
+- Proceed to implementation: \`/agent swap kspec-spec\` or \`kspec spec "Feature"\`
+- Archive learnings: \`kspec done\``,
+    keyboardShortcut: 'ctrl+shift+i',
+    welcomeMessage: 'Spike mode — describe the question to investigate.'
+  },
+
+  'kspec-revise.json': {
+    name: 'kspec-revise',
+    description: 'Revise spec from stakeholder feedback',
+    model: 'claude-sonnet-4.6',
+    tools: ['read', 'write'],
+    allowedTools: ['read', 'write'],
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kiro/specs/**/*.md'
+    ],
+    prompt: `You are the kspec spec revision agent.
+
+FIRST: Read .kiro/CONTEXT.md for current state.
+
+WORKFLOW:
+1. Read the current spec.md
+2. Read tasks.md if it exists (to understand implementation state)
+3. Ask what feedback or changes are needed
+4. Update spec.md with the changes
+5. If tasks.md exists, identify affected tasks:
+   - Mark affected completed tasks for re-verification
+   - Add new tasks if needed
+   - Note removed requirements
+6. Regenerate spec-lite.md
+7. Update .kiro/CONTEXT.md
+
+IMPORTANT: Show a diff summary of what changed before confirming.
+
+PIPELINE (suggest next steps):
+- Review revised spec: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
+- Regenerate tasks: \`/agent swap kspec-tasks\` or \`kspec tasks\``,
+    keyboardShortcut: 'ctrl+shift+e',
+    welcomeMessage: 'Revision mode — what feedback needs to be incorporated?'
+  },
+
+  'kspec-demo.json': {
+    name: 'kspec-demo',
+    description: 'Generate stakeholder walkthrough',
+    model: 'claude-sonnet-4.6',
+    tools: ['read', 'write'],
+    allowedTools: ['read', 'write'],
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kiro/specs/**/*.md'
+    ],
+    prompt: `You are the kspec demo/walkthrough agent.
+
+FIRST: Read .kiro/CONTEXT.md for current state.
+
+WORKFLOW:
+1. Read spec.md for requirements
+2. Read tasks.md for implementation status
+3. Examine the actual implementation in the codebase
+4. Generate a DEMO WALKTHROUGH showing:
+   - What was built (mapped to spec requirements)
+   - How to test/verify each feature
+   - What's working vs what's pending
+   - Key decisions made during implementation
+   - Screenshots/examples where applicable
+5. Write the walkthrough to demo.md
+6. Highlight anything that needs stakeholder input
+
+This is for human review, not AI verification.
+
+PIPELINE (suggest next steps):
+- Revise from feedback: \`/agent swap kspec-revise\` or \`kspec revise\`
+- Complete: \`kspec done\``,
+    keyboardShortcut: 'ctrl+shift+w',
+    welcomeMessage: 'Demo mode — generating stakeholder walkthrough...'
+  },
+
+  'kspec-estimate.json': {
+    name: 'kspec-estimate',
+    description: 'Assess complexity before building',
+    model: 'claude-sonnet-4.6',
+    tools: ['read', 'write'],
+    allowedTools: ['read', 'write'],
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kiro/specs/**/*.md'
+    ],
+    prompt: `You are the kspec complexity estimator.
+
+FIRST: Read .kiro/CONTEXT.md for current state.
+
+WORKFLOW:
+1. Read spec.md thoroughly
+2. Read the codebase to understand current state
+3. Read .kiro/memory.md for relevant past experience
+4. Provide a COMPLEXITY ASSESSMENT:
+
+   **T-shirt Size**: S / M / L / XL
+
+   **Breakdown**:
+   - New files to create: ~N
+   - Existing files to modify: ~N
+   - Estimated tasks: ~N
+   - Key risks: [list]
+
+   **Confidence**: High / Medium / Low
+
+   **Recommendation**:
+   - S: Skip design, go straight to tasks
+   - M: Consider design step
+   - L/XL: Design step recommended, consider breaking into smaller specs
+
+   **Similar past work**: [reference memory.md entries if relevant]
+
+5. Write estimate to estimate.md
+
+This is advisory — it doesn't block any commands.
+
+PIPELINE (suggest next steps):
+- Create design: \`/agent swap kspec-design\` or \`kspec design\`
+- Generate tasks: \`/agent swap kspec-tasks\` or \`kspec tasks\``,
+    keyboardShortcut: 'ctrl+shift+x',
+    welcomeMessage: 'Estimation mode — assessing complexity...'
   }
 };
 
@@ -1242,6 +1537,8 @@ const commands = {
       { label: 'Dry-run only (show, don\'t run)', value: 'dry' }
     ]);
 
+    const testCommand = await prompt('Test command (e.g., npm test, pytest) — leave empty to skip: ');
+
     const createSteering = await confirm('Create steering doc templates?');
 
     // Check for Jira integration
@@ -1269,7 +1566,7 @@ const commands = {
     }
 
     // Save config
-    const cfg = { dateFormat, autoExecute, initialized: true, jira: jiraConfig };
+    const cfg = { dateFormat, autoExecute, initialized: true, testCommand: testCommand.trim() || null, jira: jiraConfig };
     saveConfig(cfg);
     Object.assign(config, cfg);
 
@@ -1392,6 +1689,7 @@ Update steering docs as needed.`, 'kspec-analyse');
     ensureDir(folder);
     setCurrentSpec(folder);
 
+    recordMetric(folder, 'spec-started');
     log(`Spec folder: ${folder}`);
 
     if (jiraIssues) {
@@ -1430,6 +1728,7 @@ Folder: ${folder}
 spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec');
     }
 
+    recordMetric(folder, 'spec-completed');
     console.log('\nNext step:');
     console.log('  kspec design   (create technical design)');
     console.log('  kspec tasks    (skip design, generate tasks directly)');
@@ -1464,6 +1763,7 @@ Read the codebase to check implementability and inform your questions.`, 'kspec-
       die(`No spec.md found in ${folder}. Run 'kspec spec "Feature"' first.`);
     }
 
+    recordMetric(folder, 'design-started');
     log(`Creating design: ${folder}`);
 
     await chat(`Create technical design from specification.
@@ -1482,6 +1782,7 @@ Create ${folder}/design.md with these sections:
 
 Read the codebase to inform your architecture decisions.`, 'kspec-design');
 
+    recordMetric(folder, 'design-completed');
     console.log('\nNext step:');
     console.log('  kspec verify-design  (review design)');
     console.log('  kspec tasks          (generate tasks)');
@@ -1699,6 +2000,8 @@ Report created subtasks with their URLs.`, 'kspec-jira');
 
     if (!await checkStaleness(folder)) return;
 
+    autoRefreshSpecLite(folder);
+    recordMetric(folder, 'tasks-started');
     log(`Generating tasks: ${folder}`);
 
     const designFile = path.join(folder, 'design.md');
@@ -1716,6 +2019,7 @@ Create ${folder}/tasks.md with:
 - Logical order
 - File paths for each task`, 'kspec-tasks');
 
+    recordMetric(folder, 'tasks-completed');
     console.log('\nNext step:');
     console.log('  kspec build');
     console.log('  or inside kiro-cli: /agent swap kspec-build\n');
@@ -1726,6 +2030,7 @@ Create ${folder}/tasks.md with:
 
     if (!await checkStaleness(folder)) return;
 
+    autoRefreshSpecLite(folder);
     const stats = getTaskStats(folder);
 
     log(`Verifying tasks: ${folder}`);
@@ -1746,6 +2051,7 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
 
     if (!await checkStaleness(folder)) return;
 
+    autoRefreshSpecLite(folder);
     const stats = getTaskStats(folder);
 
     log(`Building: ${folder}`);
@@ -1760,6 +2066,7 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
       log(`Progress: ${stats.done}/${stats.total} (${stats.remaining} remaining)`);
     }
 
+    recordMetric(folder, 'build-started');
     const execMode = config.autoExecute || 'ask';
     const execNote = execMode === 'auto' ? 'Auto-execute enabled.' :
                      execMode === 'dry' ? 'Dry-run mode - show commands only.' :
@@ -1780,6 +2087,19 @@ ${execNote}
 CRITICAL: Update tasks.md after each task completion.
 NEVER delete .kiro folders.`, 'kspec-build');
 
+    recordMetric(folder, 'build-completed');
+
+    // Run test command as sanity check (non-blocking)
+    if (config.testCommand) {
+      log(`Running sanity check: ${config.testCommand}`);
+      try {
+        execSync(config.testCommand, { stdio: 'inherit', timeout: 120000 });
+        log('Tests passed');
+      } catch (e) {
+        console.error('Tests failed after build. Review before proceeding.');
+      }
+    }
+
     // Show next step based on remaining tasks
     const updatedStats = getTaskStats(folder);
     if (updatedStats && updatedStats.remaining === 0) {
@@ -1798,10 +2118,26 @@ NEVER delete .kiro folders.`, 'kspec-build');
 
     if (!await checkStaleness(folder)) return;
 
+    autoRefreshSpecLite(folder);
+
     const stats = getTaskStats(folder);
 
     log(`Verifying implementation: ${folder}`);
     if (stats) log(`Tasks: ${stats.done}/${stats.total}`);
+
+    // Run test command if configured (Gap 2 — independent validation)
+    if (config.testCommand) {
+      log(`Running tests: ${config.testCommand}`);
+      try {
+        execSync(config.testCommand, { stdio: 'inherit', timeout: 120000 });
+        log('Tests passed');
+      } catch (e) {
+        console.error('Tests failed! Fix before proceeding.');
+        return;
+      }
+    }
+
+    recordMetric(folder, 'verify-started');
 
     // Verify contract if exists
     console.log('Validating contract...');
@@ -1831,6 +2167,7 @@ Report:
 - Contract: ${contractResult.success ? 'PASS' : 'FAIL'}
 - Gaps: [list any]`, 'kspec-verify');
 
+    recordMetric(folder, 'verify-completed');
     console.log('\nIf verification passed:');
     console.log('  kspec done  (to complete spec and harvest learnings)\n');
   },
@@ -1907,8 +2244,9 @@ After writing, show me what you wrote.`, 'kspec-spec');
       if (!proceed) return;
     }
 
+    recordMetric(folder, 'done');
     log(`Completing: ${folder}`);
-    
+
     // Create memory
     await chat(`Harvest learnings from ${folder}:
 
@@ -1983,6 +2321,13 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
 
     if (current) {
       console.log(`\nCurrent spec: ${path.basename(current)}`);
+      const metadataFile = path.join(current, 'metadata.json');
+      if (fs.existsSync(metadataFile)) {
+        try {
+          const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+          if (metadata.type) console.log(`Type: ${metadata.type}`);
+        } catch {}
+      }
       const specFile = path.join(current, 'spec.md');
       const designFile = path.join(current, 'design.md');
       const tasksFile = path.join(current, 'tasks.md');
@@ -2038,16 +2383,22 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
     console.log(`
 kspec Agents
 
-Agent           Shortcut        Purpose
-─────────────────────────────────────────────────────────
-kspec-analyse   Ctrl+Shift+A    Analyse codebase, update steering
-kspec-spec      Ctrl+Shift+S    Create specifications
-kspec-design    Ctrl+Shift+D    Create technical design from spec
-kspec-tasks     Ctrl+Shift+T    Generate tasks from spec
-kspec-build     Ctrl+Shift+B    Execute tasks with TDD
-kspec-verify    Ctrl+Shift+V    Verify spec/design/tasks/implementation
-kspec-review    Ctrl+Shift+R    Code review
-kspec-jira      Ctrl+Shift+J    Jira integration (requires Atlassian MCP)
+Agent             Shortcut        Purpose
+──────────────────────────────────────────────────────────────
+kspec-analyse     Ctrl+Shift+A    Analyse codebase, update steering
+kspec-spec        Ctrl+Shift+S    Create specifications
+kspec-design      Ctrl+Shift+D    Create technical design from spec
+kspec-tasks       Ctrl+Shift+T    Generate tasks from spec
+kspec-build       Ctrl+Shift+B    Execute tasks with TDD
+kspec-verify      Ctrl+Shift+V    Verify spec/design/tasks/implementation
+kspec-review      Ctrl+Shift+R    Code review
+kspec-jira        Ctrl+Shift+J    Jira integration
+kspec-fix         Ctrl+Shift+F    Fix bugs (abbreviated pipeline)
+kspec-refactor    Ctrl+Shift+G    Refactor code (no behavior change)
+kspec-spike       Ctrl+Shift+I    Investigate/spike (no code)
+kspec-revise      Ctrl+Shift+E    Revise spec from feedback
+kspec-demo        Ctrl+Shift+W    Generate stakeholder walkthrough
+kspec-estimate    Ctrl+Shift+X    Assess complexity
 
 Switch: /agent swap or use keyboard shortcuts
 
@@ -2087,6 +2438,420 @@ Powers: contract, document, tdd, code-review, code-intelligence
     }
   },
 
+  async fix(args) {
+    const description = args.join(' ');
+    if (!description) die('Usage: kspec fix "Description of the bug"');
+
+    const date = formatDate(config.dateFormat || 'YYYY-MM-DD');
+    const slug = await generateSlug(`fix-${description}`);
+    const folder = path.join(getSpecsDir(), `${date}-${slug}`);
+    ensureDir(folder);
+    setCurrentSpec(folder);
+
+    fs.writeFileSync(path.join(folder, 'metadata.json'), JSON.stringify({
+      type: 'fix',
+      description,
+      createdAt: new Date().toISOString()
+    }, null, 2));
+
+    recordMetric(folder, 'fix-started');
+    log(`Bug fix: ${folder}`);
+
+    await chat(`BUG FIX MODE: ${description}
+
+1. Read codebase to understand the area related to this bug
+2. Create ${folder}/spec.md with:
+   - Bug description
+   - Steps to reproduce (if inferable)
+   - Expected vs actual behavior
+   - Root cause analysis
+   - Fix approach
+3. Create ${folder}/tasks.md with fix tasks (test first):
+   - Write failing test that reproduces the bug
+   - Implement fix
+   - Verify fix doesn't break existing tests
+4. Execute tasks immediately (TDD)
+5. Mark tasks complete as you go
+
+CRITICAL: Write test first, then fix. Update tasks.md after each step.`, 'kspec-fix');
+
+    recordMetric(folder, 'fix-completed');
+    console.log('\nNext step:');
+    console.log('  kspec verify  (verify the fix)');
+    console.log('  kspec done    (complete and harvest learnings)\n');
+  },
+
+  async refactor(args) {
+    const description = args.join(' ');
+    if (!description) die('Usage: kspec refactor "What to refactor and why"');
+
+    const date = formatDate(config.dateFormat || 'YYYY-MM-DD');
+    const slug = await generateSlug(`refactor-${description}`);
+    const folder = path.join(getSpecsDir(), `${date}-${slug}`);
+    ensureDir(folder);
+    setCurrentSpec(folder);
+
+    fs.writeFileSync(path.join(folder, 'metadata.json'), JSON.stringify({
+      type: 'refactor',
+      description,
+      createdAt: new Date().toISOString()
+    }, null, 2));
+
+    recordMetric(folder, 'refactor-started');
+    log(`Refactor: ${folder}`);
+
+    await chat(`REFACTOR MODE: ${description}
+
+1. Read the codebase area being refactored
+2. Create ${folder}/spec.md with:
+   - Current state (what exists)
+   - Target state (what it should look like)
+   - Constraints (behavior must not change)
+   - Refactor approach
+3. Create ${folder}/tasks.md with refactor tasks:
+   - Ensure existing tests pass first
+   - Restructure step by step
+   - Run tests after each change
+4. Execute tasks
+
+CRITICAL: Run existing tests before AND after each change. No behavior changes.`, 'kspec-refactor');
+
+    recordMetric(folder, 'refactor-completed');
+    console.log('\nNext step:');
+    console.log('  kspec verify  (verify no behavior changes)\n');
+  },
+
+  async spike(args) {
+    const description = args.join(' ');
+    if (!description) die('Usage: kspec spike "Question to investigate"');
+
+    const date = formatDate(config.dateFormat || 'YYYY-MM-DD');
+    const slug = await generateSlug(`spike-${description}`);
+    const folder = path.join(getSpecsDir(), `${date}-${slug}`);
+    ensureDir(folder);
+    setCurrentSpec(folder);
+
+    fs.writeFileSync(path.join(folder, 'metadata.json'), JSON.stringify({
+      type: 'spike',
+      description,
+      createdAt: new Date().toISOString()
+    }, null, 2));
+
+    recordMetric(folder, 'spike-started');
+    log(`Spike: ${folder}`);
+
+    await chat(`SPIKE MODE: ${description}
+
+This is an investigation, not an implementation.
+
+1. Research the question/problem
+2. Create ${folder}/spec.md as a FINDINGS REPORT with:
+   - Question/hypothesis
+   - Investigation approach
+   - Findings (with code examples if relevant)
+   - Recommendations
+   - Risks identified
+   - Estimated effort for implementation (S/M/L/XL)
+3. Do NOT implement anything — research only
+4. Create ${folder}/memory.md with key learnings
+
+Output findings clearly for decision-making.`, 'kspec-spike');
+
+    recordMetric(folder, 'spike-completed');
+    console.log('\nSpike complete. Review findings in:');
+    console.log(`  ${folder}/spec.md\n`);
+    console.log('Next step:');
+    console.log('  kspec spec "Feature"  (if proceeding to implementation)');
+    console.log('  kspec done            (to archive spike learnings)\n');
+  },
+
+  async revise(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const specFile = path.join(folder, 'spec.md');
+
+    if (!fs.existsSync(specFile)) {
+      die(`No spec.md found in ${folder}. Nothing to revise.`);
+    }
+
+    recordMetric(folder, 'revise-started');
+    log(`Revising spec: ${folder}`);
+
+    await chat(`REVISE SPEC: Review and update the specification in ${folder}/spec.md based on feedback.
+
+1. Read the current ${folder}/spec.md
+2. Read ${folder}/tasks.md if it exists (to understand implementation state)
+3. Ask me what feedback or changes are needed
+4. Update spec.md with the changes
+5. If tasks.md exists, identify which tasks are affected:
+   - Mark affected completed tasks for re-verification
+   - Add new tasks if needed
+   - Note removed requirements
+6. Regenerate spec-lite.md
+7. Update .kiro/CONTEXT.md
+
+IMPORTANT: Show a diff summary of what changed in the spec before confirming.`, 'kspec-revise');
+
+    recordMetric(folder, 'revise-completed');
+    console.log('\nSpec revised. Next step:');
+    console.log('  kspec verify-spec  (review revised spec)');
+    console.log('  kspec tasks        (regenerate tasks if needed)\n');
+  },
+
+  async demo(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const specFile = path.join(folder, 'spec.md');
+
+    if (!fs.existsSync(specFile)) {
+      die(`No spec.md found in ${folder}. Nothing to demo.`);
+    }
+
+    recordMetric(folder, 'demo-started');
+    log(`Generating demo walkthrough: ${folder}`);
+
+    await chat(`DEMO MODE: Generate a stakeholder walkthrough for the implementation in ${folder}.
+
+1. Read ${folder}/spec.md for requirements
+2. Read ${folder}/tasks.md for implementation status
+3. Examine the actual implementation in the codebase
+4. Generate a DEMO WALKTHROUGH showing:
+   - What was built (mapped to spec requirements)
+   - How to test/verify each feature
+   - What's working vs what's pending
+   - Key decisions made during implementation
+   - Screenshots/examples where applicable
+5. Write the walkthrough to ${folder}/demo.md
+6. Highlight anything that needs stakeholder input
+
+This is for human review, not AI verification.`, 'kspec-demo');
+
+    recordMetric(folder, 'demo-completed');
+    console.log('\nDemo walkthrough written to:');
+    console.log(`  ${folder}/demo.md\n`);
+    console.log('After stakeholder review:');
+    console.log('  kspec revise   (if changes needed)');
+    console.log('  kspec done     (if approved)\n');
+  },
+
+  async estimate(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const specFile = path.join(folder, 'spec.md');
+
+    if (!fs.existsSync(specFile)) {
+      die(`No spec.md found in ${folder}. Create a spec first.`);
+    }
+
+    log(`Estimating complexity: ${folder}`);
+
+    await chat(`ESTIMATE: Assess complexity of the specification in ${folder}/spec.md.
+
+1. Read ${folder}/spec.md thoroughly
+2. Read the codebase to understand current state
+3. Read .kiro/memory.md for relevant past experience
+4. Provide a COMPLEXITY ASSESSMENT:
+
+   **T-shirt Size**: S / M / L / XL
+
+   **Breakdown**:
+   - New files to create: ~N
+   - Existing files to modify: ~N
+   - Estimated tasks: ~N
+   - Key risks: [list]
+
+   **Confidence**: High / Medium / Low
+   (Low if spec is ambiguous or codebase is unfamiliar)
+
+   **Recommendation**:
+   - S: Skip design, go straight to tasks
+   - M: Consider design step
+   - L/XL: Design step recommended, consider breaking into smaller specs
+
+   **Similar past work**: [reference memory.md entries if relevant]
+
+5. Write estimate to ${folder}/estimate.md
+
+This is advisory — it doesn't block any commands.`, 'kspec-estimate');
+
+    console.log('\nEstimate written to:');
+    console.log(`  ${folder}/estimate.md\n`);
+    console.log('Next step:');
+    console.log('  kspec design   (for L/XL specs)');
+    console.log('  kspec tasks    (for S/M specs)\n');
+  },
+
+  async memory(args) {
+    const subcommand = args[0] || 'show';
+
+    if (subcommand === 'show') {
+      const memFile = path.join(KIRO_DIR, 'memory.md');
+      if (!fs.existsSync(memFile)) {
+        log('No project memory yet. Complete a spec with `kspec done` to start accumulating.');
+        return;
+      }
+      console.log(fs.readFileSync(memFile, 'utf8'));
+      return;
+    }
+
+    if (subcommand === 'review') {
+      const memFile = path.join(KIRO_DIR, 'memory.md');
+      if (!fs.existsSync(memFile)) {
+        log('No project memory to review.');
+        return;
+      }
+
+      log('Reviewing project memory...');
+      await chat(`MEMORY REVIEW: Analyse and improve .kiro/memory.md.
+
+1. Read .kiro/memory.md
+2. Identify:
+   - Outdated entries (tech/patterns that are no longer used)
+   - Duplicates (same learning recorded multiple times)
+   - Contradictions (conflicting advice)
+   - Entries that should be promoted to steering docs
+3. Present a REVIEW REPORT showing what to keep, merge, remove, or promote
+4. Wait for my confirmation before making changes
+5. Update memory.md with approved changes
+
+NEVER delete without confirmation.`, 'kspec-analyse');
+      return;
+    }
+
+    if (subcommand === 'prune') {
+      const memFile = path.join(KIRO_DIR, 'memory.md');
+      if (!fs.existsSync(memFile)) {
+        log('No project memory to prune.');
+        return;
+      }
+
+      log('Pruning project memory...');
+      await chat(`MEMORY PRUNE: Remove outdated entries from .kiro/memory.md.
+
+1. Read .kiro/memory.md
+2. Read .kiro/steering/ docs for current project state
+3. Read the codebase to verify which technologies/patterns are actually in use
+4. Identify entries that are:
+   - About technologies no longer in the project
+   - Superseded by newer learnings
+   - Already captured in steering docs
+5. Show what will be removed and why
+6. Wait for confirmation
+7. Update memory.md
+
+Be conservative — when in doubt, keep the entry.`, 'kspec-analyse');
+      return;
+    }
+
+    die(`Unknown memory subcommand: ${subcommand}\nUsage: kspec memory [show|review|prune]`);
+  },
+
+  async metrics(args) {
+    const folder = getOrSelectSpec(args.join(' '));
+    const metricsFile = path.join(folder, 'metrics.json');
+    if (!fs.existsSync(metricsFile)) {
+      log('No metrics recorded yet.');
+      return;
+    }
+    const metrics = JSON.parse(fs.readFileSync(metricsFile, 'utf8'));
+    console.log(`\nTimeline for ${path.basename(folder)}:\n`);
+    metrics.forEach(m => {
+      const date = new Date(m.timestamp);
+      console.log(`  ${date.toLocaleString()}  ${m.event}`);
+    });
+    console.log('');
+  },
+
+  async milestone(args) {
+    const subcommand = args[0] || 'list';
+
+    if (subcommand === 'create') {
+      const name = args[1];
+      const description = args.slice(2).join(' ');
+      if (!name) die('Usage: kspec milestone create <name> [description]');
+
+      ensureDir(MILESTONES_DIR);
+      const msFile = path.join(MILESTONES_DIR, `${name}.json`);
+      if (fs.existsSync(msFile)) die(`Milestone "${name}" already exists.`);
+
+      fs.writeFileSync(msFile, JSON.stringify({
+        name,
+        description: description || '',
+        specs: [],
+        createdAt: new Date().toISOString()
+      }, null, 2));
+      log(`Created milestone: ${name}`);
+      return;
+    }
+
+    if (subcommand === 'add') {
+      const name = args[1];
+      if (!name) die('Usage: kspec milestone add <milestone-name> [spec-name]');
+
+      const msFile = path.join(MILESTONES_DIR, `${name}.json`);
+      if (!fs.existsSync(msFile)) die(`Milestone "${name}" not found.`);
+
+      const spec = getOrSelectSpec(args.slice(2).join(' '));
+      const ms = JSON.parse(fs.readFileSync(msFile, 'utf8'));
+
+      if (!ms.specs.includes(spec)) {
+        ms.specs.push(spec);
+        fs.writeFileSync(msFile, JSON.stringify(ms, null, 2));
+        log(`Added ${path.basename(spec)} to milestone ${name}`);
+      } else {
+        log(`${path.basename(spec)} already in milestone ${name}`);
+      }
+      return;
+    }
+
+    if (subcommand === 'status') {
+      const name = args[1];
+      if (!name) die('Usage: kspec milestone status <name>');
+
+      const msFile = path.join(MILESTONES_DIR, `${name}.json`);
+      if (!fs.existsSync(msFile)) die(`Milestone "${name}" not found.`);
+
+      const ms = JSON.parse(fs.readFileSync(msFile, 'utf8'));
+      console.log(`\nMilestone: ${ms.name}`);
+      if (ms.description) console.log(`Description: ${ms.description}`);
+      console.log(`Specs: ${ms.specs.length}\n`);
+
+      let totalTasks = 0, totalDone = 0;
+      ms.specs.forEach(spec => {
+        const stats = getTaskStats(spec);
+        const progress = stats ? `[${stats.done}/${stats.total}]` : '[no tasks]';
+        console.log(`  ${path.basename(spec)} ${progress}`);
+        if (stats) { totalTasks += stats.total; totalDone += stats.done; }
+      });
+
+      if (totalTasks > 0) {
+        console.log(`\nOverall: ${totalDone}/${totalTasks} tasks completed`);
+      }
+      console.log('');
+      return;
+    }
+
+    if (subcommand === 'list') {
+      if (!fs.existsSync(MILESTONES_DIR)) {
+        console.log('No milestones. Create one: kspec milestone create <name>');
+        return;
+      }
+
+      const files = fs.readdirSync(MILESTONES_DIR).filter(f => f.endsWith('.json'));
+      if (files.length === 0) {
+        console.log('No milestones. Create one: kspec milestone create <name>');
+        return;
+      }
+
+      console.log('\nMilestones:\n');
+      files.forEach(f => {
+        const ms = JSON.parse(fs.readFileSync(path.join(MILESTONES_DIR, f), 'utf8'));
+        console.log(`  ${ms.name} (${ms.specs.length} specs) — ${ms.description || '(no description)'}`);
+      });
+      console.log('');
+      return;
+    }
+
+    die(`Unknown milestone subcommand: ${subcommand}\nUsage: kspec milestone [list|create|add|status]`);
+  },
+
   help() {
     console.log(`
 kspec - Spec-driven development for Kiro CLI
@@ -2103,6 +2868,14 @@ CLI Workflow (outside kiro-cli):
   kspec build             Execute tasks with TDD
   kspec verify            Verify implementation
   kspec done              Complete spec, harvest memory
+
+Work Types (abbreviated pipelines):
+  kspec fix "Bug description"     Fix a bug (spec→test→fix→verify)
+  kspec refactor "What and why"   Refactor code (no behavior change)
+  kspec spike "Question"          Time-boxed investigation (no code)
+  kspec revise                    Revise spec from feedback
+  kspec demo                      Generate stakeholder walkthrough
+  kspec estimate                  Assess complexity before building
 
 Inside kiro-cli (recommended):
   /agent swap kspec-spec    → Describe feature → creates spec
@@ -2128,6 +2901,20 @@ Jira Integration (requires Atlassian MCP):
   kspec jira-subtasks PROJ-123
                           Create subtasks under specific issue
 
+Memory:
+  kspec memory                    Show project memory
+  kspec memory review             AI-assisted memory review
+  kspec memory prune              Remove outdated entries
+
+Milestones:
+  kspec milestone list            List milestones
+  kspec milestone create <name>   Create milestone
+  kspec milestone add <name>      Add current spec to milestone
+  kspec milestone status <name>   Show milestone progress
+
+Observability:
+  kspec metrics                   Show timeline for current spec
+
 Other:
   kspec refresh           Regenerate spec-lite.md after editing spec.md
   kspec context           Refresh/view context file
@@ -2149,6 +2936,8 @@ Examples:
   kspec init                        # First time setup
   kspec spec "User Auth"            # CLI mode
   kspec spec --jira PROJ-123 "Auth" # From Jira story
+  kspec fix "Login fails"           # Bug fix mode
+  kspec spike "Can we use GraphQL?" # Investigation
   kspec design                      # Create design (optional)
   kspec jira-pull                   # Pull latest Jira updates
   kiro-cli --agent kspec-spec       # Direct agent mode
@@ -2184,4 +2973,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, autoRefreshSpecLite, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR };

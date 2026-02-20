@@ -324,13 +324,19 @@ describe('kspec', () => {
         'kspec-build.json',
         'kspec-verify.json',
         'kspec-review.json',
-        'kspec-jira.json'
+        'kspec-jira.json',
+        'kspec-fix.json',
+        'kspec-refactor.json',
+        'kspec-spike.json',
+        'kspec-revise.json',
+        'kspec-demo.json',
+        'kspec-estimate.json'
       ];
 
       for (const agent of expectedAgents) {
         assert(agentTemplates[agent], `Missing agent: ${agent}`);
       }
-      assert.strictEqual(Object.keys(agentTemplates).length, 8, 'Should have exactly 8 agents');
+      assert.strictEqual(Object.keys(agentTemplates).length, 14, 'Should have exactly 14 agents');
     });
 
     it('agents have Kiro CLI compatible format', () => {
@@ -1339,6 +1345,799 @@ describe('kspec', () => {
       const result = validateContract(folder);
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.errors.length, 0);
+    });
+  });
+
+  describe('autoRefreshSpecLite', () => {
+    let autoRefreshSpecLite;
+
+    before(() => {
+      ({ autoRefreshSpecLite } = require('../src/index.js'));
+    });
+
+    it('creates spec-lite from spec.md when stale', () => {
+      const folder = path.join('.kiro', 'specs', 'auto-refresh-test');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Test Spec\n\nSome requirements here.');
+      // No spec-lite.md exists, so it's stale
+
+      autoRefreshSpecLite(folder);
+      assert(fs.existsSync(path.join(folder, 'spec-lite.md')), 'Should create spec-lite.md');
+      const content = fs.readFileSync(path.join(folder, 'spec-lite.md'), 'utf8');
+      assert(content.includes('Test Spec'), 'Should contain spec content');
+    });
+
+    it('skips when not stale', () => {
+      const folder = path.join('.kiro', 'specs', 'auto-refresh-not-stale');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec');
+      const now = new Date();
+      fs.utimesSync(path.join(folder, 'spec.md'), now, new Date(now.getTime() - 10000));
+      fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Existing Lite');
+
+      autoRefreshSpecLite(folder);
+      const content = fs.readFileSync(path.join(folder, 'spec-lite.md'), 'utf8');
+      assert.strictEqual(content, '# Existing Lite', 'Should not overwrite');
+    });
+
+    it('truncates long specs', () => {
+      const folder = path.join('.kiro', 'specs', 'auto-refresh-truncate');
+      fs.mkdirSync(folder, { recursive: true });
+      const longContent = '# Spec\n' + 'x'.repeat(3000);
+      fs.writeFileSync(path.join(folder, 'spec.md'), longContent);
+
+      autoRefreshSpecLite(folder);
+      const content = fs.readFileSync(path.join(folder, 'spec-lite.md'), 'utf8');
+      assert(content.includes('truncated'), 'Should include truncation note');
+      assert(content.length < longContent.length, 'Should be shorter than original');
+    });
+
+    it('truncates at Contract section', () => {
+      const folder = path.join('.kiro', 'specs', 'auto-refresh-contract');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec\n\nRequirements here.\n\n## Contract\n\n```json\n{}\n```');
+
+      autoRefreshSpecLite(folder);
+      const content = fs.readFileSync(path.join(folder, 'spec-lite.md'), 'utf8');
+      assert(!content.includes('## Contract'), 'Should not include Contract section');
+      assert(content.includes('Requirements here'), 'Should include content before Contract');
+    });
+  });
+
+  describe('recordMetric', () => {
+    let recordMetric;
+
+    before(() => {
+      ({ recordMetric } = require('../src/index.js'));
+    });
+
+    it('creates metrics.json with first event', () => {
+      const folder = path.join('.kiro', 'specs', 'metric-create');
+      fs.mkdirSync(folder, { recursive: true });
+
+      recordMetric(folder, 'test-event');
+      const metricsFile = path.join(folder, 'metrics.json');
+      assert(fs.existsSync(metricsFile), 'Should create metrics.json');
+      const metrics = JSON.parse(fs.readFileSync(metricsFile, 'utf8'));
+      assert.strictEqual(metrics.length, 1);
+      assert.strictEqual(metrics[0].event, 'test-event');
+      assert(metrics[0].timestamp, 'Should have timestamp');
+    });
+
+    it('appends events to existing metrics', () => {
+      const folder = path.join('.kiro', 'specs', 'metric-append');
+      fs.mkdirSync(folder, { recursive: true });
+
+      recordMetric(folder, 'event-1');
+      recordMetric(folder, 'event-2');
+      const metrics = JSON.parse(fs.readFileSync(path.join(folder, 'metrics.json'), 'utf8'));
+      assert.strictEqual(metrics.length, 2);
+      assert.strictEqual(metrics[0].event, 'event-1');
+      assert.strictEqual(metrics[1].event, 'event-2');
+    });
+
+    it('handles corrupt metrics file', () => {
+      const folder = path.join('.kiro', 'specs', 'metric-corrupt');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'metrics.json'), 'not json');
+
+      assert.doesNotThrow(() => recordMetric(folder, 'recovery'));
+      const metrics = JSON.parse(fs.readFileSync(path.join(folder, 'metrics.json'), 'utf8'));
+      assert.strictEqual(metrics.length, 1);
+      assert.strictEqual(metrics[0].event, 'recovery');
+    });
+  });
+
+  describe('metrics command', () => {
+    it('handles no metrics', () => {
+      const folder = path.join('.kiro', 'specs', 'no-metrics');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.metrics([]);
+        assert(output.includes('No metrics'), 'Should report no metrics');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('displays timeline', () => {
+      const folder = path.join('.kiro', 'specs', 'has-metrics');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'metrics.json'), JSON.stringify([
+        { event: 'spec-started', timestamp: '2026-02-21T10:00:00Z' },
+        { event: 'spec-completed', timestamp: '2026-02-21T10:30:00Z' }
+      ]));
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.metrics([]);
+        assert(output.includes('Timeline'), 'Should show timeline header');
+        assert(output.includes('spec-started'), 'Should show events');
+        assert(output.includes('spec-completed'), 'Should show events');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('fix command', () => {
+    it('dies without description', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.fix([]);
+      } catch (e) {
+        assert(errorOutput.includes('Usage: kspec fix'), 'Should show usage');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('refactor command', () => {
+    it('dies without description', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.refactor([]);
+      } catch (e) {
+        assert(errorOutput.includes('Usage: kspec refactor'), 'Should show usage');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('spike command', () => {
+    it('dies without description', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.spike([]);
+      } catch (e) {
+        assert(errorOutput.includes('Usage: kspec spike'), 'Should show usage');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('revise command', () => {
+    it('requires existing spec.md', async () => {
+      const folder = path.join('.kiro', 'specs', 'revise-no-spec');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.revise([]);
+      } catch (e) {
+        assert(errorOutput.includes('No spec.md'), 'Should require spec.md');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('demo command', () => {
+    it('requires existing spec.md', async () => {
+      const folder = path.join('.kiro', 'specs', 'demo-no-spec');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.demo([]);
+      } catch (e) {
+        assert(errorOutput.includes('No spec.md'), 'Should require spec.md');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('estimate command', () => {
+    it('requires existing spec.md', async () => {
+      const folder = path.join('.kiro', 'specs', 'estimate-no-spec');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.estimate([]);
+      } catch (e) {
+        assert(errorOutput.includes('No spec.md'), 'Should require spec.md');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('memory command', () => {
+    it('show handles missing memory.md', () => {
+      // Ensure no memory file
+      const memFile = path.join('.kiro', 'memory.md');
+      if (fs.existsSync(memFile)) fs.unlinkSync(memFile);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.memory(['show']);
+        assert(output.includes('No project memory'), 'Should report no memory');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('show displays memory content', () => {
+      fs.mkdirSync('.kiro', { recursive: true });
+      fs.writeFileSync(path.join('.kiro', 'memory.md'), '# Memory\n\n- Learning 1\n- Learning 2');
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.memory(['show']);
+        assert(output.includes('Learning 1'), 'Should display memory content');
+      } finally {
+        console.log = originalLog;
+      }
+
+      // Clean up
+      fs.unlinkSync(path.join('.kiro', 'memory.md'));
+    });
+
+    it('review handles missing memory.md', () => {
+      const memFile = path.join('.kiro', 'memory.md');
+      if (fs.existsSync(memFile)) fs.unlinkSync(memFile);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.memory(['review']);
+        assert(output.includes('No project memory to review'), 'Should report no memory to review');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('prune handles missing memory.md', () => {
+      const memFile = path.join('.kiro', 'memory.md');
+      if (fs.existsSync(memFile)) fs.unlinkSync(memFile);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.memory(['prune']);
+        assert(output.includes('No project memory to prune'), 'Should report no memory to prune');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('dies on unknown subcommand', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.memory(['unknown']);
+      } catch (e) {
+        assert(errorOutput.includes('Unknown memory subcommand'), 'Should report unknown subcommand');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+
+    it('defaults to show subcommand', () => {
+      const memFile = path.join('.kiro', 'memory.md');
+      if (fs.existsSync(memFile)) fs.unlinkSync(memFile);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.memory([]);
+        assert(output.includes('No project memory'), 'Should default to show');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('milestone command', () => {
+    let MILESTONES_DIR;
+
+    before(() => {
+      ({ MILESTONES_DIR } = require('../src/index.js'));
+    });
+
+    it('list handles no milestones directory', () => {
+      if (fs.existsSync(MILESTONES_DIR)) fs.rmSync(MILESTONES_DIR, { recursive: true });
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.milestone(['list']);
+        assert(output.includes('No milestones'), 'Should report no milestones');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('create creates milestone file', () => {
+      if (fs.existsSync(MILESTONES_DIR)) fs.rmSync(MILESTONES_DIR, { recursive: true });
+
+      commands.milestone(['create', 'v2-test', 'Test', 'milestone']);
+      const msFile = path.join(MILESTONES_DIR, 'v2-test.json');
+      assert(fs.existsSync(msFile), 'Should create milestone file');
+      const ms = JSON.parse(fs.readFileSync(msFile, 'utf8'));
+      assert.strictEqual(ms.name, 'v2-test');
+      assert.strictEqual(ms.description, 'Test milestone');
+      assert.deepStrictEqual(ms.specs, []);
+      assert(ms.createdAt, 'Should have createdAt');
+    });
+
+    it('create prevents duplicates', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.milestone(['create', 'v2-test']);
+      } catch (e) {
+        assert(errorOutput.includes('already exists'), 'Should prevent duplicate');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+
+    it('create requires name', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.milestone(['create']);
+      } catch (e) {
+        assert(errorOutput.includes('Usage'), 'Should show usage');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+
+    it('add adds spec to milestone', () => {
+      const specFolder = path.join('.kiro', 'specs', 'ms-add-test');
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      commands.milestone(['add', 'v2-test']);
+      const ms = JSON.parse(fs.readFileSync(path.join(MILESTONES_DIR, 'v2-test.json'), 'utf8'));
+      assert(ms.specs.includes(specFolder), 'Should add spec to milestone');
+    });
+
+    it('add handles duplicate spec', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.milestone(['add', 'v2-test']);
+        assert(output.includes('already in'), 'Should report already in milestone');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('add fails for non-existent milestone', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.milestone(['add', 'nonexistent']);
+      } catch (e) {
+        assert(errorOutput.includes('not found'), 'Should report not found');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+
+    it('status shows milestone info', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.milestone(['status', 'v2-test']);
+        assert(output.includes('Milestone: v2-test'), 'Should show milestone name');
+        assert(output.includes('Test milestone'), 'Should show description');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('status fails for non-existent milestone', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.milestone(['status', 'nonexistent']);
+      } catch (e) {
+        assert(errorOutput.includes('not found'), 'Should report not found');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+
+    it('list shows milestones', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.milestone(['list']);
+        assert(output.includes('v2-test'), 'Should list milestone');
+        assert(output.includes('Test milestone'), 'Should show description');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('dies on unknown subcommand', async () => {
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' '); };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands.milestone(['unknown']);
+      } catch (e) {
+        assert(errorOutput.includes('Unknown milestone subcommand'), 'Should report unknown');
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('help text updates', () => {
+    it('includes work type commands', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('kspec fix'), 'Help should mention fix');
+        assert(output.includes('kspec refactor'), 'Help should mention refactor');
+        assert(output.includes('kspec spike'), 'Help should mention spike');
+        assert(output.includes('kspec revise'), 'Help should mention revise');
+        assert(output.includes('kspec demo'), 'Help should mention demo');
+        assert(output.includes('kspec estimate'), 'Help should mention estimate');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('includes memory commands', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('kspec memory'), 'Help should mention memory');
+        assert(output.includes('memory review'), 'Help should mention memory review');
+        assert(output.includes('memory prune'), 'Help should mention memory prune');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('includes milestone commands', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('milestone list'), 'Help should mention milestone list');
+        assert(output.includes('milestone create'), 'Help should mention milestone create');
+        assert(output.includes('milestone add'), 'Help should mention milestone add');
+        assert(output.includes('milestone status'), 'Help should mention milestone status');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('includes metrics command', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('kspec metrics'), 'Help should mention metrics');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('defaultConfig', () => {
+    it('includes testCommand', () => {
+      const cfg = loadConfig();
+      assert('testCommand' in cfg, 'Config should have testCommand');
+    });
+  });
+
+  describe('new agent templates', () => {
+    it('kspec-fix has correct structure', () => {
+      const agent = agentTemplates['kspec-fix.json'];
+      assert.strictEqual(agent.name, 'kspec-fix');
+      assert.strictEqual(agent.model, 'claude-sonnet-4.6');
+      assert(agent.tools.includes('bash'), 'Fix agent should have bash tool');
+      assert(agent.tools.includes('read'), 'Fix agent should have read tool');
+      assert(agent.tools.includes('write'), 'Fix agent should have write tool');
+      assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+f');
+      assert(agent.prompt.includes('bug'), 'Prompt should mention bug');
+    });
+
+    it('kspec-refactor has correct structure', () => {
+      const agent = agentTemplates['kspec-refactor.json'];
+      assert.strictEqual(agent.name, 'kspec-refactor');
+      assert(agent.tools.includes('bash'), 'Refactor agent should have bash tool');
+      assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+g');
+      assert(agent.prompt.includes('behavior must not change') || agent.prompt.includes('No behavior changes'), 'Prompt should mention no behavior change');
+    });
+
+    it('kspec-spike has correct structure', () => {
+      const agent = agentTemplates['kspec-spike.json'];
+      assert.strictEqual(agent.name, 'kspec-spike');
+      assert(!agent.tools.includes('bash'), 'Spike agent should NOT have bash tool');
+      assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+i');
+      assert(agent.prompt.includes('investigation') || agent.prompt.includes('INVESTIGATION'), 'Prompt should mention investigation');
+    });
+
+    it('kspec-revise has correct structure', () => {
+      const agent = agentTemplates['kspec-revise.json'];
+      assert.strictEqual(agent.name, 'kspec-revise');
+      assert(!agent.tools.includes('bash'), 'Revise agent should NOT have bash tool');
+      assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+e');
+      assert(agent.prompt.includes('diff summary') || agent.prompt.includes('feedback'), 'Prompt should mention diff or feedback');
+    });
+
+    it('kspec-demo has correct structure', () => {
+      const agent = agentTemplates['kspec-demo.json'];
+      assert.strictEqual(agent.name, 'kspec-demo');
+      assert(!agent.tools.includes('bash'), 'Demo agent should NOT have bash tool');
+      assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+w');
+      assert(agent.prompt.includes('DEMO WALKTHROUGH') || agent.prompt.includes('walkthrough'), 'Prompt should mention walkthrough');
+    });
+
+    it('kspec-estimate has correct structure', () => {
+      const agent = agentTemplates['kspec-estimate.json'];
+      assert.strictEqual(agent.name, 'kspec-estimate');
+      assert(!agent.tools.includes('bash'), 'Estimate agent should NOT have bash tool');
+      assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+x');
+      assert(agent.prompt.includes('T-shirt Size'), 'Prompt should mention T-shirt sizing');
+    });
+
+    it('all new agents have PIPELINE section', () => {
+      const newAgents = ['kspec-fix.json', 'kspec-refactor.json', 'kspec-spike.json',
+                         'kspec-revise.json', 'kspec-demo.json', 'kspec-estimate.json'];
+      for (const name of newAgents) {
+        const agent = agentTemplates[name];
+        assert(agent.prompt.includes('PIPELINE'), `${name}: should have PIPELINE section`);
+      }
+    });
+
+    it('all new agents have CONTEXT.md as first resource', () => {
+      const newAgents = ['kspec-fix.json', 'kspec-refactor.json', 'kspec-spike.json',
+                         'kspec-revise.json', 'kspec-demo.json', 'kspec-estimate.json'];
+      for (const name of newAgents) {
+        const agent = agentTemplates[name];
+        assert.strictEqual(agent.resources[0], 'file://.kiro/CONTEXT.md',
+          `${name}: CONTEXT.md should be first resource`);
+      }
+    });
+
+    it('all new agents have welcomeMessage', () => {
+      const newAgents = ['kspec-fix.json', 'kspec-refactor.json', 'kspec-spike.json',
+                         'kspec-revise.json', 'kspec-demo.json', 'kspec-estimate.json'];
+      for (const name of newAgents) {
+        const agent = agentTemplates[name];
+        assert(agent.welcomeMessage, `${name}: should have welcomeMessage`);
+      }
+    });
+  });
+
+  describe('agents command updated', () => {
+    it('lists all 14 agents', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.agents();
+        assert(output.includes('kspec-fix'), 'Should list kspec-fix');
+        assert(output.includes('kspec-refactor'), 'Should list kspec-refactor');
+        assert(output.includes('kspec-spike'), 'Should list kspec-spike');
+        assert(output.includes('kspec-revise'), 'Should list kspec-revise');
+        assert(output.includes('kspec-demo'), 'Should list kspec-demo');
+        assert(output.includes('kspec-estimate'), 'Should list kspec-estimate');
+        assert(output.includes('Ctrl+Shift+F'), 'Should show fix shortcut');
+        assert(output.includes('Ctrl+Shift+G'), 'Should show refactor shortcut');
+        assert(output.includes('Ctrl+Shift+I'), 'Should show spike shortcut');
+        assert(output.includes('Ctrl+Shift+E'), 'Should show revise shortcut');
+        assert(output.includes('Ctrl+Shift+W'), 'Should show demo shortcut');
+        assert(output.includes('Ctrl+Shift+X'), 'Should show estimate shortcut');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('all agents count', () => {
+    it('has exactly 14 agents', () => {
+      assert.strictEqual(Object.keys(agentTemplates).length, 14, 'Should have exactly 14 agents');
+    });
+  });
+
+  describe('status with metadata', () => {
+    it('shows spec type from metadata.json', () => {
+      const folder = path.join('.kiro', 'specs', 'status-metadata-test');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Fix Spec');
+      fs.writeFileSync(path.join(folder, 'metadata.json'), JSON.stringify({ type: 'fix' }));
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.status();
+        assert(output.includes('Type: fix'), 'Should show spec type');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('refreshContext with metadata and milestones', () => {
+    it('includes spec type in context', () => {
+      const folder = path.join('.kiro', 'specs', 'context-metadata-test');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Test');
+      fs.writeFileSync(path.join(folder, 'metadata.json'), JSON.stringify({ type: 'spike' }));
+      fs.writeFileSync('.kiro/.current', folder);
+
+      const content = refreshContext();
+      assert(content.includes('Type: spike'), 'Context should include spec type');
+    });
+
+    it('includes milestone in context', () => {
+      let MILESTONES_DIR;
+      ({ MILESTONES_DIR } = require('../src/index.js'));
+
+      const folder = path.join('.kiro', 'specs', 'context-milestone-test');
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Test');
+      fs.writeFileSync('.kiro/.current', folder);
+
+      // Create milestone with this spec
+      fs.mkdirSync(MILESTONES_DIR, { recursive: true });
+      fs.writeFileSync(path.join(MILESTONES_DIR, 'ctx-ms.json'), JSON.stringify({
+        name: 'ctx-ms',
+        specs: [folder],
+        createdAt: new Date().toISOString()
+      }));
+
+      const content = refreshContext();
+      assert(content.includes('Milestone: ctx-ms'), 'Context should include milestone');
+
+      // Clean up
+      fs.unlinkSync(path.join(MILESTONES_DIR, 'ctx-ms.json'));
+    });
+  });
+
+  describe('MILESTONES_DIR constant', () => {
+    it('is .kiro/milestones', () => {
+      let MILESTONES_DIR;
+      ({ MILESTONES_DIR } = require('../src/index.js'));
+      assert.strictEqual(MILESTONES_DIR, path.join('.kiro', 'milestones'));
     });
   });
 });

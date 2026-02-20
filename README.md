@@ -116,6 +116,30 @@ init → analyse → spec → verify-spec → design (optional) → tasks → ve
 | `kspec jira-subtasks` | Create Jira subtasks from tasks.md |
 | `kspec jira-subtasks PROJ-123` | Create subtasks under specific issue |
 
+### Work Types (Abbreviated Pipelines)
+
+| Command | Description |
+|---------|-------------|
+| `kspec fix "Bug description"` | Bug fix with TDD (spec→test→fix→verify) |
+| `kspec refactor "What and why"` | Refactor code (no behavior change) |
+| `kspec spike "Question"` | Time-boxed investigation (no code) |
+| `kspec revise` | Revise spec from stakeholder feedback |
+| `kspec demo` | Generate stakeholder walkthrough |
+| `kspec estimate` | Assess complexity before building |
+
+### Memory, Milestones & Observability
+
+| Command | Description |
+|---------|-------------|
+| `kspec memory` | Show project memory |
+| `kspec memory review` | AI-assisted memory review |
+| `kspec memory prune` | Remove outdated entries |
+| `kspec milestone list` | List milestones |
+| `kspec milestone create <name>` | Create milestone |
+| `kspec milestone add <name>` | Add current spec to milestone |
+| `kspec milestone status <name>` | Show milestone progress |
+| `kspec metrics` | Show timeline for current spec |
+
 ### Other
 
 | Command | Description |
@@ -128,6 +152,60 @@ init → analyse → spec → verify-spec → design (optional) → tasks → ve
 | `kspec agents` | List available agents |
 | `kspec update` | Check for updates |
 | `kspec help` | Show help |
+
+## Work Types
+
+Not everything needs the full spec pipeline. kspec provides entry points for different work types:
+
+### Bug Fix
+```bash
+kspec fix "Login fails with special characters"
+```
+Or in kiro-cli:
+```
+> /agent swap kspec-fix
+> Login fails when email contains + character. Error in auth.js line 42.
+```
+
+### Refactor
+```bash
+kspec refactor "Extract validation logic from controllers"
+```
+Or in kiro-cli:
+```
+> /agent swap kspec-refactor
+> Extract all validation logic from route controllers into a shared validation middleware
+```
+
+### Spike (Investigation)
+```bash
+kspec spike "Can we migrate from REST to GraphQL?"
+```
+Or in kiro-cli:
+```
+> /agent swap kspec-spike
+> Investigate feasibility of migrating our REST API to GraphQL
+```
+
+### Revise (Feedback Loop)
+```bash
+kspec revise    # revise current spec from feedback
+```
+Or in kiro-cli:
+```
+> /agent swap kspec-revise
+> PM says we need to add OAuth support and remove the remember-me feature
+```
+
+### Demo (Stakeholder Walkthrough)
+```bash
+kspec demo      # generate walkthrough of current implementation
+```
+
+### Estimate (Complexity Assessment)
+```bash
+kspec estimate  # assess before committing to build
+```
 
 ## Design Pipeline
 
@@ -248,6 +326,12 @@ kspec context    # View and refresh context manually
 | kspec-verify | Ctrl+Shift+V | Verify spec/design/tasks/implementation |
 | kspec-review | Ctrl+Shift+R | Code review |
 | kspec-jira | Ctrl+Shift+J | Jira integration (pull, sync, subtasks) |
+| kspec-fix | Ctrl+Shift+F | Fix bugs (abbreviated pipeline) |
+| kspec-refactor | Ctrl+Shift+G | Refactor code (no behavior change) |
+| kspec-spike | Ctrl+Shift+I | Investigate/spike (no code) |
+| kspec-revise | Ctrl+Shift+E | Revise spec from feedback |
+| kspec-demo | Ctrl+Shift+W | Generate stakeholder walkthrough |
+| kspec-estimate | Ctrl+Shift+X | Assess complexity |
 
 Switch agents in kiro-cli: `/agent swap kspec-build` or use keyboard shortcuts.
 
@@ -306,7 +390,12 @@ See: https://kiro.dev/docs/cli/code-intelligence/
 │       ├── design.md     # Technical design (commit, optional)
 │       ├── tasks.md      # Implementation tasks (commit)
 │       ├── memory.md     # Feature learnings (commit)
+│       ├── metadata.json # Spec type metadata (commit)
+│       ├── metrics.json  # Pipeline timeline (commit)
+│       ├── estimate.md   # Complexity estimate (commit, optional)
+│       ├── demo.md       # Stakeholder walkthrough (commit, optional)
 │       └── jira-links.json # Jira issue links (commit)
+├── milestones/           # Milestone groupings (commit)
 ├── steering/             # Project rules (commit)
 ├── agents/               # kspec-generated agents (commit)
 ├── settings/mcp.json     # MCP config (local only)

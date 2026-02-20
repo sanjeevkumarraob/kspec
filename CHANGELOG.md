@@ -2,7 +2,89 @@
 
 All notable changes to kspec are documented in this file.
 
-## [Unreleased] — v2.1
+## [2.1.0] — 2026-02-21
+
+### Closing the Methodology Gaps
+
+Addresses 10 identified gaps in the SDD methodology with work-type entry points, independent validation, feedback loops, and observability.
+
+### Work Types (Gap 1 — abbreviated pipelines)
+
+Not everything needs the full spec→design→tasks→build pipeline. 6 new commands provide tailored entry points:
+
+- **`kspec fix "Bug description"`** — Abbreviated TDD pipeline: describe → root cause → test → fix → verify
+- **`kspec refactor "What and why"`** — Restructure code with no behavior change, tests before and after
+- **`kspec spike "Question"`** — Time-boxed investigation, findings report only, no implementation
+- **`kspec revise`** — Re-enter spec from stakeholder feedback, diff summary, update affected tasks
+- **`kspec demo`** — Generate stakeholder walkthrough mapping implementation to requirements
+- **`kspec estimate`** — Complexity assessment with T-shirt sizing, risk analysis, recommendations
+
+### 6 New Agents
+
+| Agent | Shortcut | Purpose |
+|-------|----------|---------|
+| kspec-fix | Ctrl+Shift+F | Bug fix with abbreviated TDD pipeline |
+| kspec-refactor | Ctrl+Shift+G | Refactor code (no behavior change) |
+| kspec-spike | Ctrl+Shift+I | Investigation/spike (no code) |
+| kspec-revise | Ctrl+Shift+E | Revise spec from feedback |
+| kspec-demo | Ctrl+Shift+W | Generate stakeholder walkthrough |
+| kspec-estimate | Ctrl+Shift+X | Assess complexity |
+
+Total agents: 8 → 14. `kspec-fix` and `kspec-refactor` include `bash` tool for running tests.
+
+### Independent Validation (Gap 2)
+
+- **`testCommand`** config option: set during `kspec init` (e.g., `npm test`, `pytest`)
+- `kspec verify` runs `testCommand` before AI review — tests must pass first
+- `kspec build` runs `testCommand` as sanity check after AI chat
+
+### Auto-Refresh Spec-Lite (Gap 5)
+
+- `autoRefreshSpecLite()` detects when spec.md is newer than spec-lite.md
+- Automatically creates truncated copy before `tasks`, `build`, `verify`, `verify-tasks`
+- `kspec refresh` still uses AI for proper summary
+
+### Observability & Metrics (Gap 10)
+
+- `recordMetric()` tracks timestamps for every pipeline phase (spec, design, tasks, build, verify, done)
+- **`kspec metrics`** — Display timeline for current spec
+- Work-type commands (fix, refactor, spike) also record start/completed metrics
+
+### Feedback Loop (Gap 3)
+
+- **`kspec revise`** — Re-enter a spec from feedback, show diff summary, update affected tasks
+
+### Stakeholder Demo (Gap 4)
+
+- **`kspec demo`** — Generate walkthrough mapping implementation to spec requirements
+
+### Memory Management (Gap 6)
+
+- **`kspec memory`** — Show project memory
+- **`kspec memory review`** — AI-assisted review (identify outdated, duplicates, contradictions)
+- **`kspec memory prune`** — Remove outdated entries with confirmation
+
+### Complexity Assessment (Gap 7)
+
+- **`kspec estimate`** — T-shirt sizing, risk analysis, build recommendations
+
+### Multi-Spec Orchestration (Gap 9)
+
+- **`kspec milestone create <name>`** — Create milestone to group related specs
+- **`kspec milestone add <name>`** — Add current spec to milestone
+- **`kspec milestone status <name>`** — Show milestone progress with task aggregation
+- **`kspec milestone list`** — List all milestones
+
+### Status & Context Enhancements
+
+- `kspec status` shows spec type from metadata.json (fix/refactor/spike/feature)
+- `refreshContext()` includes metadata type and milestone membership
+- Metadata.json created for fix/refactor/spike work types with `type` field
+
+### Tests
+
+- ~55 new tests across ~16 new suites
+- Coverage for all new functions, commands, agent templates, and help text updates
 
 ### Design Pipeline
 
@@ -13,8 +95,6 @@ A new optional **design** step between `spec` and `tasks` enables technical arch
 - **New command**: `kspec verify-design` — Verify design against spec requirements
 - **Updated command**: `kspec tasks` — Automatically includes `design.md` for architecture guidance and dependency ordering when present
 - **Updated workflow**: `spec → design (optional) → tasks → build → verify`
-
-The design step is optional — run `kspec tasks` directly to skip it.
 
 ### Interactive Spec Shaping
 
@@ -28,61 +108,34 @@ The design step is optional — run `kspec tasks` directly to skip it.
 
 ### Jira Pull Updates
 
-New command to pull the latest changes from linked Jira issues and review them before updating specs.
-
 - **New command**: `kspec jira-pull` — Fetch latest updates from linked Jira issues
-- Reads `jira-links.json` for linked issue keys
 - Generates a CHANGE REPORT showing new/modified criteria, status changes, and comments
 - Never auto-updates spec.md — always presents changes for user approval first
-- Updated `kspec-jira` agent with PULL UPDATES capability
 
 ### Sync-Jira Smart Default
 
-`kspec sync-jira` now intelligently detects whether to create or update.
-
 - Reads `jira-links.json` for existing `specIssue` before defaulting to create
 - If a linked issue exists, updates it automatically (use `--create` to force new)
-- Preserves `--project` and `--update` flag behavior
 
 ### Agent Pipeline Navigation
 
-All 8 agents now include a **PIPELINE** section suggesting next steps with both CLI and agent-swap commands. Users who stay inside kiro-cli can navigate the full workflow without exiting.
-
-- Every agent prompt ends with contextual next-step suggestions
-- Both `/agent swap kspec-*` and `kspec *` commands shown
-- Pipeline is context-aware (e.g., after verify-spec, suggests design or tasks)
+All agents now include a **PIPELINE** section suggesting next steps with both CLI and agent-swap commands.
 
 ### Bug Fixes
 
-- **`.current` file handling**: `setCurrentSpec()` now normalizes to consistent `.kiro/specs/...` format using `path.basename()`. Previously stored inconsistent path formats between CLI and agent mode.
-- **Fuzzy matching removed**: `getCurrentSpec()` no longer uses fuzzy matching (`d.includes(spec) || spec.includes(d)`) which could return wrong specs. Now requires exact path or folder name match.
-- **Empty `.current` handling**: `getCurrentSpec()` returns `null` for empty or whitespace-only `.current` files instead of attempting to match.
-- **Stale context after chat**: `refreshContext()` now runs after `chat()` returns, ensuring CONTEXT.md reflects agent work in CLI mode.
-- **Better error messages**: `getOrSelectSpec()` now suggests `kspec list` and explains that `.kiro/.current` may be stale when no spec is found.
-
-### Agent Prompt Improvements
-
-- **kspec-spec**: Steps 5-6 now use explicit format: "Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)" and "Regenerate .kiro/CONTEXT.md"
-- **kspec-tasks**: References `design.md` for architecture guidance, uses "Regenerate" for CONTEXT.md
-- **kspec-build**: Uses "regenerate .kiro/CONTEXT.md" for clarity
-- **kspec-verify**: Added VERIFY-DESIGN section alongside VERIFY-SPEC, VERIFY-TASKS, VERIFY-IMPLEMENTATION
-- **kspec-jira**: Added PULL UPDATES capability, references `jira-links.json` explicitly, warns against auto-updating spec
+- **`.current` file handling**: `setCurrentSpec()` now normalizes to consistent `.kiro/specs/...` format
+- **Fuzzy matching removed**: `getCurrentSpec()` now requires exact path or folder name match
+- **Empty `.current` handling**: Returns `null` for empty or whitespace-only files
+- **Stale context after chat**: `refreshContext()` now runs after `chat()` returns
+- **Better error messages**: `getOrSelectSpec()` suggests `kspec list` and explains stale `.current`
 
 ### Model Upgrade
 
 - All agents updated from `claude-sonnet-4` to `claude-sonnet-4.6`
 
-### UI Updates
-
-- `kspec status` — Pipeline-aware "Next step" logic (no spec → spec, no design → design/skip, no tasks → tasks)
-- `kspec agents` — Lists kspec-design with Ctrl+Shift+D shortcut
-- `kspec help` — Includes design, verify-design, and jira-pull commands
-- `refreshContext()` — Shows Design section (present / not yet created), updated Quick Commands
-
 ### Tests
 
-- 112 tests across 39 suites (up from 85 tests across 25 suites)
-- New test suites: agent model version, agent prompt format, setCurrentSpec normalization, getCurrentSpec enhanced (empty/whitespace/no-fuzzy), getOrSelectSpec errors, sync-jira smart default, kspec-design agent, refreshContext with design, help/agents includes design, status pipeline, jira-pull, kspec-jira pull-updates, verify-spec as spec-shaper
+- 164 tests across 58 suites (up from 85 tests across 25 suites)
 
 ---
 
