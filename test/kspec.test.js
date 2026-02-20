@@ -988,7 +988,7 @@ describe('kspec', () => {
   });
 
   describe('jira-pull command', () => {
-    it('requires jira-links.json', async () => {
+    it('requires MCP or jira-links.json', async () => {
       const folder = '.kiro/specs/2026-01-25-jira-pull-test';
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync('.kiro/.current', folder);
@@ -1002,7 +1002,11 @@ describe('kspec', () => {
       try {
         await commands['jira-pull']([]);
       } catch (e) {
-        assert(errorOutput.includes('jira-links.json'), 'Should mention missing jira-links.json');
+        // Fails with MCP error (no Atlassian MCP in CI) or jira-links error (MCP present but no links)
+        assert(
+          errorOutput.includes('jira-links.json') || errorOutput.includes('Atlassian MCP'),
+          'Should mention missing jira-links.json or Atlassian MCP'
+        );
       } finally {
         console.error = originalError;
         process.exit = originalExit;
