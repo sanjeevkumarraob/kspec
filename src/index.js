@@ -579,7 +579,11 @@ ${memory}
 
 // Templates
 const steeringTemplates = {
-  'product.md': `# Product Overview
+  'product.md': `---
+inclusion: always
+description: Core product context for all interactions
+---
+# Product Overview
 
 ## Purpose
 [Define your product's purpose and target users]
@@ -590,7 +594,11 @@ const steeringTemplates = {
 ## Success Metrics
 [How success is measured]`,
 
-  'tech.md': `# Technology Stack
+  'tech.md': `---
+inclusion: always
+description: Technology stack and conventions
+---
+# Technology Stack
 
 ## Languages & Runtime
 [Primary language and version]
@@ -601,7 +609,16 @@ const steeringTemplates = {
 ## Tools
 [Build tools, package managers, linters]`,
 
-  'testing.md': `# Testing Standards
+  'testing.md': `---
+inclusion: auto
+description: Testing standards - loaded when working with tests
+globs:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test/**"
+  - "**/tests/**"
+---
+# Testing Standards
 
 ## Approach
 TDD: Red → Green → Refactor
@@ -612,7 +629,123 @@ TDD: Red → Green → Refactor
 - E2E: User flows
 
 ## Coverage
-[Minimum thresholds]`
+[Minimum thresholds]`,
+
+  'agents.md': `---
+inclusion: always
+description: Agent behavior guardrails - always included
+---
+# Agent Guidelines
+
+## kspec Workflow
+Agents follow the spec-driven development workflow:
+1. **Spec** → Define requirements in .kspec/specs/
+2. **Tasks** → Break down into atomic tasks
+3. **Build** → TDD implementation
+4. **Verify** → Validate against spec
+
+## Critical Rules
+- NEVER delete .kspec/ or .kiro/ folders
+- ALWAYS read .kspec/CONTEXT.md first after context compression
+- ALWAYS update tasks.md after completing each task
+- ALWAYS run tests before marking tasks complete
+- Use non-interactive flags for commands (--yes, -y, --no-input)
+
+## File Conventions
+- Specs: .kspec/specs/YYYY-MM-DD-{slug}/
+- Context: .kspec/CONTEXT.md (auto-generated, don't edit)
+- Current: .kspec/.current (tracks active spec)
+- Steering: .kiro/steering/ (product, tech, testing docs)
+
+## Code Quality
+- Follow existing code style and patterns
+- Write tests first (TDD)
+- Keep changes minimal and focused
+- Document non-obvious decisions in memory.md`
+};
+
+// AGENTS.md - Auto-included by Kiro (place in workspace root)
+const agentsMdTemplate = `# AGENTS.md
+
+> This file is auto-included by Kiro in every interaction.
+> Place in workspace root or ~/.kiro/steering/ for global.
+
+## Project Context
+This project uses **kspec** for spec-driven development.
+
+## Workflow
+1. Read .kspec/CONTEXT.md for current state
+2. Follow the active spec in .kspec/specs/
+3. Use TDD: write tests first, then implement
+4. Update tasks.md after completing each task
+
+## Guardrails
+- NEVER delete .kspec/ or .kiro/ directories
+- NEVER modify files outside the current spec scope without asking
+- ALWAYS run tests before marking tasks complete
+- ALWAYS preserve existing functionality unless explicitly changing it
+
+## Commands
+- \`kspec status\` - Show current state
+- \`kspec build\` - Continue building tasks
+- \`kspec verify\` - Verify implementation
+- \`kspec context\` - Refresh context file
+`;
+
+// Hooks template for .kiro/settings/hooks.json
+const hooksTemplate = {
+  hooks: {
+    // Run before any file write - lint check
+    preToolUse: [
+      {
+        matcher: 'fs_write',
+        command: 'echo "Writing: $KIRO_TOOL_INPUT_PATH"'
+      }
+    ],
+    // Run after file write - format code
+    postToolUse: [
+      {
+        matcher: 'fs_write',
+        command: 'if command -v prettier &> /dev/null && [[ "$KIRO_TOOL_INPUT_PATH" =~ \\.(js|ts|jsx|tsx|json|md)$ ]]; then prettier --write "$KIRO_TOOL_INPUT_PATH" 2>/dev/null || true; fi'
+      }
+    ],
+    // Run when agent stops - refresh context
+    stop: [
+      {
+        command: 'if [ -f .kspec/CONTEXT.md ]; then echo "Context: $(head -5 .kspec/CONTEXT.md | tail -1)"; fi'
+      }
+    ]
+  }
+};
+
+// Enterprise hooks template with more guardrails
+const enterpriseHooksTemplate = {
+  hooks: {
+    // Validate before file operations
+    preToolUse: [
+      {
+        matcher: 'fs_write',
+        command: 'if [[ "$KIRO_TOOL_INPUT_PATH" =~ \\.(env|pem|key|secret)$ ]]; then echo "BLOCKED: Cannot write sensitive files" >&2; exit 2; fi'
+      },
+      {
+        matcher: 'execute_bash',
+        command: '{ echo "$(date -Iseconds) | bash | $KIRO_TOOL_INPUT_COMMAND"; } >> .kspec/audit.log 2>/dev/null || true'
+      }
+    ],
+    // Format and lint after writes
+    postToolUse: [
+      {
+        matcher: 'fs_write',
+        command: 'if command -v prettier &> /dev/null && [[ "$KIRO_TOOL_INPUT_PATH" =~ \\.(js|ts|jsx|tsx|json|md)$ ]]; then prettier --write "$KIRO_TOOL_INPUT_PATH" 2>/dev/null || true; fi'
+      }
+    ],
+    // Run tests when agent stops
+    stop: [
+      {
+        command: 'if [ -f package.json ] && grep -q "\\"test\\":" package.json; then npm test --silent 2>/dev/null || echo "Tests failed - please review"; fi'
+      }
+    ]
+  }
 };
 
 const agentTemplates = {
@@ -981,8 +1114,16 @@ const commands = {
 
     const createSteering = await confirm('Create steering doc templates?');
 
+    const createAgentsMd = await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
+
+    const hooksChoice = await prompt('Configure Kiro hooks?', [
+      { label: 'None (skip hooks)', value: 'none' },
+      { label: 'Basic (format on save, context on stop)', value: 'basic' },
+      { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' }
+    ]);
+
     // Save config
-    const cfg = { dateFormat, autoExecute, initialized: true };
+    const cfg = { dateFormat, autoExecute, initialized: true, hooks: hooksChoice };
     saveConfig(cfg);
     Object.assign(config, cfg);
 
@@ -990,7 +1131,7 @@ const commands = {
     ensureDir(path.join(KSPEC_DIR, 'specs'));
     ensureDir(AGENTS_DIR);
 
-    // Create steering templates
+    // Create steering templates (with front matter for Kiro inclusion modes)
     if (createSteering) {
       ensureDir(STEERING_DIR);
       for (const [file, content] of Object.entries(steeringTemplates)) {
@@ -999,6 +1140,27 @@ const commands = {
           fs.writeFileSync(p, content);
           log(`Created ${p}`);
         }
+      }
+    }
+
+    // Create AGENTS.md in workspace root (auto-included by Kiro)
+    if (createAgentsMd) {
+      const agentsMdPath = 'AGENTS.md';
+      if (!fs.existsSync(agentsMdPath)) {
+        fs.writeFileSync(agentsMdPath, agentsMdTemplate);
+        log(`Created ${agentsMdPath} (auto-included by Kiro)`);
+      }
+    }
+
+    // Create hooks configuration
+    if (hooksChoice !== 'none') {
+      const hooksDir = path.join('.kiro', 'settings');
+      ensureDir(hooksDir);
+      const hooksPath = path.join(hooksDir, 'hooks.json');
+      if (!fs.existsSync(hooksPath)) {
+        const selectedHooks = hooksChoice === 'enterprise' ? enterpriseHooksTemplate : hooksTemplate;
+        fs.writeFileSync(hooksPath, JSON.stringify(selectedHooks, null, 2));
+        log(`Created ${hooksPath} (${hooksChoice} hooks)`);
       }
     }
 
@@ -1033,13 +1195,16 @@ const commands = {
 # kspec local state (don't commit - personal working state)
 .kspec/.current
 .kspec/CONTEXT.md
+.kspec/audit.log
 
 # DO commit these for team collaboration:
 # .kspec/config.json - project preferences
 # .kspec/specs/ - specifications, tasks, memory
 # .kiro/steering/ - product, tech, testing guidelines
 # .kiro/agents/ - agent configurations
+# .kiro/settings/hooks.json - Kiro hooks
 # .kiro/mcp.json.template - MCP template (no secrets)
+# AGENTS.md - auto-included guardrails
 `;
     const gitignorePath = '.gitignore';
     if (fs.existsSync(gitignorePath)) {
@@ -1054,7 +1219,12 @@ const commands = {
     }
 
     console.log('\n✅ kspec initialized!\n');
-    console.log('Next step:');
+    console.log('Created:');
+    if (createSteering) console.log('  - .kiro/steering/ (with front matter inclusion modes)');
+    if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
+    if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
+    console.log('  - .kiro/agents/ (kspec agents)');
+    console.log('\nNext step:');
     console.log('  kspec analyse');
     console.log('  or inside kiro-cli: /agent swap kspec-analyse\n');
   },
@@ -1708,4 +1878,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale, validateContract };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplate, enterpriseHooksTemplate, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale, validateContract };

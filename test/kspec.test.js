@@ -377,6 +377,116 @@ describe('kspec', () => {
     });
   });
 
+  describe('steeringTemplates', () => {
+    let steeringTemplates;
+
+    before(() => {
+      ({ steeringTemplates } = require('../src/index.js'));
+    });
+
+    it('has all required steering files', () => {
+      const expected = ['product.md', 'tech.md', 'testing.md', 'agents.md'];
+      for (const file of expected) {
+        assert(steeringTemplates[file], `Missing steering template: ${file}`);
+      }
+    });
+
+    it('steering files have front matter with inclusion mode', () => {
+      for (const [filename, content] of Object.entries(steeringTemplates)) {
+        assert(content.startsWith('---'), `${filename}: should start with front matter`);
+        assert(content.includes('inclusion:'), `${filename}: should have inclusion mode`);
+      }
+    });
+
+    it('product.md and tech.md use always inclusion', () => {
+      assert(steeringTemplates['product.md'].includes('inclusion: always'));
+      assert(steeringTemplates['tech.md'].includes('inclusion: always'));
+    });
+
+    it('testing.md uses auto inclusion with globs', () => {
+      assert(steeringTemplates['testing.md'].includes('inclusion: auto'));
+      assert(steeringTemplates['testing.md'].includes('globs:'));
+      assert(steeringTemplates['testing.md'].includes('*.test.*'));
+    });
+
+    it('agents.md contains guardrails', () => {
+      const agentsMd = steeringTemplates['agents.md'];
+      assert(agentsMd.includes('NEVER delete'));
+      assert(agentsMd.includes('ALWAYS read'));
+      assert(agentsMd.includes('.kspec/CONTEXT.md'));
+    });
+  });
+
+  describe('agentsMdTemplate', () => {
+    let agentsMdTemplate;
+
+    before(() => {
+      ({ agentsMdTemplate } = require('../src/index.js'));
+    });
+
+    it('exists and is a string', () => {
+      assert(typeof agentsMdTemplate === 'string');
+      assert(agentsMdTemplate.length > 0);
+    });
+
+    it('contains AGENTS.md header', () => {
+      assert(agentsMdTemplate.includes('# AGENTS.md'));
+    });
+
+    it('mentions auto-inclusion by Kiro', () => {
+      assert(agentsMdTemplate.includes('auto-included by Kiro'));
+    });
+
+    it('contains guardrails section', () => {
+      assert(agentsMdTemplate.includes('## Guardrails'));
+      assert(agentsMdTemplate.includes('NEVER delete'));
+    });
+
+    it('references kspec workflow', () => {
+      assert(agentsMdTemplate.includes('.kspec/CONTEXT.md'));
+      assert(agentsMdTemplate.includes('kspec status'));
+    });
+  });
+
+  describe('hooksTemplate', () => {
+    let hooksTemplate, enterpriseHooksTemplate;
+
+    before(() => {
+      ({ hooksTemplate, enterpriseHooksTemplate } = require('../src/index.js'));
+    });
+
+    it('basic hooks template has correct structure', () => {
+      assert(hooksTemplate.hooks, 'Should have hooks property');
+      assert(hooksTemplate.hooks.preToolUse, 'Should have preToolUse');
+      assert(hooksTemplate.hooks.postToolUse, 'Should have postToolUse');
+      assert(hooksTemplate.hooks.stop, 'Should have stop');
+    });
+
+    it('basic hooks has fs_write matcher for postToolUse', () => {
+      const postHook = hooksTemplate.hooks.postToolUse[0];
+      assert.strictEqual(postHook.matcher, 'fs_write');
+    });
+
+    it('enterprise hooks template has security blocks', () => {
+      assert(enterpriseHooksTemplate.hooks.preToolUse.length >= 2, 'Should have multiple preToolUse hooks');
+      const securityHook = enterpriseHooksTemplate.hooks.preToolUse[0];
+      assert(securityHook.command.includes('BLOCKED'), 'Should block sensitive files');
+      // Checks for sensitive file extensions in regex pattern
+      assert(securityHook.command.includes('env') && securityHook.command.includes('pem'));
+    });
+
+    it('enterprise hooks has audit logging', () => {
+      const auditHook = enterpriseHooksTemplate.hooks.preToolUse.find(h => h.matcher === 'execute_bash');
+      assert(auditHook, 'Should have bash audit hook');
+      assert(auditHook.command.includes('audit.log'));
+    });
+
+    it('enterprise hooks runs tests on stop', () => {
+      const stopHook = enterpriseHooksTemplate.hooks.stop[0];
+      assert(stopHook.command.includes('npm test'));
+    });
+  });
+
   describe('context command', () => {
     it('outputs context and confirms file creation', () => {
       let output = '';
