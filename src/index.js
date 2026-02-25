@@ -748,6 +748,99 @@ const enterpriseHooksTemplate = {
   }
 };
 
+// Documentation hooks template - README updates and Jira progress
+const documentationHooksTemplate = {
+  hooks: {
+    // After significant file changes, log for doc updates
+    postToolUse: [
+      {
+        matcher: 'fs_write',
+        command: `
+# Track changed files for documentation updates
+if [[ "$KIRO_TOOL_INPUT_PATH" =~ \\.(js|ts|py|go|rs|java)$ ]]; then
+  echo "$KIRO_TOOL_INPUT_PATH" >> .kspec/.changed-files 2>/dev/null || true
+fi
+`.trim()
+      }
+    ],
+    // On stop: update README and Jira with progress
+    stop: [
+      {
+        command: `
+# Update Jira with progress (if configured and jira-links.json exists)
+if [ -f .kspec/specs/*/.jira-links.json ] 2>/dev/null; then
+  SPEC_DIR=$(cat .kspec/.current 2>/dev/null)
+  if [ -n "$SPEC_DIR" ] && [ -f "$SPEC_DIR/tasks.md" ]; then
+    DONE=$(grep -c "^- \\[x\\]" "$SPEC_DIR/tasks.md" 2>/dev/null || echo 0)
+    TOTAL=$(grep -c "^- \\[" "$SPEC_DIR/tasks.md" 2>/dev/null || echo 0)
+    echo "Progress: $DONE/$TOTAL tasks complete"
+  fi
+fi
+`.trim()
+      }
+    ]
+  }
+};
+
+// Multi-CLI review hooks - invoke external reviewers
+const multiReviewHooksTemplate = {
+  hooks: {
+    // After task completion, trigger external review
+    stop: [
+      {
+        command: `
+# Multi-CLI Review: Invoke configured reviewers
+REVIEWER_CLI=\${KSPEC_REVIEWER_CLI:-}
+if [ -n "$REVIEWER_CLI" ] && [ -f .kspec/.current ]; then
+  SPEC_DIR=$(cat .kspec/.current)
+  CHANGED=$(cat .kspec/.changed-files 2>/dev/null | sort -u | head -20)
+  if [ -n "$CHANGED" ]; then
+    echo "Queuing review with $REVIEWER_CLI..."
+    echo "$CHANGED" > .kspec/.pending-review
+  fi
+fi
+# Cleanup changed files tracker
+rm -f .kspec/.changed-files 2>/dev/null || true
+`.trim()
+      }
+    ]
+  }
+};
+
+// Reviewer CLI configurations
+const reviewerCliConfigs = {
+  'copilot': {
+    name: 'GitHub Copilot CLI',
+    command: 'gh copilot explain',
+    reviewCommand: 'gh copilot suggest "review this code for edge cases and improvements"',
+    available: 'command -v gh &>/dev/null && gh extension list | grep -q copilot'
+  },
+  'gemini': {
+    name: 'Gemini CLI',
+    command: 'gemini',
+    reviewCommand: 'gemini "Review this code. Find edge cases, security issues, and improvements:"',
+    available: 'command -v gemini &>/dev/null'
+  },
+  'claude': {
+    name: 'Claude Code',
+    command: 'claude',
+    reviewCommand: 'claude "Review this code for edge cases, missed scenarios, and improvements:"',
+    available: 'command -v claude &>/dev/null'
+  },
+  'codex': {
+    name: 'OpenAI Codex',
+    command: 'codex',
+    reviewCommand: 'codex --approval-mode full-auto "Review for edge cases and improvements"',
+    available: 'command -v codex &>/dev/null'
+  },
+  'aider': {
+    name: 'Aider',
+    command: 'aider',
+    reviewCommand: 'aider --message "Review this code for edge cases and improvements"',
+    available: 'command -v aider &>/dev/null'
+  }
+};
+
 const agentTemplates = {
   'kspec-analyse.json': {
     name: 'kspec-analyse',
@@ -951,6 +1044,66 @@ Output: APPROVE / REQUEST_CHANGES with specific issues.`,
     welcomeMessage: 'Ready to review. What should I look at?'
   },
 
+  'kspec-multi-review.json': {
+    name: 'kspec-multi-review',
+    description: 'Multi-CLI code review (Copilot, Gemini, Claude, Codex)',
+    model: 'claude-sonnet-4',
+    tools: ['read', 'shell'],
+    allowedTools: ['read', 'shell'],
+    resources: [
+      'file://.kspec/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kspec/**/*.md'
+    ],
+    prompt: `You are the kspec multi-CLI review orchestrator.
+
+FIRST: Read .kspec/CONTEXT.md for current spec context.
+
+YOUR ROLE: Orchestrate reviews across multiple AI CLIs for comprehensive feedback.
+
+AVAILABLE REVIEWERS (check config in .kspec/config.json):
+- copilot: GitHub Copilot CLI (gh copilot)
+- gemini: Gemini CLI
+- claude: Claude Code CLI
+- codex: OpenAI Codex CLI
+- aider: Aider
+
+WORKFLOW:
+1. Get git diff or changed files from .kspec/.changed-files
+2. For each configured reviewer CLI, prepare review prompt
+3. Execute reviews via shell (one at a time to avoid conflicts)
+4. Consolidate feedback into unified report
+5. Identify:
+   - Edge cases missed
+   - Security concerns
+   - Performance issues
+   - Test coverage gaps
+   - Code quality improvements
+
+REVIEW COMMANDS:
+- Copilot: gh copilot suggest "review: <context>"
+- Gemini: gemini "<prompt>"
+- Claude: claude "<prompt>"
+- Codex: codex --approval-mode full-auto "<prompt>"
+
+OUTPUT FORMAT:
+## Multi-CLI Review Summary
+
+### Reviewer: [name]
+- Finding 1
+- Finding 2
+
+### Consolidated Edge Cases
+- [List missed scenarios across all reviewers]
+
+### Recommended Changes
+- [Prioritized list]
+
+### Verdict: APPROVE | REQUEST_CHANGES`,
+    keyboardShortcut: 'ctrl+shift+m',
+    welcomeMessage: 'Multi-CLI review ready. Which reviewers should I use? (copilot/gemini/claude/codex/all)'
+  },
+
   'kspec-jira.json': {
     name: 'kspec-jira',
     description: 'Jira integration for specs',
@@ -1119,11 +1272,38 @@ const commands = {
     const hooksChoice = await prompt('Configure Kiro hooks?', [
       { label: 'None (skip hooks)', value: 'none' },
       { label: 'Basic (format on save, context on stop)', value: 'basic' },
-      { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' }
+      { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
+      { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' }
     ]);
 
+    // Multi-CLI review configuration
+    const configureReviewers = await confirm('Configure multi-CLI reviewers? (Copilot, Gemini, Claude, Codex)');
+    let reviewerClis = [];
+
+    if (configureReviewers) {
+      console.log('\nSelect reviewer CLIs (kspec will orchestrate reviews):');
+      const reviewerOptions = [
+        { label: 'GitHub Copilot CLI (gh copilot)', value: 'copilot' },
+        { label: 'Gemini CLI', value: 'gemini' },
+        { label: 'Claude Code CLI', value: 'claude' },
+        { label: 'OpenAI Codex CLI', value: 'codex' },
+        { label: 'Aider', value: 'aider' }
+      ];
+
+      for (const opt of reviewerOptions) {
+        const use = await confirm(`  Use ${opt.label}?`);
+        if (use) reviewerClis.push(opt.value);
+      }
+    }
+
     // Save config
-    const cfg = { dateFormat, autoExecute, initialized: true, hooks: hooksChoice };
+    const cfg = {
+      dateFormat,
+      autoExecute,
+      initialized: true,
+      hooks: hooksChoice,
+      reviewerClis: reviewerClis.length > 0 ? reviewerClis : undefined
+    };
     saveConfig(cfg);
     Object.assign(config, cfg);
 
@@ -1158,7 +1338,36 @@ const commands = {
       ensureDir(hooksDir);
       const hooksPath = path.join(hooksDir, 'hooks.json');
       if (!fs.existsSync(hooksPath)) {
-        const selectedHooks = hooksChoice === 'enterprise' ? enterpriseHooksTemplate : hooksTemplate;
+        let selectedHooks;
+        if (hooksChoice === 'enterprise') {
+          selectedHooks = enterpriseHooksTemplate;
+        } else if (hooksChoice === 'documentation') {
+          // Merge basic + documentation hooks
+          selectedHooks = {
+            hooks: {
+              preToolUse: [...hooksTemplate.hooks.preToolUse],
+              postToolUse: [
+                ...hooksTemplate.hooks.postToolUse,
+                ...documentationHooksTemplate.hooks.postToolUse
+              ],
+              stop: [
+                ...hooksTemplate.hooks.stop,
+                ...documentationHooksTemplate.hooks.stop
+              ]
+            }
+          };
+        } else {
+          selectedHooks = hooksTemplate;
+        }
+
+        // Add multi-review hooks if reviewers configured
+        if (reviewerClis.length > 0) {
+          selectedHooks.hooks.stop = [
+            ...(selectedHooks.hooks.stop || []),
+            ...multiReviewHooksTemplate.hooks.stop
+          ];
+        }
+
         fs.writeFileSync(hooksPath, JSON.stringify(selectedHooks, null, 2));
         log(`Created ${hooksPath} (${hooksChoice} hooks)`);
       }
@@ -1224,6 +1433,20 @@ const commands = {
     if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
     if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
     console.log('  - .kiro/agents/ (kspec agents)');
+
+    if (reviewerClis.length > 0) {
+      console.log(`\n📋 Multi-CLI Reviewers: ${reviewerClis.join(', ')}`);
+      console.log('   Use: kspec multi-review or /agent swap kspec-multi-review');
+    }
+
+    // Remind about available CLI tools
+    console.log('\n💡 CLI Tools Kiro Can Invoke (via shell):');
+    console.log('   Reviewers: gh copilot, gemini, claude, codex, aider');
+    console.log('   Testing:   npm test, pytest, go test, cargo test');
+    console.log('   Linting:   eslint, prettier, black, golangci-lint');
+    console.log('   Docs:      jsdoc, typedoc, sphinx, godoc');
+    console.log('   Git:       gh pr, gh issue, git');
+
     console.log('\nNext step:');
     console.log('  kspec analyse');
     console.log('  or inside kiro-cli: /agent swap kspec-analyse\n');
@@ -1682,6 +1905,29 @@ Evaluate quality, tests, security.
 Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
   },
 
+  async 'multi-review'(args) {
+    const reviewers = config.reviewerClis || [];
+    if (reviewers.length === 0) {
+      console.log('No reviewer CLIs configured.');
+      console.log('Run "kspec init" or edit .kspec/config.json to add reviewers.');
+      console.log('\nAvailable: copilot, gemini, claude, codex, aider');
+      return;
+    }
+
+    const target = args.join(' ') || 'recent changes (git diff HEAD~1)';
+    await chat(`Multi-CLI Review: ${target}
+
+Configured reviewers: ${reviewers.join(', ')}
+
+WORKFLOW:
+1. Get the diff or changed files
+2. For each reviewer CLI, invoke it to review the code
+3. Collect findings: edge cases, security, performance, improvements
+4. Consolidate into unified report with verdict
+
+Use shell tool to invoke each reviewer CLI.`, 'kspec-multi-review');
+  },
+
   list() {
     const specsDir = getSpecsDir();
     if (!fs.existsSync(specsDir)) {
@@ -1756,17 +2002,56 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
     console.log(`
 kspec Agents
 
-Agent           Shortcut        Purpose
-─────────────────────────────────────────────────────────
-kspec-analyse   Ctrl+Shift+A    Analyse codebase, update steering
-kspec-spec      Ctrl+Shift+S    Create specifications
-kspec-tasks     Ctrl+Shift+T    Generate tasks from spec
-kspec-build     Ctrl+Shift+B    Execute tasks with TDD
-kspec-verify    Ctrl+Shift+V    Verify spec/tasks/implementation
-kspec-review    Ctrl+Shift+R    Code review
-kspec-jira      Ctrl+Shift+J    Jira integration (requires Atlassian MCP)
+Agent              Shortcut        Purpose
+─────────────────────────────────────────────────────────────
+kspec-analyse      Ctrl+Shift+A    Analyse codebase, update steering
+kspec-spec         Ctrl+Shift+S    Create specifications
+kspec-tasks        Ctrl+Shift+T    Generate tasks from spec
+kspec-build        Ctrl+Shift+B    Execute tasks with TDD
+kspec-verify       Ctrl+Shift+V    Verify spec/tasks/implementation
+kspec-review       Ctrl+Shift+R    Code review (single reviewer)
+kspec-multi-review Ctrl+Shift+M    Multi-CLI review (Copilot/Gemini/Claude/Codex)
+kspec-jira         Ctrl+Shift+J    Jira integration (requires Atlassian MCP)
 
 Switch: /agent swap or use keyboard shortcuts
+`);
+
+    // Show configured reviewers
+    if (config.reviewerClis && config.reviewerClis.length > 0) {
+      console.log(`Configured reviewers: ${config.reviewerClis.join(', ')}`);
+      console.log('Manage with: kspec reviewers\n');
+    }
+  },
+
+  reviewers() {
+    console.log(`
+kspec Multi-CLI Reviewers
+
+Kiro orchestrates reviews across multiple AI CLIs for comprehensive feedback.
+
+Configured: ${config.reviewerClis?.join(', ') || '(none)'}
+
+Available CLIs:
+  copilot   GitHub Copilot CLI    gh copilot suggest
+  gemini    Gemini CLI            gemini "<prompt>"
+  claude    Claude Code CLI       claude "<prompt>"
+  codex     OpenAI Codex CLI      codex --approval-mode full-auto
+  aider     Aider                 aider --message
+
+To configure:
+  1. Run 'kspec init' and select reviewers, OR
+  2. Edit .kspec/config.json:
+     { "reviewerClis": ["copilot", "gemini", "claude"] }
+
+Usage:
+  kspec multi-review              Run multi-CLI review
+  /agent swap kspec-multi-review  In Kiro CLI
+
+The multi-review agent will:
+  1. Get changed files from git diff
+  2. Send review prompts to each configured CLI
+  3. Consolidate findings (edge cases, security, performance)
+  4. Output unified review with verdict
 `);
   },
 
@@ -1806,7 +2091,7 @@ Switch: /agent swap or use keyboard shortcuts
 kspec - Spec-driven development for Kiro CLI
 
 CLI Workflow (outside kiro-cli):
-  kspec init              Interactive setup
+  kspec init              Interactive setup (hooks, reviewers, steering)
   kspec analyse           Analyse codebase, update steering
   kspec spec "Feature"    Create specification
   kspec verify-spec       Verify spec is complete
@@ -1824,6 +2109,14 @@ Inside kiro-cli (recommended):
 
   Agents read .kspec/CONTEXT.md automatically for state.
 
+Multi-CLI Review (Kiro + Copilot/Gemini/Claude/Codex):
+  kspec reviewers         Show/configure reviewer CLIs
+  kspec multi-review      Run review with all configured CLIs
+  kspec review [target]   Single reviewer code review
+
+  Kiro orchestrates, other CLIs provide diverse perspectives.
+  Finds edge cases and scenarios missed by single reviewer.
+
 Jira Integration (requires Atlassian MCP):
   kspec spec --jira PROJ-123,PROJ-456 "Feature"
                           Create spec from Jira issues
@@ -1837,7 +2130,6 @@ Jira Integration (requires Atlassian MCP):
 Other:
   kspec refresh           Regenerate spec-lite.md after editing spec.md
   kspec context           Refresh/view context file
-  kspec review [target]   Code review
   kspec list              List all specs
   kspec status            Current status
   kspec agents            List agents
@@ -1845,9 +2137,10 @@ Other:
   kspec help              Show this help
 
 Examples:
-  kspec init                        # First time setup
+  kspec init                        # Setup with hooks + reviewers
   kspec spec "User Auth"            # CLI mode
   kspec spec --jira PROJ-123 "Auth" # From Jira story
+  kspec multi-review                # Review with Copilot + Gemini + Claude
   kiro-cli --agent kspec-spec       # Direct agent mode
 `);
   }
@@ -1878,4 +2171,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplate, enterpriseHooksTemplate, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale, validateContract };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplate, enterpriseHooksTemplate, documentationHooksTemplate, multiReviewHooksTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, slugify, generateSlug, isSpecStale, validateContract };

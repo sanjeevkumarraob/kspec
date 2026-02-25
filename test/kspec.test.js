@@ -487,6 +487,99 @@ describe('kspec', () => {
     });
   });
 
+  describe('documentationHooksTemplate', () => {
+    let documentationHooksTemplate;
+
+    before(() => {
+      ({ documentationHooksTemplate } = require('../src/index.js'));
+    });
+
+    it('has correct structure', () => {
+      assert(documentationHooksTemplate.hooks.postToolUse, 'Should have postToolUse');
+      assert(documentationHooksTemplate.hooks.stop, 'Should have stop');
+    });
+
+    it('tracks changed files in postToolUse', () => {
+      const postHook = documentationHooksTemplate.hooks.postToolUse[0];
+      assert(postHook.matcher === 'fs_write');
+      assert(postHook.command.includes('.changed-files'));
+    });
+
+    it('reports progress on stop', () => {
+      const stopHook = documentationHooksTemplate.hooks.stop[0];
+      assert(stopHook.command.includes('tasks.md'));
+      assert(stopHook.command.includes('Progress'));
+    });
+  });
+
+  describe('multiReviewHooksTemplate', () => {
+    let multiReviewHooksTemplate;
+
+    before(() => {
+      ({ multiReviewHooksTemplate } = require('../src/index.js'));
+    });
+
+    it('has stop hook for review orchestration', () => {
+      assert(multiReviewHooksTemplate.hooks.stop, 'Should have stop hooks');
+      const stopHook = multiReviewHooksTemplate.hooks.stop[0];
+      assert(stopHook.command.includes('KSPEC_REVIEWER_CLI'));
+    });
+
+    it('cleans up changed files tracker', () => {
+      const stopHook = multiReviewHooksTemplate.hooks.stop[0];
+      assert(stopHook.command.includes('.changed-files'));
+    });
+  });
+
+  describe('reviewerCliConfigs', () => {
+    let reviewerCliConfigs;
+
+    before(() => {
+      ({ reviewerCliConfigs } = require('../src/index.js'));
+    });
+
+    it('has all expected reviewers', () => {
+      const expected = ['copilot', 'gemini', 'claude', 'codex', 'aider'];
+      for (const reviewer of expected) {
+        assert(reviewerCliConfigs[reviewer], `Missing reviewer: ${reviewer}`);
+      }
+    });
+
+    it('each reviewer has required fields', () => {
+      for (const [name, config] of Object.entries(reviewerCliConfigs)) {
+        assert(config.name, `${name}: should have name`);
+        assert(config.command, `${name}: should have command`);
+        assert(config.reviewCommand, `${name}: should have reviewCommand`);
+        assert(config.available, `${name}: should have available check`);
+      }
+    });
+
+    it('copilot uses gh copilot', () => {
+      assert(reviewerCliConfigs.copilot.command.includes('gh copilot'));
+    });
+
+    it('codex uses approval-mode', () => {
+      assert(reviewerCliConfigs.codex.reviewCommand.includes('approval-mode'));
+    });
+  });
+
+  describe('multi-review agent', () => {
+    it('kspec-multi-review agent exists', () => {
+      assert(agentTemplates['kspec-multi-review.json'], 'Should have multi-review agent');
+    });
+
+    it('has correct keyboard shortcut', () => {
+      const agent = agentTemplates['kspec-multi-review.json'];
+      assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+m');
+    });
+
+    it('prompt mentions orchestrating reviewers', () => {
+      const agent = agentTemplates['kspec-multi-review.json'];
+      assert(agent.prompt.includes('orchestrat'));
+      assert(agent.prompt.includes('copilot') || agent.prompt.includes('Copilot'));
+    });
+  });
+
   describe('context command', () => {
     it('outputs context and confirms file creation', () => {
       let output = '';
