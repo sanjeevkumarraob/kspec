@@ -4,10 +4,10 @@ name: Beta Release
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch to release beta from'
+      suffix:
+        description: 'Version suffix (default: beta)'
         required: false
-        default: ''
+        default: 'beta'
   push:
     branches:
       - 'feature/**'
@@ -52,76 +52,41 @@ jobs:
       - name: Update npm for trusted publishing
         run: npm install -g npm@latest
 
-      - name: Get base version
-        id: base_version
+      - name: Generate beta suffix
+        id: suffix
         run: |
-          BASE_VERSION=$(cat version.txt)
-          echo "base=$BASE_VERSION" >> $GITHUB_OUTPUT
+          # Use input suffix or default to beta
+          BASE_SUFFIX="${{ github.event.inputs.suffix || 'beta' }}"
 
-      - name: Generate beta version
-        id: beta_version
-        run: |
-          BASE_VERSION="${{ steps.base_version.outputs.base }}"
-          BRANCH_NAME="${GITHUB_REF_NAME}"
+          # Add branch hash for uniqueness
+          BRANCH_HASH=$(echo "${{ github.ref_name }}" | md5sum | cut -c1-6)
 
-          # Create short hash from branch name for uniqueness
-          BRANCH_HASH=$(echo "$BRANCH_NAME" | md5sum | cut -c1-6)
+          echo "value=${BASE_SUFFIX}.${BRANCH_HASH}" >> $GITHUB_OUTPUT
 
-          # Count existing beta tags for this base version
-          BETA_COUNT=$(git tag -l "${BASE_VERSION}-beta.*" | wc -l)
-
-          # Generate beta version: 1.0.9-beta.{count}.{branch-hash}
-          BETA_VERSION="${BASE_VERSION}-beta.${BETA_COUNT}.${BRANCH_HASH}"
-
-          echo "version=$BETA_VERSION" >> $GITHUB_OUTPUT
-          echo "Beta version: $BETA_VERSION"
+      - name: Get Version (with beta suffix)
+        id: version
+        uses: sanjeevkumarraob/version-system@v1
+        with:
+          VERSION_FILE: 'version.txt'
+          SUFFIX: ${{ steps.suffix.outputs.value }}
+          CREATE_RELEASE: true
 
       - name: Update package.json version
-        run: npm version ${{ steps.beta_version.outputs.version }} --no-git-tag-version
+        run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
 
       - name: Publish to npm (beta tag)
         run: npm publish --access public --tag beta
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Create Git tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ steps.beta_version.outputs.version }}" -m "Beta release ${{ steps.beta_version.outputs.version }}"
-          git push origin "v${{ steps.beta_version.outputs.version }}"
-
-      - name: Create GitHub Release (prerelease)
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.beta_version.outputs.version }}
-          name: Beta ${{ steps.beta_version.outputs.version }}
-          prerelease: true
-          generate_release_notes: true
-          body: |
-            ## Beta Release
-
-            **Branch:** `${{ github.ref_name }}`
-            **Version:** `${{ steps.beta_version.outputs.version }}`
-
-            ### Install
-            ```bash
-            npm install -g kspec@beta
-            # or specific version
-            npm install -g kspec@${{ steps.beta_version.outputs.version }}
-            ```
-
-            ### Test & Feedback
-            This is a pre-release for testing. Please report issues before merging to main.
 
       - name: Summary
         run: |
           echo "## Beta Release Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** \`${{ steps.beta_version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Install" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
           echo "npm install -g kspec@beta" >> $GITHUB_STEP_SUMMARY
+          echo "# or specific version" >> $GITHUB_STEP_SUMMARY
+          echo "npm install -g kspec@${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
