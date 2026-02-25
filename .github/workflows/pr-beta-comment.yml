@@ -1,0 +1,69 @@
+name: PR Beta Install Comment
+
+# Add comment to PR when beta is published
+on:
+  workflow_run:
+    workflows: ["Beta Release"]
+    types:
+      - completed
+
+permissions:
+  pull-requests: write
+
+jobs:
+  comment:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find PR for branch
+        id: find_pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.workflow_run.head_branch;
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branch}`,
+              state: 'open'
+            });
+
+            if (prs.length > 0) {
+              return prs[0].number;
+            }
+            return null;
+
+      - name: Comment on PR
+        if: ${{ steps.find_pr.outputs.result != 'null' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ steps.find_pr.outputs.result }};
+            const branch = context.payload.workflow_run.head_branch;
+
+            const body = `## 🧪 Beta Release Available
+
+            A beta version has been published from this branch.
+
+            ### Install & Test
+            \`\`\`bash
+            npm install -g kspec@beta
+            \`\`\`
+
+            ### Verify
+            \`\`\`bash
+            kspec --version
+            kspec help
+            \`\`\`
+
+            Please test and confirm before merging to main.
+
+            ---
+            *Automated by Beta Release workflow*`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body
+            });

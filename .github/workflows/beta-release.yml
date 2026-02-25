@@ -1,0 +1,127 @@
+name: Beta Release
+
+# Trigger: Manual dispatch or push to feature branches
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to release beta from'
+        required: false
+        default: ''
+  push:
+    branches:
+      - 'feature/**'
+      - 'feat/**'
+      - 'claude/**'
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --test
+
+  beta-release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Get base version
+        id: base_version
+        run: |
+          BASE_VERSION=$(cat version.txt)
+          echo "base=$BASE_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate beta version
+        id: beta_version
+        run: |
+          BASE_VERSION="${{ steps.base_version.outputs.base }}"
+          BRANCH_NAME="${GITHUB_REF_NAME}"
+
+          # Create short hash from branch name for uniqueness
+          BRANCH_HASH=$(echo "$BRANCH_NAME" | md5sum | cut -c1-6)
+
+          # Count existing beta tags for this base version
+          BETA_COUNT=$(git tag -l "${BASE_VERSION}-beta.*" | wc -l)
+
+          # Generate beta version: 1.0.9-beta.{count}.{branch-hash}
+          BETA_VERSION="${BASE_VERSION}-beta.${BETA_COUNT}.${BRANCH_HASH}"
+
+          echo "version=$BETA_VERSION" >> $GITHUB_OUTPUT
+          echo "Beta version: $BETA_VERSION"
+
+      - name: Update package.json version
+        run: npm version ${{ steps.beta_version.outputs.version }} --no-git-tag-version
+
+      - name: Publish to npm (beta tag)
+        run: npm publish --access public --tag beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create Git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.beta_version.outputs.version }}" -m "Beta release ${{ steps.beta_version.outputs.version }}"
+          git push origin "v${{ steps.beta_version.outputs.version }}"
+
+      - name: Create GitHub Release (prerelease)
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.beta_version.outputs.version }}
+          name: Beta ${{ steps.beta_version.outputs.version }}
+          prerelease: true
+          generate_release_notes: true
+          body: |
+            ## Beta Release
+
+            **Branch:** `${{ github.ref_name }}`
+            **Version:** `${{ steps.beta_version.outputs.version }}`
+
+            ### Install
+            ```bash
+            npm install -g kspec@beta
+            # or specific version
+            npm install -g kspec@${{ steps.beta_version.outputs.version }}
+            ```
+
+            ### Test & Feedback
+            This is a pre-release for testing. Please report issues before merging to main.
+
+      - name: Summary
+        run: |
+          echo "## Beta Release Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ steps.beta_version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Install" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "npm install -g kspec@beta" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
