@@ -684,8 +684,17 @@ ${hasDesign ? '- Run `kspec verify-design` to review' : '- Run `kspec design` to
 }
 
 // Templates
+// Steering templates with Kiro-native front matter
+// inclusion_mode: always | on_demand | never
+// always = included in every prompt (default)
+// on_demand = agent can request when needed
+// never = reference only, not auto-included
 const steeringTemplates = {
-  'product.md': `# Product Overview
+  'product.md': `---
+inclusion_mode: always
+description: Product context and goals
+---
+# Product Overview
 
 ## Purpose
 [Define your product's purpose and target users]
@@ -696,7 +705,11 @@ const steeringTemplates = {
 ## Success Metrics
 [How success is measured]`,
 
-  'tech.md': `# Technology Stack
+  'tech.md': `---
+inclusion_mode: always
+description: Technology stack and architecture
+---
+# Technology Stack
 
 ## Languages & Runtime
 [Primary language and version]
@@ -707,7 +720,11 @@ const steeringTemplates = {
 ## Tools
 [Build tools, package managers, linters]`,
 
-  'testing.md': `# Testing Standards
+  'testing.md': `---
+inclusion_mode: always
+description: Testing standards and TDD approach
+---
+# Testing Standards
 
 ## Approach
 TDD: Red → Green → Refactor
@@ -718,7 +735,49 @@ TDD: Red → Green → Refactor
 - E2E: User flows
 
 ## Coverage
-[Minimum thresholds]`
+[Minimum thresholds]`,
+
+  'security.md': `---
+inclusion_mode: always
+description: Security requirements and practices
+---
+# Security Guidelines
+
+## Authentication
+[Auth approach: OAuth, JWT, sessions]
+
+## Data Protection
+- Sanitize all user input
+- Use parameterized queries
+- Encrypt sensitive data at rest
+
+## Secrets Management
+- Never commit secrets to git
+- Use environment variables
+- Reference .env.example for required vars`,
+
+  'api-standards.md': `---
+inclusion_mode: on_demand
+description: API design conventions (request when building APIs)
+---
+# API Standards
+
+## REST Conventions
+- Use plural nouns for resources
+- HTTP methods: GET (read), POST (create), PUT (update), DELETE (remove)
+- Return appropriate status codes
+
+## Response Format
+\`\`\`json
+{
+  "data": {},
+  "meta": { "timestamp": "ISO8601" },
+  "errors": []
+}
+\`\`\`
+
+## Versioning
+[API versioning strategy]`
 };
 
 const agentTemplates = {
@@ -1303,6 +1362,231 @@ PIPELINE (suggest next steps):
 - Generate tasks: \`/agent swap kspec-tasks\` or \`kspec tasks\``,
     keyboardShortcut: 'ctrl+shift+x',
     welcomeMessage: 'Estimation mode — assessing complexity...'
+  },
+
+  'kspec-multi-review.json': {
+    name: 'kspec-multi-review',
+    description: 'Multi-CLI code review (Copilot, Gemini, Claude, Codex)',
+    model: 'claude-sonnet-4.6',
+    tools: ['read', 'shell'],
+    allowedTools: ['read', 'shell'],
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'file://.kiro/specs/**/*.md'
+    ],
+    prompt: `You are the kspec multi-CLI review orchestrator.
+
+FIRST: Read .kiro/CONTEXT.md for current spec context.
+
+YOUR ROLE: Orchestrate reviews across multiple AI CLIs for comprehensive feedback.
+
+AVAILABLE REVIEWERS (check config in .kiro/config.json):
+- copilot: GitHub Copilot CLI (gh copilot)
+- gemini: Gemini CLI
+- claude: Claude Code CLI
+- codex: OpenAI Codex CLI
+- aider: Aider
+
+WORKFLOW:
+1. Check .kiro/config.json for enabled reviewers
+2. For each enabled reviewer, run review via shell:
+   - copilot: gh copilot explain "Review this code for: [criteria]"
+   - gemini: gemini "Review this diff: [git diff]"
+   - claude: claude "Review: [context]"
+   - codex: codex "Review: [context]"
+   - aider: aider --message "Review: [context]"
+3. Collect and synthesize feedback from all reviewers
+4. Present unified review summary with attribution
+
+OUTPUT FORMAT:
+## Multi-CLI Review Summary
+
+### Copilot Feedback
+[feedback or "skipped - not configured"]
+
+### Gemini Feedback
+[feedback or "skipped - not configured"]
+
+### Claude Feedback
+[feedback or "skipped - not configured"]
+
+### Codex Feedback
+[feedback or "skipped - not configured"]
+
+## Consensus Issues
+[issues raised by multiple reviewers]
+
+## Recommendation
+APPROVE / REQUEST_CHANGES with specific actions
+
+PIPELINE (suggest next steps):
+- Fix issues: \`/agent swap kspec-build\` or \`kspec build\`
+- Single reviewer: \`/agent swap kspec-review\` or \`kspec review\``,
+    keyboardShortcut: 'ctrl+shift+m',
+    welcomeMessage: 'Multi-CLI review mode. Which reviewers should I invoke?'
+  }
+};
+
+// Reviewer CLI configurations for multi-review
+const reviewerCliConfigs = {
+  copilot: {
+    name: 'GitHub Copilot CLI',
+    command: 'gh copilot explain',
+    checkCommand: 'gh copilot --version',
+    available: false
+  },
+  gemini: {
+    name: 'Gemini CLI',
+    command: 'gemini',
+    checkCommand: 'gemini --version',
+    available: false
+  },
+  claude: {
+    name: 'Claude Code CLI',
+    command: 'claude',
+    checkCommand: 'claude --version',
+    available: false
+  },
+  codex: {
+    name: 'OpenAI Codex CLI',
+    command: 'codex',
+    checkCommand: 'codex --version',
+    available: false
+  },
+  aider: {
+    name: 'Aider',
+    command: 'aider --message',
+    checkCommand: 'aider --version',
+    available: false
+  }
+};
+
+// AGENTS.md template (auto-included by Kiro)
+const agentsMdTemplate = `# AGENTS.md
+
+This file is auto-included in every Kiro session (both IDE and CLI).
+Use it for guardrails that apply across all agents.
+
+## Project Guardrails
+
+### Security
+- Never commit secrets, API keys, or credentials
+- Sanitize all user input before database queries
+- Use parameterized queries to prevent SQL injection
+
+### Code Quality
+- Follow existing code style and patterns
+- Write tests for new functionality
+- Keep functions focused and under 50 lines
+
+### Git Practices
+- Write descriptive commit messages
+- Reference issue numbers in commits
+- Never force push to main/master
+
+### Architecture
+- Follow the patterns in .kiro/steering/tech.md
+- Check .kiro/steering/product.md for feature context
+- Respect existing module boundaries
+
+## CLI Tool Usage
+When invoking external CLIs (via shell tool), prefer:
+- \`gh\` for GitHub operations
+- \`npm test\` / \`pytest\` for testing
+- \`git\` for version control
+
+## Spec Workflow
+1. Start with \`kspec spec\` to define work
+2. Use \`kspec tasks\` to break into subtasks
+3. Use \`kspec build\` for TDD implementation
+4. Use \`kspec verify\` to validate completion
+`;
+
+// Kiro hooks templates
+const hooksTemplateBasic = {
+  hooks: {
+    onSave: [
+      {
+        pattern: '**/*.{js,ts,jsx,tsx}',
+        command: 'npx prettier --write'
+      }
+    ],
+    onSessionStop: [
+      {
+        command: 'kspec refresh-context',
+        description: 'Update CONTEXT.md on session end'
+      }
+    ]
+  }
+};
+
+const hooksTemplateEnterprise = {
+  hooks: {
+    onSave: [
+      {
+        pattern: '**/*.{js,ts,jsx,tsx}',
+        command: 'npx prettier --write'
+      }
+    ],
+    onSessionStop: [
+      {
+        command: 'kspec refresh-context',
+        description: 'Update CONTEXT.md on session end'
+      }
+    ],
+    beforeShell: [
+      {
+        pattern: 'rm -rf *',
+        action: 'block',
+        message: 'Destructive operations blocked by policy'
+      },
+      {
+        pattern: 'git push --force',
+        action: 'block',
+        message: 'Force push blocked by policy'
+      }
+    ],
+    afterShell: [
+      {
+        pattern: '*',
+        command: 'echo "[$(date)] $SHELL_COMMAND" >> .kiro/audit.log',
+        description: 'Audit log all shell commands'
+      }
+    ],
+    onTestComplete: [
+      {
+        command: 'kspec task-status --update-from-test-results',
+        description: 'Auto-update task status from test results'
+      }
+    ]
+  }
+};
+
+const hooksTemplateDocumentation = {
+  hooks: {
+    onSave: [
+      {
+        pattern: '**/*.{js,ts,jsx,tsx}',
+        command: 'npx prettier --write'
+      }
+    ],
+    onSessionStop: [
+      {
+        command: 'kspec refresh-context',
+        description: 'Update CONTEXT.md on session end'
+      },
+      {
+        command: 'kspec update-readme --if-changed',
+        description: 'Update README if significant changes'
+      }
+    ],
+    onSpecComplete: [
+      {
+        command: 'kspec sync-jira --progress',
+        description: 'Update Jira with spec progress'
+      }
+    ]
   }
 };
 
@@ -1541,6 +1825,35 @@ const commands = {
 
     const createSteering = await confirm('Create steering doc templates?');
 
+    const createAgentsMd = await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
+
+    const hooksChoice = await prompt('Configure Kiro hooks?', [
+      { label: 'None (skip hooks)', value: 'none' },
+      { label: 'Basic (format on save, context on stop)', value: 'basic' },
+      { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
+      { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' }
+    ]);
+
+    // Multi-CLI review configuration
+    const configureReviewers = await confirm('Configure multi-CLI reviewers? (Copilot, Gemini, Claude, Codex)');
+    let reviewerClis = [];
+
+    if (configureReviewers) {
+      console.log('\nSelect reviewer CLIs (kspec will orchestrate reviews):');
+      const reviewerOptions = [
+        { label: 'GitHub Copilot CLI (gh copilot)', value: 'copilot' },
+        { label: 'Gemini CLI', value: 'gemini' },
+        { label: 'Claude Code CLI', value: 'claude' },
+        { label: 'OpenAI Codex CLI', value: 'codex' },
+        { label: 'Aider', value: 'aider' }
+      ];
+
+      for (const opt of reviewerOptions) {
+        const use = await confirm(`  Use ${opt.label}?`);
+        if (use) reviewerClis.push(opt.value);
+      }
+    }
+
     // Check for Jira integration
     let jiraConfig = { project: null, enabled: false };
     const hasMcp = hasAtlassianMcp();
@@ -1566,7 +1879,14 @@ const commands = {
     }
 
     // Save config
-    const cfg = { dateFormat, autoExecute, initialized: true, testCommand: testCommand.trim() || null, jira: jiraConfig };
+    const cfg = {
+      dateFormat,
+      autoExecute,
+      initialized: true,
+      testCommand: testCommand.trim() || null,
+      jira: jiraConfig,
+      reviewers: reviewerClis.length > 0 ? reviewerClis : null
+    };
     saveConfig(cfg);
     Object.assign(config, cfg);
 
@@ -1584,6 +1904,37 @@ const commands = {
           log(`Created ${p}`);
         }
       }
+    }
+
+    // Create AGENTS.md (auto-included by Kiro)
+    if (createAgentsMd) {
+      const agentsMdPath = 'AGENTS.md';
+      if (!fs.existsSync(agentsMdPath)) {
+        fs.writeFileSync(agentsMdPath, agentsMdTemplate);
+        log('Created AGENTS.md (auto-included in Kiro sessions)');
+      }
+    }
+
+    // Create Kiro hooks
+    if (hooksChoice !== 'none') {
+      const settingsDir = path.join(KIRO_DIR, 'settings');
+      ensureDir(settingsDir);
+      const hooksPath = path.join(settingsDir, 'hooks.json');
+
+      let hooksContent;
+      switch (hooksChoice) {
+        case 'enterprise':
+          hooksContent = hooksTemplateEnterprise;
+          break;
+        case 'documentation':
+          hooksContent = hooksTemplateDocumentation;
+          break;
+        default:
+          hooksContent = hooksTemplateBasic;
+      }
+
+      fs.writeFileSync(hooksPath, JSON.stringify(hooksContent, null, 2));
+      log(`Created ${hooksPath} (${hooksChoice} hooks)`);
     }
 
     // Create agents (skip if already exist to preserve customizations)
@@ -1639,7 +1990,18 @@ const commands = {
     }
 
     console.log('\n✅ kspec initialized!\n');
-    console.log('Available powers (browse powers/ directory):');
+    console.log('Created:');
+    if (createSteering) console.log('  - .kiro/steering/ (with front matter inclusion modes)');
+    if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
+    if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
+    console.log('  - .kiro/agents/ (kspec agents)');
+
+    if (reviewerClis.length > 0) {
+      console.log(`\n📋 Multi-CLI Reviewers: ${reviewerClis.join(', ')}`);
+      console.log('   Use: kspec multi-review or /agent swap kspec-multi-review');
+    }
+
+    console.log('\nAvailable powers (browse powers/ directory):');
     console.log('  contract, document, tdd, code-review, code-intelligence\n');
     console.log('Next step:');
     console.log('  kspec analyse');
@@ -2274,6 +2636,28 @@ Evaluate quality, tests, security.
 Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
   },
 
+  async 'multi-review'(args) {
+    const target = args.join(' ') || 'recent changes (git diff HEAD~1)';
+    const cfg = loadConfig();
+    const reviewers = cfg.reviewers || [];
+
+    if (reviewers.length === 0) {
+      console.log('\nNo multi-CLI reviewers configured.');
+      console.log('Run: kspec init (and enable reviewers)');
+      console.log('Or use single reviewer: kspec review\n');
+      return;
+    }
+
+    console.log(`\nMulti-CLI Review: ${target}`);
+    console.log(`Reviewers: ${reviewers.join(', ')}\n`);
+
+    await chat(`Multi-CLI review: ${target}
+
+Configured reviewers: ${reviewers.join(', ')}
+Invoke each configured reviewer CLI and synthesize feedback.
+Output unified review summary with attribution.`, 'kspec-multi-review');
+  },
+
   list() {
     const specsDir = getSpecsDir();
     if (!fs.existsSync(specsDir)) {
@@ -2383,22 +2767,23 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
     console.log(`
 kspec Agents
 
-Agent             Shortcut        Purpose
-──────────────────────────────────────────────────────────────
-kspec-analyse     Ctrl+Shift+A    Analyse codebase, update steering
-kspec-spec        Ctrl+Shift+S    Create specifications
-kspec-design      Ctrl+Shift+D    Create technical design from spec
-kspec-tasks       Ctrl+Shift+T    Generate tasks from spec
-kspec-build       Ctrl+Shift+B    Execute tasks with TDD
-kspec-verify      Ctrl+Shift+V    Verify spec/design/tasks/implementation
-kspec-review      Ctrl+Shift+R    Code review
-kspec-jira        Ctrl+Shift+J    Jira integration
-kspec-fix         Ctrl+Shift+F    Fix bugs (abbreviated pipeline)
-kspec-refactor    Ctrl+Shift+G    Refactor code (no behavior change)
-kspec-spike       Ctrl+Shift+I    Investigate/spike (no code)
-kspec-revise      Ctrl+Shift+E    Revise spec from feedback
-kspec-demo        Ctrl+Shift+W    Generate stakeholder walkthrough
-kspec-estimate    Ctrl+Shift+X    Assess complexity
+Agent              Shortcut        Purpose
+───────────────────────────────────────────────────────────────
+kspec-analyse      Ctrl+Shift+A    Analyse codebase, update steering
+kspec-spec         Ctrl+Shift+S    Create specifications
+kspec-design       Ctrl+Shift+D    Create technical design from spec
+kspec-tasks        Ctrl+Shift+T    Generate tasks from spec
+kspec-build        Ctrl+Shift+B    Execute tasks with TDD
+kspec-verify       Ctrl+Shift+V    Verify spec/design/tasks/implementation
+kspec-review       Ctrl+Shift+R    Code review (single reviewer)
+kspec-multi-review Ctrl+Shift+M    Multi-CLI review (Copilot/Gemini/Claude/Codex)
+kspec-jira         Ctrl+Shift+J    Jira integration
+kspec-fix          Ctrl+Shift+F    Fix bugs (abbreviated pipeline)
+kspec-refactor     Ctrl+Shift+G    Refactor code (no behavior change)
+kspec-spike        Ctrl+Shift+I    Investigate/spike (no code)
+kspec-revise       Ctrl+Shift+E    Revise spec from feedback
+kspec-demo         Ctrl+Shift+W    Generate stakeholder walkthrough
+kspec-estimate     Ctrl+Shift+X    Assess complexity
 
 Switch: /agent swap or use keyboard shortcuts
 
@@ -2933,12 +3318,13 @@ Powers (in powers/ directory):
   code-intelligence       Code intelligence setup guide
 
 Examples:
-  kspec init                        # First time setup
+  kspec init                        # Setup with hooks + reviewers
   kspec spec "User Auth"            # CLI mode
   kspec spec --jira PROJ-123 "Auth" # From Jira story
   kspec fix "Login fails"           # Bug fix mode
   kspec spike "Can we use GraphQL?" # Investigation
   kspec design                      # Create design (optional)
+  kspec multi-review                # Review with Copilot + Gemini + Claude
   kspec jira-pull                   # Pull latest Jira updates
   kiro-cli --agent kspec-spec       # Direct agent mode
 `);
@@ -2973,4 +3359,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, autoRefreshSpecLite, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, autoRefreshSpecLite, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR };
