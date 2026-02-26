@@ -46,7 +46,7 @@ jobs:
         uses: sanjeevkumarraob/version-system@v1
         with:
           VERSION_FILE: 'version.txt'
-          SUFFIX: 'beta.${{ github.event.pull_request.number }}'
+          SUFFIX: 'beta-pr${{ github.event.pull_request.number }}'
           CREATE_RELEASE: true
           IS_PRERELEASE: true
 
