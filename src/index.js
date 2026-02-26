@@ -1989,12 +1989,16 @@ const commands = {
       log('Created .gitignore with kspec entries');
     }
 
+    // Create initial CONTEXT.md
+    refreshContext();
+
     console.log('\n✅ kspec initialized!\n');
     console.log('Created:');
     if (createSteering) console.log('  - .kiro/steering/ (with front matter inclusion modes)');
     if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
     if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
     console.log('  - .kiro/agents/ (kspec agents)');
+    console.log('  - .kiro/CONTEXT.md (agent context file)');
 
     if (reviewerClis.length > 0) {
       console.log(`\n📋 Multi-CLI Reviewers: ${reviewerClis.join(', ')}`);
