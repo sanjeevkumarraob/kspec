@@ -991,18 +991,20 @@ PIPELINE (suggest next steps based on verification type):
 
   'kspec-review.json': {
     name: 'kspec-review',
-    description: 'Code review',
+    description: 'Code review with optional agentic loop',
     model: 'claude-sonnet-4.6',
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
+      'file://.kiro/specs/**/*.md',
+      'file://.kiro/config.json'
     ],
     prompt: `You are the kspec code reviewer.
 
 FIRST: Read .kiro/CONTEXT.md for current spec context.
+CHECK: .kiro/config.json for configured reviewers (copilot, claude, gemini, codex, aider).
 
 Your job:
 1. Review code changes (git diff or specified files)
@@ -1012,7 +1014,18 @@ Your job:
    - Test coverage
    - Security concerns
    - Performance implications
-4. Provide actionable feedback
+4. If external reviewers configured, invoke them as devil's advocate:
+   - copilot: Run \`copilot "Review: [context]"\`
+   - claude: Run \`claude "Review: [context]"\`
+   - gemini: Run \`gemini "Review: [context]"\`
+5. Synthesize feedback and provide actionable recommendations
+
+AGENTIC LOOP (when reviewers configured):
+- You do initial review
+- External reviewer critiques your findings
+- You respond to critique
+- Repeat up to 3 rounds
+- Escalate unresolved questions to human
 
 Output: APPROVE / REQUEST_CHANGES with specific issues.
 
@@ -1367,73 +1380,10 @@ PIPELINE (suggest next steps):
 - Generate tasks: \`/agent swap kspec-tasks\` or \`kspec tasks\``,
     keyboardShortcut: 'ctrl+shift+x',
     welcomeMessage: 'Estimation mode — assessing complexity...'
-  },
-
-  'kspec-multi-review.json': {
-    name: 'kspec-multi-review',
-    description: 'Multi-CLI code review (Copilot, Gemini, Claude, Codex)',
-    model: 'claude-sonnet-4.6',
-    tools: ['read', 'shell'],
-    allowedTools: ['read', 'shell'],
-    resources: [
-      'file://.kiro/CONTEXT.md',
-      'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
-    ],
-    prompt: `You are the kspec multi-CLI review orchestrator.
-
-FIRST: Read .kiro/CONTEXT.md for current spec context.
-
-YOUR ROLE: Orchestrate reviews across multiple AI CLIs for comprehensive feedback.
-
-AVAILABLE REVIEWERS (check config in .kiro/config.json):
-- copilot: GitHub Copilot CLI (gh copilot)
-- gemini: Gemini CLI
-- claude: Claude Code CLI
-- codex: OpenAI Codex CLI
-- aider: Aider
-
-WORKFLOW:
-1. Check .kiro/config.json for enabled reviewers
-2. For each enabled reviewer, run review via shell:
-   - copilot: gh copilot explain "Review this code for: [criteria]"
-   - gemini: gemini "Review this diff: [git diff]"
-   - claude: claude "Review: [context]"
-   - codex: codex "Review: [context]"
-   - aider: aider --message "Review: [context]"
-3. Collect and synthesize feedback from all reviewers
-4. Present unified review summary with attribution
-
-OUTPUT FORMAT:
-## Multi-CLI Review Summary
-
-### Copilot Feedback
-[feedback or "skipped - not configured"]
-
-### Gemini Feedback
-[feedback or "skipped - not configured"]
-
-### Claude Feedback
-[feedback or "skipped - not configured"]
-
-### Codex Feedback
-[feedback or "skipped - not configured"]
-
-## Consensus Issues
-[issues raised by multiple reviewers]
-
-## Recommendation
-APPROVE / REQUEST_CHANGES with specific actions
-
-PIPELINE (suggest next steps):
-- Fix issues: \`/agent swap kspec-build\` or \`kspec build\`
-- Single reviewer: \`/agent swap kspec-review\` or \`kspec review\``,
-    keyboardShortcut: 'ctrl+shift+m',
-    welcomeMessage: 'Multi-CLI review mode. Which reviewers should I invoke?'
   }
 };
 
-// Reviewer CLI configurations for multi-review
+// Reviewer CLI configurations
 const reviewerCliConfigs = {
   copilot: {
     name: 'GitHub Copilot CLI',
