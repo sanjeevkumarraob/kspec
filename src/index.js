@@ -1436,8 +1436,8 @@ PIPELINE (suggest next steps):
 const reviewerCliConfigs = {
   copilot: {
     name: 'GitHub Copilot CLI',
-    command: 'github-copilot-cli',
-    checkCommand: 'github-copilot-cli --version',
+    command: 'copilot',
+    checkCommand: 'copilot --version',
     available: false
   },
   gemini: {
@@ -1845,7 +1845,7 @@ const commands = {
     if (configureReviewers) {
       console.log('\nSelect reviewer CLIs (kspec will orchestrate reviews):');
       const reviewerOptions = [
-        { label: 'GitHub Copilot CLI (github-copilot-cli)', value: 'copilot' },
+        { label: 'GitHub Copilot CLI (copilot)', value: 'copilot' },
         { label: 'Gemini CLI', value: 'gemini' },
         { label: 'Claude Code CLI', value: 'claude' },
         { label: 'OpenAI Codex CLI', value: 'codex' },
