@@ -13,6 +13,7 @@ const CONTEXT_FILE = path.join(KIRO_DIR, 'CONTEXT.md');
 const CURRENT_FILE = path.join(KIRO_DIR, '.current');
 const MEMORY_FILE = path.join(KIRO_DIR, 'memory.md');
 const MILESTONES_DIR = path.join(KIRO_DIR, 'milestones');
+const SESSIONS_DIR = path.join(KIRO_DIR, 'sessions');
 const LEGACY_KSPEC_DIR = '.kspec';
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
 const KIRO_MCP_CONFIG_WORKSPACE_SETTINGS = path.join(KIRO_DIR, 'settings', 'mcp.json');
@@ -1466,6 +1467,323 @@ const reviewerCliConfigs = {
   }
 };
 
+// Devil's advocate prompts for agentic review loop
+const devilsAdvocatePrompts = {
+  analyse: `You are a devil's advocate reviewer. Your job is to challenge and question the analysis.
+
+Review the analysis output critically:
+- Is the understanding of the codebase complete?
+- Are there missing contexts, dependencies, or edge cases?
+- Are there security concerns not addressed?
+- Are architectural decisions sound?
+- What assumptions are being made that could be wrong?
+
+Be skeptical but constructive. For each issue:
+- Mark as [CRITICAL], [IMPORTANT], or [MINOR]
+- Explain why it matters
+- Mark unclear items with [?] to request more info
+
+Output format:
+### Critique
+- [CRITICAL] Issue description
+- [IMPORTANT] Issue description
+- [?] Question needing clarification`,
+
+  task: `You are a devil's advocate reviewer. Your job is to challenge and question the implementation.
+
+Review the implementation critically:
+- Does it fully satisfy the requirements?
+- Are there edge cases not handled?
+- Are there security vulnerabilities?
+- Is error handling comprehensive?
+- Are there performance concerns?
+- Is the code testable and tested?
+
+Be skeptical but constructive. For each issue:
+- Mark as [CRITICAL], [IMPORTANT], or [MINOR]
+- Explain why it matters
+- Mark unclear items with [?] to request more info
+
+Output format:
+### Critique
+- [CRITICAL] Issue description
+- [IMPORTANT] Issue description
+- [?] Question needing clarification`,
+
+  pr: `You are a devil's advocate reviewer. Your job is to challenge and question the PR.
+
+Review the changes critically:
+- Do the changes match the stated purpose?
+- Are there breaking changes not documented?
+- Are there security implications?
+- Is test coverage adequate?
+- Are there performance regressions?
+- Does it follow the project's coding standards?
+
+Be skeptical but constructive. For each issue:
+- Mark as [CRITICAL], [IMPORTANT], or [MINOR]
+- Explain why it matters
+- Mark unclear items with [?] to request more info
+
+Output format:
+### Critique
+- [CRITICAL] Issue description
+- [IMPORTANT] Issue description
+- [?] Question needing clarification`
+};
+
+// Session management for agentic review loop
+function createReviewSession(type, context) {
+  ensureDir(SESSIONS_DIR);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `review-${type}-${timestamp}.md`;
+  const filepath = path.join(SESSIONS_DIR, filename);
+
+  const content = `# Review Session: ${type}
+Created: ${new Date().toISOString()}
+Status: IN_PROGRESS
+
+## Context
+${context}
+
+---
+`;
+  fs.writeFileSync(filepath, content);
+  return filepath;
+}
+
+function appendToSession(filepath, round, section, content) {
+  const existing = fs.readFileSync(filepath, 'utf8');
+  const roundHeader = `## Round ${round}`;
+
+  let newContent;
+  if (!existing.includes(roundHeader)) {
+    newContent = existing + `\n${roundHeader}\n`;
+  } else {
+    newContent = existing;
+  }
+
+  newContent += `\n### ${section}\n${content}\n`;
+  fs.writeFileSync(filepath, newContent);
+}
+
+function finalizeSession(filepath, status, openQuestions = []) {
+  let content = fs.readFileSync(filepath, 'utf8');
+  content = content.replace('Status: IN_PROGRESS', `Status: ${status}`);
+
+  if (openQuestions.length > 0) {
+    content += `\n## Open Questions (for human)\n`;
+    openQuestions.forEach((q, i) => {
+      content += `${i + 1}. ${q}\n`;
+    });
+  }
+
+  fs.writeFileSync(filepath, content);
+}
+
+function extractOpenQuestions(critique) {
+  const questions = [];
+  const lines = critique.split('\n');
+  for (const line of lines) {
+    if (line.includes('[?]')) {
+      questions.push(line.replace(/^[\s\-]*\[\?\]\s*/, '').trim());
+    }
+  }
+  return questions;
+}
+
+function extractCriticalIssues(critique) {
+  const issues = [];
+  const lines = critique.split('\n');
+  for (const line of lines) {
+    if (line.includes('[CRITICAL]') || line.includes('[IMPORTANT]')) {
+      issues.push(line.trim());
+    }
+  }
+  return issues;
+}
+
+// Invoke reviewer CLI with prompt
+async function invokeReviewerCli(reviewerName, prompt) {
+  const cfg = loadConfig();
+  const reviewers = cfg.reviewers || [];
+
+  // Use first configured reviewer if none specified
+  const reviewer = reviewerName || reviewers[0];
+  if (!reviewer) {
+    // Fall back to built-in kspec review
+    return null;
+  }
+
+  const cliConfig = reviewerCliConfigs[reviewer];
+  if (!cliConfig) {
+    console.log(`Unknown reviewer: ${reviewer}`);
+    return null;
+  }
+
+  // Check if CLI is available
+  try {
+    execSync(cliConfig.checkCommand, { stdio: 'ignore' });
+  } catch {
+    console.log(`${cliConfig.name} not available, using built-in review`);
+    return null;
+  }
+
+  console.log(`\n🔍 Invoking ${cliConfig.name} as devil's advocate...\n`);
+
+  return new Promise((resolve) => {
+    const args = cliConfig.command.split(' ').slice(1);
+    args.push(prompt);
+
+    let output = '';
+    const child = spawn(cliConfig.command.split(' ')[0], args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: true
+    });
+
+    child.stdout.on('data', (data) => {
+      output += data.toString();
+      process.stdout.write(data);
+    });
+
+    child.stderr.on('data', (data) => {
+      process.stderr.write(data);
+    });
+
+    child.on('close', () => {
+      resolve(output);
+    });
+
+    child.on('error', () => {
+      resolve(null);
+    });
+  });
+}
+
+// Main agentic review loop
+async function runReviewLoop(type, doerPrompt, context, options = {}) {
+  const maxRounds = options.maxRounds || 3;
+  const sessionFile = createReviewSession(type, context);
+
+  console.log(`\n🔄 Starting agentic review loop (max ${maxRounds} rounds)`);
+  console.log(`   Session: ${sessionFile}\n`);
+
+  let currentOutput = '';
+  let allOpenQuestions = [];
+
+  for (let round = 1; round <= maxRounds; round++) {
+    console.log(`\n━━━ Round ${round}/${maxRounds} ━━━\n`);
+
+    // Step 1: Doer does work (or responds to critique)
+    console.log('📝 Doer working...\n');
+    const doerInput = round === 1
+      ? doerPrompt
+      : `${doerPrompt}\n\nAddress the following critique from the reviewer:\n${currentOutput}\n\nRespond to each issue and update your work accordingly.`;
+
+    await chat(doerInput, `kspec-${type}`);
+
+    // Read the output (e.g., from spec files, task files, etc.)
+    const workOutput = getWorkOutput(type, context);
+    appendToSession(sessionFile, round, 'Doer Output', workOutput || '(output captured in files)');
+
+    // Step 2: Reviewer critiques
+    console.log('\n👿 Devil\'s advocate reviewing...\n');
+
+    const reviewPrompt = `${devilsAdvocatePrompts[type] || devilsAdvocatePrompts.task}
+
+Content to review:
+${workOutput || context}
+
+Previous rounds: ${round - 1}
+${round > 1 ? 'Focus on whether previous issues were addressed.' : 'This is the first review.'}`;
+
+    const critique = await invokeReviewerCli(null, reviewPrompt);
+
+    if (critique) {
+      currentOutput = critique;
+      appendToSession(sessionFile, round, 'Critique', critique);
+
+      // Extract open questions
+      const questions = extractOpenQuestions(critique);
+      allOpenQuestions = [...new Set([...allOpenQuestions, ...questions])];
+
+      // Check if approved (no critical/important issues)
+      const criticalIssues = extractCriticalIssues(critique);
+      if (criticalIssues.length === 0 && questions.length === 0) {
+        console.log('\n✅ Reviewer approved! No critical issues found.\n');
+        finalizeSession(sessionFile, 'APPROVED');
+        return { approved: true, sessionFile };
+      }
+
+      console.log(`\n📋 Found ${criticalIssues.length} issues, ${questions.length} questions\n`);
+    } else {
+      // No external reviewer, use built-in
+      console.log('Using built-in review...');
+      await chat(reviewPrompt, 'kspec-review');
+      appendToSession(sessionFile, round, 'Critique', '(see kspec-review output)');
+    }
+  }
+
+  // After max rounds, check for open questions
+  if (allOpenQuestions.length > 0) {
+    console.log('\n⚠️  Review loop completed with open questions.\n');
+    console.log('Questions requiring human input:');
+    allOpenQuestions.forEach((q, i) => console.log(`  ${i + 1}. ${q}`));
+
+    finalizeSession(sessionFile, 'NEEDS_HIL', allOpenQuestions);
+
+    // HIL prompt
+    const shouldContinue = await confirm('\nWould you like to provide answers and continue?');
+    if (shouldContinue) {
+      console.log('\nPlease answer the questions above, then run the command again.');
+      console.log(`Or edit the session file: ${sessionFile}\n`);
+    }
+
+    return { approved: false, needsHil: true, questions: allOpenQuestions, sessionFile };
+  }
+
+  finalizeSession(sessionFile, 'COMPLETED');
+  return { approved: true, sessionFile };
+}
+
+// Get work output based on type
+function getWorkOutput(type, context) {
+  try {
+    switch (type) {
+      case 'analyse': {
+        // Read CONTEXT.md or spec-lite.md
+        if (fs.existsSync(CONTEXT_FILE)) {
+          return fs.readFileSync(CONTEXT_FILE, 'utf8');
+        }
+        return null;
+      }
+      case 'task': {
+        // Read tasks.md from current spec
+        const current = getCurrentSpec();
+        if (current) {
+          const tasksFile = path.join(current, 'tasks.md');
+          if (fs.existsSync(tasksFile)) {
+            return fs.readFileSync(tasksFile, 'utf8');
+          }
+        }
+        return null;
+      }
+      case 'pr': {
+        // Get git diff
+        try {
+          return execSync('git diff HEAD~1', { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+        } catch {
+          return null;
+        }
+      }
+      default:
+        return context;
+    }
+  } catch {
+    return null;
+  }
+}
+
 // AGENTS.md template (auto-included by Kiro)
 const agentsMdTemplate = `# AGENTS.md
 
@@ -2016,15 +2334,31 @@ const commands = {
     console.log('  or inside kiro-cli: /agent swap kspec-analyse\n');
   },
 
-  async analyse() {
+  async analyse(args) {
+    const skipReview = args.includes('--no-review');
+    const context = 'Codebase analysis for understanding structure, patterns, and risks';
+
     log('Analysing codebase...');
-    await chat(`Analyse this codebase:
+
+    const doerPrompt = `Analyse this codebase:
 1. Identify tech stack, architecture, patterns
 2. Review existing .kiro/steering/ docs (if any)
 3. Suggest updates to steering docs
 4. Identify risks and improvement areas
+5. Document key dependencies and their purposes
+6. Note any security-sensitive areas
 
-Update steering docs as needed.`, 'kspec-analyse');
+Update .kiro/CONTEXT.md with findings.
+Update steering docs as needed.`;
+
+    if (skipReview) {
+      await chat(doerPrompt, 'kspec-analyse');
+    } else {
+      const result = await runReviewLoop('analyse', doerPrompt, context);
+      if (result.needsHil) {
+        console.log('\n💡 Tip: Run `kspec analyse --no-review` to skip the review loop.\n');
+      }
+    }
   },
 
   async spec(args) {
@@ -2417,7 +2751,9 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
   },
 
   async build(args) {
-    const folder = getOrSelectSpec(args.join(' '));
+    const withReview = args.includes('--review');
+    const filteredArgs = args.filter(a => a !== '--review');
+    const folder = getOrSelectSpec(filteredArgs.join(' '));
 
     if (!await checkStaleness(folder)) return;
 
@@ -2442,7 +2778,7 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
                      execMode === 'dry' ? 'Dry-run mode - show commands only.' :
                      'Ask before executing commands.';
 
-    await chat(`Execute tasks from ${folder}/tasks.md
+    const doerPrompt = `Execute tasks from ${folder}/tasks.md
 
 ${execNote}
 
@@ -2455,7 +2791,25 @@ ${execNote}
 7. Continue to next task
 
 CRITICAL: Update tasks.md after each task completion.
-NEVER delete .kiro folders.`, 'kspec-build');
+NEVER delete .kiro folders.`;
+
+    if (withReview) {
+      // Agentic build with review loop
+      const cfg = loadConfig();
+      const reviewers = cfg.reviewers || [];
+
+      if (reviewers.length === 0) {
+        console.log('\n💡 No reviewers configured. Using standard build.');
+        console.log('   Run `kspec init` to configure reviewers for agentic review.\n');
+        await chat(doerPrompt, 'kspec-build');
+      } else {
+        console.log(`\n🔄 Agentic build with review loop`);
+        console.log(`   Reviewers: ${reviewers.join(', ')}\n`);
+        await runReviewLoop('task', doerPrompt, `Building tasks from ${folder}`);
+      }
+    } else {
+      await chat(doerPrompt, 'kspec-build');
+    }
 
     recordMetric(folder, 'build-completed');
 
@@ -2636,34 +2990,50 @@ After writing, show me what you wrote.`, 'kspec-spec');
   },
 
   async review(args) {
-    const target = args.join(' ') || 'recent changes (git diff HEAD~1)';
-    await chat(`Review: ${target}
+    const skipLoop = args.includes('--simple');
+    const filteredArgs = args.filter(a => a !== '--simple');
+    const target = filteredArgs.join(' ') || 'recent changes (git diff HEAD~1)';
+
+    const cfg = loadConfig();
+    const reviewers = cfg.reviewers || [];
+
+    if (skipLoop || reviewers.length === 0) {
+      // Simple review without agentic loop
+      if (reviewers.length === 0 && !skipLoop) {
+        console.log('\n💡 No reviewers configured. Using simple review.');
+        console.log('   Run `kspec init` to configure reviewers (Copilot, Claude, etc.)\n');
+      }
+      await chat(`Review: ${target}
 
 Check compliance with .kiro/steering/
 Evaluate quality, tests, security.
 Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
-  },
-
-  async 'multi-review'(args) {
-    const target = args.join(' ') || 'recent changes (git diff HEAD~1)';
-    const cfg = loadConfig();
-    const reviewers = cfg.reviewers || [];
-
-    if (reviewers.length === 0) {
-      console.log('\nNo multi-CLI reviewers configured.');
-      console.log('Run: kspec init (and enable reviewers)');
-      console.log('Or use single reviewer: kspec review\n');
       return;
     }
 
-    console.log(`\nMulti-CLI Review: ${target}`);
-    console.log(`Reviewers: ${reviewers.join(', ')}\n`);
+    // Agentic review loop with configured reviewers
+    console.log(`\n🔄 Agentic Review: ${target}`);
+    console.log(`   Configured reviewers: ${reviewers.join(', ')}\n`);
 
-    await chat(`Multi-CLI review: ${target}
+    const doerPrompt = `Review these changes: ${target}
 
-Configured reviewers: ${reviewers.join(', ')}
-Invoke each configured reviewer CLI and synthesize feedback.
-Output unified review summary with attribution.`, 'kspec-multi-review');
+1. Check compliance with .kiro/steering/ guidelines
+2. Evaluate code quality and readability
+3. Check test coverage and test quality
+4. Identify security concerns
+5. Look for performance issues
+6. Verify error handling
+
+Provide detailed findings.`;
+
+    const result = await runReviewLoop('pr', doerPrompt, target);
+
+    if (result.approved) {
+      console.log('\n✅ Review complete! Changes approved.\n');
+    } else if (result.needsHil) {
+      console.log('\n⚠️  Review needs human input. See questions above.\n');
+      console.log('💡 Tip: Run `kspec review --simple` for quick review without loop.\n');
+    }
   },
 
   list() {
@@ -3308,10 +3678,20 @@ Milestones:
 Observability:
   kspec metrics                   Show timeline for current spec
 
+Agentic Review Loop (devil's advocate pattern):
+  kspec analyse           Analyse codebase with review loop
+  kspec analyse --no-review
+                          Skip review loop
+  kspec review [target]   Code review with agentic loop (if reviewers configured)
+  kspec review --simple   Quick review without loop
+  kspec build --review    Build with agentic review loop
+
+  Configure reviewers during 'kspec init' (Copilot, Claude, Gemini, etc.)
+  Loop: 3 rounds max → unresolved questions → human-in-the-loop
+
 Other:
   kspec refresh           Regenerate spec-lite.md after editing spec.md
   kspec context           Refresh/view context file
-  kspec review [target]   Code review
   kspec list              List all specs
   kspec status            Current status
   kspec agents            List agents
