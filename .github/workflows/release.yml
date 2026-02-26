@@ -91,9 +91,9 @@ jobs:
           # Parse version components
           IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_VERSION"
 
-          # Bump patch version for beta
+          # Bump patch version for beta (include run number for uniqueness)
           NEXT_PATCH=$((PATCH + 1))
-          BETA_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}-beta-pr${{ github.event.pull_request.number }}"
+          BETA_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}-beta-pr${{ github.event.pull_request.number }}.${{ github.run_number }}"
 
           echo "latest=$LATEST_VERSION" >> $GITHUB_OUTPUT
           echo "version=$BETA_VERSION" >> $GITHUB_OUTPUT
