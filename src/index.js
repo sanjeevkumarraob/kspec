@@ -350,7 +350,11 @@ async function prompt(question, choices) {
 
 async function confirm(question) {
   const answer = await prompt(`${question} (Y/n): `);
-  return !answer || answer.toLowerCase() === 'y';
+  if (!answer) return true; // Empty = yes (default)
+  const lower = answer.toLowerCase().trim();
+  // Accept: y, yes, true, 1, or any non-"n"/"no"/"false"/"0" response
+  if (lower === 'n' || lower === 'no' || lower === 'false' || lower === '0') return false;
+  return true; // Default to yes for any other input (including "copilot", "sure", etc.)
 }
 
 function resetToDefaultAgent(cli) {
