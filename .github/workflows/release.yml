@@ -4,10 +4,15 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
 
 permissions:
   contents: write
   id-token: write  # Required for npm trusted publishing (OIDC)
+  pull-requests: write
 
 jobs:
   test:
@@ -24,6 +29,7 @@ jobs:
       - run: node --test
 
   release:
+    if: github.event_name == 'push'
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -51,3 +57,85 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public
+
+  beta-release:
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Get latest release version and calculate beta
+        id: beta-version
+        run: |
+          # Get the latest release tag (sorted by version)
+          LATEST_TAG=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$LATEST_TAG" ]; then
+            # No tags yet, use version.txt
+            LATEST_VERSION=$(cat version.txt)
+          else
+            # Remove 'v' prefix
+            LATEST_VERSION=${LATEST_TAG#v}
+          fi
+
+          # Parse version components
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_VERSION"
+
+          # Bump patch version for beta
+          NEXT_PATCH=$((PATCH + 1))
+          BETA_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}-beta-pr${{ github.event.pull_request.number }}"
+
+          echo "latest=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          echo "version=$BETA_VERSION" >> $GITHUB_OUTPUT
+          echo "Beta version: $BETA_VERSION (based on latest: $LATEST_VERSION)"
+
+      - name: Update package.json version
+        run: npm version ${{ steps.beta-version.outputs.version }} --no-git-tag-version
+
+      - name: Publish beta to npm
+        run: npm publish --access public --tag pr-${{ github.event.pull_request.number }}
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.beta-version.outputs.version }}';
+            const latestStable = '${{ steps.beta-version.outputs.latest }}';
+            const npmTag = 'pr-${{ github.event.pull_request.number }}';
+
+            const body = `## Beta Release Published
+
+            **Version:** \`${version}\`
+            **Based on:** \`${latestStable}\`
+            **npm tag:** \`${npmTag}\`
+
+            ### Install
+            \`\`\`bash
+            npm install kspec@${npmTag}
+            # or
+            npm install kspec@${version}
+            \`\`\`
+
+            ### Test
+            \`\`\`bash
+            npx kspec@${version} --version
+            \`\`\`
+
+            This beta will be superseded when the PR is merged and a stable release is created.`;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
