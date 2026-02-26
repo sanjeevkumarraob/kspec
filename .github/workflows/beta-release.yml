@@ -1,0 +1,90 @@
+name: Beta Release
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+permissions:
+  contents: write
+  id-token: write
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --test
+
+  beta-release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Get Beta Version
+        id: version
+        uses: sanjeevkumarraob/version-system@v1
+        with:
+          VERSION_FILE: 'version.txt'
+          SUFFIX: 'beta-pr${{ github.event.pull_request.number }}'
+          CREATE_RELEASE: true
+          IS_PRERELEASE: true
+
+      - name: Update package.json version
+        run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - name: Publish beta to npm
+        run: npm publish --access public --tag pr-${{ github.event.pull_request.number }}
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.version.outputs.version }}';
+            const npmTag = 'pr-${{ github.event.pull_request.number }}';
+
+            const body = `## Beta Release Published
+
+            **Version:** \`${version}\`
+            **npm tag:** \`${npmTag}\`
+
+            ### Install
+            \`\`\`bash
+            npm install kspec@${npmTag}
+            # or
+            npm install kspec@${version}
+            \`\`\`
+
+            ### Test
+            \`\`\`bash
+            npx kspec@${version} --version
+            \`\`\`
+
+            This beta will be superseded when the PR is merged and a stable release is created.`;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
