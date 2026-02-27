@@ -2274,7 +2274,7 @@ const commands = {
 
     if (reviewerClis.length > 0) {
       console.log(`\n📋 Multi-CLI Reviewers: ${reviewerClis.join(', ')}`);
-      console.log('   Use: kspec multi-review or /agent swap kspec-multi-review');
+      console.log('   Use: kspec review (auto-invokes configured reviewers)');
     }
 
     console.log('\nAvailable powers (browse powers/ directory):');
@@ -3103,8 +3103,7 @@ kspec-design       Ctrl+Shift+D    Create technical design from spec
 kspec-tasks        Ctrl+Shift+T    Generate tasks from spec
 kspec-build        Ctrl+Shift+B    Execute tasks with TDD
 kspec-verify       Ctrl+Shift+V    Verify spec/design/tasks/implementation
-kspec-review       Ctrl+Shift+R    Code review (single reviewer)
-kspec-multi-review Ctrl+Shift+M    Multi-CLI review (Copilot/Gemini/Claude/Codex)
+kspec-review       Ctrl+Shift+R    Code review (+ configured reviewers)
 kspec-jira         Ctrl+Shift+J    Jira integration
 kspec-fix          Ctrl+Shift+F    Fix bugs (abbreviated pipeline)
 kspec-refactor     Ctrl+Shift+G    Refactor code (no behavior change)
@@ -3662,7 +3661,7 @@ Examples:
   kspec fix "Login fails"           # Bug fix mode
   kspec spike "Can we use GraphQL?" # Investigation
   kspec design                      # Create design (optional)
-  kspec multi-review                # Review with Copilot + Gemini + Claude
+  kspec review                      # Review (uses configured reviewers)
   kspec jira-pull                   # Pull latest Jira updates
   kiro-cli --agent kspec-spec       # Direct agent mode
 `);
