@@ -2976,7 +2976,7 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
 
 Provide detailed findings.`;
 
-    const result = await runReviewLoop('pr', doerPrompt, target);
+    const result = await runReviewLoop('review', doerPrompt, target);
 
     if (result.approved) {
       console.log('\n✅ Review complete! Changes approved.\n');
