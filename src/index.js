@@ -1387,19 +1387,19 @@ PIPELINE (suggest next steps):
 const reviewerCliConfigs = {
   copilot: {
     name: 'GitHub Copilot CLI',
-    command: 'copilot',
-    checkCommand: 'copilot --version',
+    command: 'copilot -p',
+    checkCommand: 'copilot --help',
     available: false
   },
   gemini: {
     name: 'Gemini CLI',
-    command: 'gemini',
+    command: 'gemini -p',
     checkCommand: 'gemini --version',
     available: false
   },
   claude: {
     name: 'Claude Code CLI',
-    command: 'claude',
+    command: 'claude -p',
     checkCommand: 'claude --version',
     available: false
   },
@@ -1574,8 +1574,11 @@ async function invokeReviewerCli(reviewerName, prompt) {
   // Check if CLI is available
   try {
     execSync(cliConfig.checkCommand, { stdio: 'ignore' });
-  } catch {
-    console.log(`${cliConfig.name} not available, using built-in review`);
+  } catch (e) {
+    console.log(`⚠️  ${cliConfig.name} not available (${cliConfig.checkCommand} failed)`);
+    console.log(`   Install: npm install -g @github/copilot (for Copilot)`);
+    console.log(`          : npm install -g @google/gemini-cli (for Gemini)`);
+    console.log(`   Falling back to built-in review...\n`);
     return null;
   }
 
