@@ -375,8 +375,16 @@ kspec maintains context that survives AI context compression:
 Agents read CONTEXT.md first, automatically restoring state after context compression. CONTEXT.md is refreshed both before and after agent chat sessions.
 
 ```bash
-kspec context    # View and refresh context manually
+kspec context    # View and refresh context (CLI)
 ```
+
+Or refresh inline without leaving kiro-cli:
+
+```
+> /agent swap kspec-context
+```
+
+**Note:** There is no automatic hook for `/compact` — CONTEXT.md won't auto-refresh on context compaction. Use `kspec-context` agent or run `kspec context` after compacting.
 
 ## Agents & Shortcuts
 
@@ -396,10 +404,22 @@ kspec context    # View and refresh context manually
 | kspec-revise | Ctrl+Shift+E | Revise spec from feedback |
 | kspec-demo | Ctrl+Shift+W | Generate stakeholder walkthrough |
 | kspec-estimate | Ctrl+Shift+X | Assess complexity |
+| kspec-context | Ctrl+Shift+C | Refresh CONTEXT.md inline |
+| kspec-refresh | — | Generate AI summary of spec |
 
 Switch agents in kiro-cli: `/agent swap kspec-build` or use keyboard shortcuts.
 
 Every agent includes a **PIPELINE** section suggesting contextual next steps — so you can navigate the full workflow without leaving kiro-cli.
+
+### Context Refresh After /compact
+
+When you run `/compact` in kiro-cli, CONTEXT.md may become stale. Refresh it inline:
+
+```
+> /agent swap kspec-context
+```
+
+This regenerates CONTEXT.md with current spec progress without leaving your session.
 
 ## ACP (Agent Client Protocol)
 
@@ -627,6 +647,15 @@ Or check when viewing version:
 ```bash
 kspec --version
 ```
+
+## Known Limitations
+
+| Limitation | Workaround |
+|------------|------------|
+| **No `/compact` hook** | CONTEXT.md doesn't auto-refresh on context compaction. Run `/agent swap kspec-context` or `kspec context` manually. |
+| **spec-lite.md is truncation** | `autoRefreshSpecLite()` truncates spec.md, not AI summary. Run `kspec refresh` or `/agent swap kspec-refresh` for AI-generated summary. |
+| **No file locking** | Concurrent `kspec build` invocations may corrupt tasks.md. Avoid running multiple kspec commands simultaneously on same spec. |
+| **Hard-coded model** | Agents use `claude-sonnet-4.6`. To change, edit `.kiro/agents/*.json` after `kspec init`. |
 
 ## Requirements
 
