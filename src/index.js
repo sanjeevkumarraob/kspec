@@ -1778,18 +1778,20 @@ When invoking external CLIs (via shell tool), prefer:
 4. Use \`kspec verify\` to validate completion
 `;
 
-// Kiro hooks templates
+// Kiro CLI hooks templates
+// See: https://kiro.dev/docs/cli/hooks/
 const hooksTemplateBasic = {
   hooks: {
-    onSave: [
+    postToolUse: [
       {
-        pattern: '**/*.{js,ts,jsx,tsx}',
-        command: 'npx prettier --write'
+        matcher: 'fs_write',
+        command: 'npx prettier --write "$TOOL_INPUT_PATH" 2>/dev/null || true',
+        description: 'Format JS/TS files on save'
       }
     ],
-    onSessionStop: [
+    stop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
       }
     ]
@@ -1798,41 +1800,24 @@ const hooksTemplateBasic = {
 
 const hooksTemplateEnterprise = {
   hooks: {
-    onSave: [
+    postToolUse: [
       {
-        pattern: '**/*.{js,ts,jsx,tsx}',
-        command: 'npx prettier --write'
+        matcher: 'fs_write',
+        command: 'npx prettier --write "$TOOL_INPUT_PATH" 2>/dev/null || true',
+        description: 'Format JS/TS files on save'
       }
     ],
-    onSessionStop: [
+    stop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
       }
     ],
-    beforeShell: [
+    preToolUse: [
       {
-        pattern: 'rm -rf *',
-        action: 'block',
-        message: 'Destructive operations blocked by policy'
-      },
-      {
-        pattern: 'git push --force',
-        action: 'block',
-        message: 'Force push blocked by policy'
-      }
-    ],
-    afterShell: [
-      {
-        pattern: '*',
-        command: 'echo "[$(date)] $SHELL_COMMAND" >> .kiro/audit.log',
-        description: 'Audit log all shell commands'
-      }
-    ],
-    onTestComplete: [
-      {
-        command: 'kspec task-status --update-from-test-results',
-        description: 'Auto-update task status from test results'
+        matcher: 'execute_bash',
+        command: 'echo "$TOOL_INPUT" | grep -qE "rm -rf|git push --force" && echo "BLOCK: Destructive operation blocked by policy" && exit 1 || true',
+        description: 'Block destructive operations'
       }
     ]
   }
@@ -1840,26 +1825,17 @@ const hooksTemplateEnterprise = {
 
 const hooksTemplateDocumentation = {
   hooks: {
-    onSave: [
+    postToolUse: [
       {
-        pattern: '**/*.{js,ts,jsx,tsx}',
-        command: 'npx prettier --write'
+        matcher: 'fs_write',
+        command: 'npx prettier --write "$TOOL_INPUT_PATH" 2>/dev/null || true',
+        description: 'Format JS/TS files on save'
       }
     ],
-    onSessionStop: [
+    stop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
-      },
-      {
-        command: 'kspec update-readme --if-changed',
-        description: 'Update README if significant changes'
-      }
-    ],
-    onSpecComplete: [
-      {
-        command: 'kspec sync-jira --progress',
-        description: 'Update Jira with spec progress'
       }
     ]
   }
@@ -2102,11 +2078,11 @@ const commands = {
 
     const createAgentsMd = await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
 
-    const hooksChoice = await prompt('Configure Kiro hooks?', [
+    const hooksChoice = await prompt('Configure Kiro CLI hooks?', [
       { label: 'None (skip hooks)', value: 'none' },
-      { label: 'Basic (format on save, context on stop)', value: 'basic' },
-      { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
-      { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' }
+      { label: 'Basic (format JS/TS on write, refresh context on stop)', value: 'basic' },
+      { label: 'Enterprise (+ block destructive commands)', value: 'enterprise' },
+      { label: 'Documentation (same as Basic)', value: 'documentation' }
     ]);
 
     // Multi-CLI review configuration
