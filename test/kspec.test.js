@@ -330,13 +330,15 @@ describe('kspec', () => {
         'kspec-spike.json',
         'kspec-revise.json',
         'kspec-demo.json',
-        'kspec-estimate.json'
+        'kspec-estimate.json',
+        'kspec-context.json',
+        'kspec-refresh.json'
       ];
 
       for (const agent of expectedAgents) {
         assert(agentTemplates[agent], `Missing agent: ${agent}`);
       }
-      assert.strictEqual(Object.keys(agentTemplates).length, 14, 'Should have exactly 14 agents');
+      assert.strictEqual(Object.keys(agentTemplates).length, 16, 'Should have exactly 16 agents');
     });
 
     it('agents have Kiro CLI compatible format', () => {
@@ -2074,8 +2076,8 @@ describe('kspec', () => {
   });
 
   describe('all agents count', () => {
-    it('has exactly 14 agents', () => {
-      assert.strictEqual(Object.keys(agentTemplates).length, 14, 'Should have exactly 14 agents');
+    it('has exactly 16 agents', () => {
+      assert.strictEqual(Object.keys(agentTemplates).length, 16, 'Should have exactly 16 agents');
     });
   });
 
