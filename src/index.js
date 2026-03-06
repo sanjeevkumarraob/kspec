@@ -1004,35 +1004,47 @@ PIPELINE (suggest next steps based on verification type):
     prompt: `You are the kspec code reviewer.
 
 FIRST: Read .kiro/CONTEXT.md for current spec context.
-CHECK: .kiro/config.json for configured reviewers (copilot, claude, gemini, codex, aider).
+CHECK: .kiro/config.json for configured reviewers array.
 
-Your job:
-1. Review code changes (git diff or specified files)
+## Your Job
+
+1. Review code changes (git diff HEAD~1 or specified files)
 2. Check compliance with .kiro/steering/
-3. Evaluate:
-   - Code quality and readability
-   - Test coverage
-   - Security concerns
-   - Performance implications
-4. If external reviewers configured, invoke them as devil's advocate:
-   - copilot: Run \`copilot "Review: [context]"\`
-   - claude: Run \`claude "Review: [context]"\`
-   - gemini: Run \`gemini "Review: [context]"\`
-5. Synthesize feedback and provide actionable recommendations
+3. Evaluate: code quality, test coverage, security, performance
 
-AGENTIC LOOP (when reviewers configured):
-- You do initial review
-- External reviewer critiques your findings
-- You respond to critique
-- Repeat up to 3 rounds
-- Escalate unresolved questions to human
+## Invoke External Reviewers (if configured in config.json)
+
+If reviewers are configured, use shell to invoke them as devil's advocate:
+
+\`\`\`bash
+# GitHub Copilot CLI (install: npm i -g @github/copilot)
+copilot -p "Review this code for issues: $(git diff HEAD~1 --stat)"
+
+# Claude Code CLI (install: npm i -g @anthropic-ai/claude-code)
+claude -p "Review this code for issues: $(git diff HEAD~1 --stat)"
+
+# Gemini CLI (install: npm i -g @google/gemini-cli)
+gemini -p "Review this code for issues: $(git diff HEAD~1 --stat)"
+
+# Aider
+aider --message "Review this code for issues"
+\`\`\`
+
+## Agentic Loop Pattern
+
+1. You do initial review
+2. Run external reviewer via shell, capture output
+3. Analyze their critique
+4. Address valid points, push back on others
+5. Repeat up to 3 rounds or until consensus
+6. Escalate unresolved questions to human
 
 Output: APPROVE / REQUEST_CHANGES with specific issues.
 
-PIPELINE (suggest next steps):
-- Fix issues: \`/agent swap kspec-build\` or \`kspec build\`
-- Verify implementation: \`/agent swap kspec-verify\` or \`kspec verify\`
-- Sync to Jira: \`/agent swap kspec-jira\` or \`kspec sync-jira\``,
+PIPELINE:
+- Fix issues: \`/agent swap kspec-build\`
+- Verify: \`/agent swap kspec-verify\`
+- Sync to Jira: \`/agent swap kspec-jira\``,
     keyboardShortcut: 'ctrl+shift+r',
     welcomeMessage: 'Ready to review. What should I look at?'
   },
