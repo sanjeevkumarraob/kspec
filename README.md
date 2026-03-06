@@ -140,13 +140,22 @@ init → analyse → spec → verify-spec → design (optional) → tasks → ve
 | `kspec milestone status <name>` | Show milestone progress |
 | `kspec metrics` | Show timeline for current spec |
 
+### Agentic Review Loop
+
+| Command | Description |
+|---------|-------------|
+| `kspec review [target]` | Code review with agentic loop (if reviewers configured) |
+| `kspec review --simple` | Quick review without loop |
+| `kspec analyse` | Analyse codebase with review loop |
+| `kspec analyse --no-review` | Skip review loop |
+| `kspec build --review` | Build with agentic review loop |
+
 ### Other
 
 | Command | Description |
 |---------|-------------|
 | `kspec refresh` | Regenerate spec-lite.md after editing spec.md |
 | `kspec context` | View/refresh context file |
-| `kspec review [target]` | Code review |
 | `kspec list` | List all specs |
 | `kspec status` | Pipeline-aware status with next step suggestion |
 | `kspec agents` | List available agents |
@@ -252,6 +261,61 @@ kspec jira-pull
 
 This fetches the latest state of all linked Jira issues, generates a **change report** showing new/modified criteria, status changes, and comments, then presents changes for your approval before modifying spec.md. Specs are never auto-updated.
 
+## Agentic Review Loop
+
+kspec implements a **devil's advocate** pattern for code review, using multiple AI CLI tools as reviewers.
+
+### How It Works
+
+1. **Doer** (kspec-review agent) performs the initial review
+2. **Reviewer** (configured external CLIs) critiques the doer's work
+3. **Loop** continues up to 3 rounds until approved or questions remain
+4. **Human-in-the-loop** surfaces unresolved questions for your input
+
+### Configure Reviewers
+
+During `kspec init`, select which CLIs to use as reviewers:
+
+- GitHub Copilot CLI (`copilot`)
+- Gemini CLI (`gemini`)
+- Claude Code CLI (`claude`)
+- OpenAI Codex CLI (`codex`)
+- Aider (`aider`)
+
+Or configure manually in `.kiro/config.json`:
+
+```json
+{
+  "reviewers": ["copilot", "claude", "gemini"]
+}
+```
+
+### Usage
+
+```bash
+# Review recent changes (uses configured reviewers)
+kspec review
+
+# Review specific target
+kspec review "src/auth/*.js"
+
+# Quick review without agentic loop
+kspec review --simple
+
+# Build with review loop
+kspec build --review
+```
+
+### Session Files
+
+Review sessions are logged to `.kiro/sessions/` with full transcripts:
+
+```
+.kiro/sessions/review-pr-2026-03-04T20-29-38-940Z.md
+```
+
+Each session captures doer output, reviewer critiques, and final status (APPROVED, NEEDS_CHANGES, or NEEDS_HIL).
+
 ## Contracts (Beta)
 
 Enforce structured outputs and non-negotiable checks in your spec. This prevents context loss and regression by ensuring specific files and patterns exist before verification proceeds.
@@ -324,7 +388,7 @@ kspec context    # View and refresh context manually
 | kspec-tasks | Ctrl+Shift+T | Generate tasks (uses design if present) |
 | kspec-build | Ctrl+Shift+B | Execute tasks with TDD |
 | kspec-verify | Ctrl+Shift+V | Verify spec/design/tasks/implementation |
-| kspec-review | Ctrl+Shift+R | Code review |
+| kspec-review | Ctrl+Shift+R | Code review (+ configured reviewers) |
 | kspec-jira | Ctrl+Shift+J | Jira integration (pull, sync, subtasks) |
 | kspec-fix | Ctrl+Shift+F | Fix bugs (abbreviated pipeline) |
 | kspec-refactor | Ctrl+Shift+G | Refactor code (no behavior change) |
@@ -396,6 +460,7 @@ See: https://kiro.dev/docs/cli/code-intelligence/
 │       ├── demo.md       # Stakeholder walkthrough (commit, optional)
 │       └── jira-links.json # Jira issue links (commit)
 ├── milestones/           # Milestone groupings (commit)
+├── sessions/             # Review session logs (local only)
 ├── steering/             # Project rules (commit)
 ├── agents/               # kspec-generated agents (commit)
 ├── settings/mcp.json     # MCP config (local only)
@@ -418,6 +483,7 @@ kspec is designed for team collaboration. Most files should be committed to shar
 | `.kiro/memory.md` | Yes | Project learnings |
 | `.kiro/.current` | No | Personal working state |
 | `.kiro/CONTEXT.md` | No | Auto-generated, local state |
+| `.kiro/sessions/` | No | Review session logs |
 | `.kiro/settings/` | No | Local MCP config |
 | `~/.kiro/mcp.json` | N/A | Personal secrets in home directory |
 
@@ -546,6 +612,7 @@ Set during `kspec init`:
 - **Date format**: YYYY-MM-DD, DD-MM-YYYY, or MM-DD-YYYY
 - **Auto-execute**: ask (default), auto, or dry-run
 - **Jira project**: Default project key for `sync-jira` (when Atlassian MCP detected)
+- **Reviewers**: Multi-CLI reviewers for agentic review loop (Copilot, Claude, Gemini, etc.)
 
 ## Auto-Updates
 
