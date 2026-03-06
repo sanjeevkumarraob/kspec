@@ -27,6 +27,7 @@ const defaultConfig = {
   autoExecute: 'ask',
   initialized: false,
   testCommand: null,
+  model: 'claude-sonnet-4.6',
   jira: {
     project: null,
     enabled: false
@@ -150,6 +151,96 @@ function getAtlassianMcpName() {
     name.toLowerCase().includes('jira')
   );
 }
+
+// File locking for concurrent access protection
+const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes max lock age (stale lock detection)
+const activeLocks = new Map();
+
+function getLockPath(folder) {
+  return path.join(folder, '.kspec-build.lock');
+}
+
+function acquireLock(folder) {
+  const lockPath = getLockPath(folder);
+
+  // Check for stale lock (older than timeout)
+  if (fs.existsSync(lockPath)) {
+    try {
+      const lockData = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+      const lockAge = Date.now() - lockData.timestamp;
+
+      if (lockAge > LOCK_TIMEOUT_MS) {
+        // Stale lock, remove it
+        fs.unlinkSync(lockPath);
+        console.log('Removed stale lock file');
+      } else {
+        // Active lock exists
+        const mins = Math.ceil((LOCK_TIMEOUT_MS - lockAge) / 60000);
+        console.error(`\n❌ Another kspec build is running on this spec.`);
+        console.error(`   Lock held by PID ${lockData.pid} since ${new Date(lockData.timestamp).toLocaleTimeString()}`);
+        console.error(`   Lock expires in ~${mins} minutes if process crashed.\n`);
+        return false;
+      }
+    } catch {
+      // Invalid lock file, remove it
+      try { fs.unlinkSync(lockPath); } catch {}
+    }
+  }
+
+  // Create lock file
+  try {
+    const lockData = {
+      pid: process.pid,
+      timestamp: Date.now(),
+      command: process.argv.join(' ')
+    };
+    fs.writeFileSync(lockPath, JSON.stringify(lockData, null, 2), { flag: 'wx' });
+    activeLocks.set(folder, lockPath);
+    return true;
+  } catch (e) {
+    if (e.code === 'EEXIST') {
+      // Race condition: another process created the lock
+      console.error('\n❌ Another kspec build just started on this spec.\n');
+      return false;
+    }
+    throw e;
+  }
+}
+
+function releaseLock(folder) {
+  const lockPath = getLockPath(folder);
+  try {
+    if (fs.existsSync(lockPath)) {
+      const lockData = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+      // Only remove if we own the lock
+      if (lockData.pid === process.pid) {
+        fs.unlinkSync(lockPath);
+      }
+    }
+    activeLocks.delete(folder);
+  } catch {}
+}
+
+// Cleanup locks on exit
+process.on('exit', () => {
+  for (const [folder] of activeLocks) {
+    releaseLock(folder);
+  }
+});
+
+process.on('SIGINT', () => {
+  for (const [folder] of activeLocks) {
+    releaseLock(folder);
+  }
+  process.exit(130);
+});
+
+process.on('SIGTERM', () => {
+  for (const [folder] of activeLocks) {
+    releaseLock(folder);
+  }
+  process.exit(143);
+});
 
 function getJiraProject() {
   const cfg = loadConfig();
@@ -499,10 +590,11 @@ function isSpecStale(folder) {
   }
 }
 
-// Auto-refresh spec-lite.md when spec.md is modified (truncation fallback)
-function autoRefreshSpecLite(folder) {
+// Truncate spec-lite.md when spec.md is modified (NOT AI summary - just truncation)
+// For AI-generated summary, use `kspec refresh` or kspec-refresh agent
+function truncateSpecLite(folder) {
   if (!isSpecStale(folder)) return;
-  log('spec.md changed — auto-refreshing spec-lite.md...');
+  log('spec.md changed — truncating spec-lite.md...');
   const specContent = fs.readFileSync(path.join(folder, 'spec.md'), 'utf8');
   const contractIdx = specContent.indexOf('## Contract');
   const content = contractIdx > 0 ? specContent.slice(0, contractIdx).trim() : specContent;
@@ -510,7 +602,7 @@ function autoRefreshSpecLite(folder) {
     ? content.slice(0, 2000) + '\n\n... (truncated, run `kspec refresh` for AI-generated summary)'
     : content;
   fs.writeFileSync(path.join(folder, 'spec-lite.md'), lite);
-  log('spec-lite.md updated (truncated copy — run `kspec refresh` for AI summary)');
+  log('spec-lite.md truncated (run `kspec refresh` for AI summary)');
 }
 
 // Record a metric event with timestamp for observability
@@ -803,11 +895,20 @@ description: API design conventions (request when building APIs)
 [API versioning strategy]`
 };
 
-const agentTemplates = {
+// Get configured model (with fallback)
+function getConfiguredModel() {
+  const cfg = loadConfig();
+  return cfg.model || 'claude-sonnet-4.6';
+}
+
+// Agent templates factory (uses configured model)
+function getAgentTemplates() {
+  const model = getConfiguredModel();
+  return {
   'kspec-analyse.json': {
     name: 'kspec-analyse',
     description: 'Analyse codebase and update steering docs',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -837,7 +938,7 @@ PIPELINE (suggest next steps):
   'kspec-spec.json': {
     name: 'kspec-spec',
     description: 'Create feature specifications',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -875,7 +976,7 @@ PIPELINE (suggest next steps):
   'kspec-tasks.json': {
     name: 'kspec-tasks',
     description: 'Generate implementation tasks from spec',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -910,7 +1011,7 @@ PIPELINE (suggest next steps):
   'kspec-build.json': {
     name: 'kspec-build',
     description: 'Execute tasks with TDD',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write', 'shell'],
     allowedTools: ['read', 'write', 'shell'],
     resources: [
@@ -951,7 +1052,7 @@ PIPELINE (suggest next steps):
   'kspec-verify.json': {
     name: 'kspec-verify',
     description: 'Verify spec, tasks, or implementation',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
@@ -1011,7 +1112,7 @@ PIPELINE (suggest next steps based on verification type):
   'kspec-review.json': {
     name: 'kspec-review',
     description: 'Code review with optional agentic loop',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'shell'],
     allowedTools: ['read', 'shell'],
     resources: [
@@ -1071,7 +1172,7 @@ PIPELINE:
   'kspec-design.json': {
     name: 'kspec-design',
     description: 'Create technical design from spec',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -1106,7 +1207,7 @@ PIPELINE (suggest next steps):
   'kspec-jira.json': {
     name: 'kspec-jira',
     description: 'Jira integration for specs',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write', '@atlassian'],
     allowedTools: ['read', 'write', '@atlassian'],
     includeMcpJson: true,
@@ -1179,7 +1280,7 @@ PIPELINE (suggest next steps):
   'kspec-fix.json': {
     name: 'kspec-fix',
     description: 'Fix bugs with abbreviated TDD pipeline',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write', 'bash'],
     allowedTools: ['read', 'write', 'bash'],
     resources: [
@@ -1219,7 +1320,7 @@ PIPELINE (suggest next steps):
   'kspec-refactor.json': {
     name: 'kspec-refactor',
     description: 'Refactor code with no behavior change',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write', 'bash'],
     allowedTools: ['read', 'write', 'bash'],
     resources: [
@@ -1256,7 +1357,7 @@ PIPELINE (suggest next steps):
   'kspec-spike.json': {
     name: 'kspec-spike',
     description: 'Time-boxed investigation (no implementation)',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -1294,7 +1395,7 @@ PIPELINE (suggest next steps):
   'kspec-revise.json': {
     name: 'kspec-revise',
     description: 'Revise spec from stakeholder feedback',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -1330,7 +1431,7 @@ PIPELINE (suggest next steps):
   'kspec-demo.json': {
     name: 'kspec-demo',
     description: 'Generate stakeholder walkthrough',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -1367,7 +1468,7 @@ PIPELINE (suggest next steps):
   'kspec-estimate.json': {
     name: 'kspec-estimate',
     description: 'Assess complexity before building',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -1416,7 +1517,7 @@ PIPELINE (suggest next steps):
   'kspec-context.json': {
     name: 'kspec-context',
     description: 'Refresh CONTEXT.md inline',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -1468,7 +1569,7 @@ PIPELINE:
   'kspec-refresh.json': {
     name: 'kspec-refresh',
     description: 'Generate AI summary of spec',
-    model: 'claude-sonnet-4.6',
+    model,
     tools: ['read', 'write'],
     allowedTools: ['read', 'write'],
     resources: [
@@ -1498,7 +1599,8 @@ PIPELINE:
 - Review changes: \`/agent swap kspec-review\``,
     welcomeMessage: 'Generating AI summary of spec...'
   }
-};
+  };
+}
 
 // Reviewer CLI configurations (availability checked dynamically via checkCommand)
 const reviewerCliConfigs = {
@@ -2189,6 +2291,19 @@ const commands = {
 
     const testCommand = await prompt('Test command (e.g., npm test, pytest) — leave empty to skip: ');
 
+    const modelChoice = await prompt('AI model for agents:', [
+      { label: 'claude-sonnet-4.6 (recommended)', value: 'claude-sonnet-4.6' },
+      { label: 'claude-opus-4.6 (most capable)', value: 'claude-opus-4.6' },
+      { label: 'claude-haiku-4.5 (fastest)', value: 'claude-haiku-4.5' },
+      { label: 'Custom (enter manually)', value: 'custom' }
+    ]);
+
+    let model = modelChoice;
+    if (modelChoice === 'custom') {
+      model = await prompt('Enter custom model ID: ');
+      if (!model.trim()) model = 'claude-sonnet-4.6';
+    }
+
     const createSteering = await confirm('Create steering doc templates?');
 
     const createAgentsMd = await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
@@ -2250,6 +2365,7 @@ const commands = {
       autoExecute,
       initialized: true,
       testCommand: testCommand.trim() || null,
+      model: model.trim() || 'claude-sonnet-4.6',
       jira: jiraConfig,
       reviewers: reviewerClis.length > 0 ? reviewerClis : null
     };
@@ -2304,7 +2420,7 @@ const commands = {
     }
 
     // Create agents (skip if already exist to preserve customizations)
-    for (const [file, content] of Object.entries(agentTemplates)) {
+    for (const [file, content] of Object.entries(getAgentTemplates())) {
       const p = path.join(AGENTS_DIR, file);
       if (!fs.existsSync(p)) {
         fs.writeFileSync(p, JSON.stringify(content, null, 2));
@@ -2748,7 +2864,7 @@ Report created subtasks with their URLs.`, 'kspec-jira');
 
     if (!await checkStaleness(folder)) return;
 
-    autoRefreshSpecLite(folder);
+    truncateSpecLite(folder);
     recordMetric(folder, 'tasks-started');
     log(`Generating tasks: ${folder}`);
 
@@ -2778,7 +2894,7 @@ Create ${folder}/tasks.md with:
 
     if (!await checkStaleness(folder)) return;
 
-    autoRefreshSpecLite(folder);
+    truncateSpecLite(folder);
     const stats = getTaskStats(folder);
 
     log(`Verifying tasks: ${folder}`);
@@ -2801,22 +2917,29 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
 
     if (!await checkStaleness(folder)) return;
 
-    autoRefreshSpecLite(folder);
-    const stats = getTaskStats(folder);
-
-    log(`Building: ${folder}`);
-    if (stats) {
-      if (stats.remaining === 0) {
-        log('All tasks completed!');
-        console.log('\nNext step:');
-        console.log('  kspec verify');
-        console.log('  or inside kiro-cli: /agent swap kspec-verify\n');
-        return;
-      }
-      log(`Progress: ${stats.done}/${stats.total} (${stats.remaining} remaining)`);
+    // Acquire lock to prevent concurrent builds
+    if (!acquireLock(folder)) {
+      return; // Another build is running
     }
 
-    recordMetric(folder, 'build-started');
+    try {
+      truncateSpecLite(folder);
+      const stats = getTaskStats(folder);
+
+      log(`Building: ${folder}`);
+      if (stats) {
+        if (stats.remaining === 0) {
+          log('All tasks completed!');
+          console.log('\nNext step:');
+          console.log('  kspec verify');
+          console.log('  or inside kiro-cli: /agent swap kspec-verify\n');
+          releaseLock(folder);
+          return;
+        }
+        log(`Progress: ${stats.done}/${stats.total} (${stats.remaining} remaining)`);
+      }
+
+      recordMetric(folder, 'build-started');
     const execMode = config.autoExecute || 'ask';
     const execNote = execMode === 'auto' ? 'Auto-execute enabled.' :
                      execMode === 'dry' ? 'Dry-run mode - show commands only.' :
@@ -2879,6 +3002,9 @@ NEVER delete .kiro folders.`;
       console.log(`\n${updatedStats.remaining} tasks remaining.`);
       console.log('Continue: kspec build\n');
     }
+    } finally {
+      releaseLock(folder);
+    }
   },
 
   async verify(args) {
@@ -2886,7 +3012,7 @@ NEVER delete .kiro folders.`;
 
     if (!await checkStaleness(folder)) return;
 
-    autoRefreshSpecLite(folder);
+    truncateSpecLite(folder);
 
     const stats = getTaskStats(folder);
 
@@ -3790,4 +3916,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, agentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, autoRefreshSpecLite, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, getConfiguredModel };

@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR;
+  let commands, loadConfig, run, detectCli, requireCli, getAgentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, agentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, getAgentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR } = require('../src/index.js'));
   });
 
   after(() => {
@@ -336,13 +336,13 @@ describe('kspec', () => {
       ];
 
       for (const agent of expectedAgents) {
-        assert(agentTemplates[agent], `Missing agent: ${agent}`);
+        assert(getAgentTemplates()[agent], `Missing agent: ${agent}`);
       }
-      assert.strictEqual(Object.keys(agentTemplates).length, 16, 'Should have exactly 16 agents');
+      assert.strictEqual(Object.keys(getAgentTemplates()).length, 16, 'Should have exactly 16 agents');
     });
 
     it('agents have Kiro CLI compatible format', () => {
-      for (const [filename, agent] of Object.entries(agentTemplates)) {
+      for (const [filename, agent] of Object.entries(getAgentTemplates())) {
         // Required fields
         assert(agent.name, `${filename}: missing name`);
         assert(agent.description, `${filename}: missing description`);
@@ -362,7 +362,7 @@ describe('kspec', () => {
     });
 
     it('agents include steering and specs resources', () => {
-      for (const [filename, agent] of Object.entries(agentTemplates)) {
+      for (const [filename, agent] of Object.entries(getAgentTemplates())) {
         const hasSteeringResource = agent.resources.some(r => r.includes('.kiro/steering'));
         const hasSpecsResource = agent.resources.some(r => r.includes('.kiro/specs'));
 
@@ -372,7 +372,7 @@ describe('kspec', () => {
     });
 
     it('agents include CONTEXT.md as first resource', () => {
-      for (const [filename, agent] of Object.entries(agentTemplates)) {
+      for (const [filename, agent] of Object.entries(getAgentTemplates())) {
         assert(agent.resources[0] === 'file://.kiro/CONTEXT.md',
           `${filename}: CONTEXT.md should be first resource for context restoration`);
       }
@@ -381,14 +381,14 @@ describe('kspec', () => {
     it('agent prompts instruct to read context first', () => {
       const agentsNeedingContext = ['kspec-tasks.json', 'kspec-build.json', 'kspec-verify.json'];
       for (const filename of agentsNeedingContext) {
-        const agent = agentTemplates[filename];
+        const agent = getAgentTemplates()[filename];
         assert(agent.prompt.includes('CONTEXT.md') || agent.prompt.includes('WORKFLOW'),
           `${filename}: prompt should reference context or workflow`);
       }
     });
 
     it('no agent references .kspec in resources', () => {
-      for (const [filename, agent] of Object.entries(agentTemplates)) {
+      for (const [filename, agent] of Object.entries(getAgentTemplates())) {
         for (const resource of agent.resources) {
           assert(!resource.includes('.kspec'),
             `${filename}: resource should not reference .kspec: ${resource}`);
@@ -550,18 +550,18 @@ describe('kspec', () => {
 
   describe('agentTemplates - Jira agent', () => {
     it('has kspec-jira agent', () => {
-      assert(agentTemplates['kspec-jira.json'], 'Missing kspec-jira agent');
+      assert(getAgentTemplates()['kspec-jira.json'], 'Missing kspec-jira agent');
     });
 
     it('kspec-jira has atlassian mcp access', () => {
-      const jiraAgent = agentTemplates['kspec-jira.json'];
+      const jiraAgent = getAgentTemplates()['kspec-jira.json'];
       assert(jiraAgent.tools.includes('@atlassian'), 'kspec-jira should include @atlassian tool');
       assert(jiraAgent.allowedTools.includes('@atlassian'), 'kspec-jira should allow @atlassian tool');
       assert(jiraAgent.includeMcpJson === true, 'kspec-jira should have includeMcpJson: true');
     });
 
     it('kspec-jira has correct keyboard shortcut', () => {
-      const jiraAgent = agentTemplates['kspec-jira.json'];
+      const jiraAgent = getAgentTemplates()['kspec-jira.json'];
       assert.strictEqual(jiraAgent.keyboardShortcut, 'ctrl+shift+j');
     });
   });
@@ -710,7 +710,7 @@ describe('kspec', () => {
 
   describe('agent model version', () => {
     it('all agents use claude-sonnet-4.6', () => {
-      for (const [filename, agent] of Object.entries(agentTemplates)) {
+      for (const [filename, agent] of Object.entries(getAgentTemplates())) {
         assert.strictEqual(agent.model, 'claude-sonnet-4.6', `${filename}: should use claude-sonnet-4.6`);
       }
     });
@@ -718,33 +718,33 @@ describe('kspec', () => {
 
   describe('agent prompt format', () => {
     it('kspec-spec uses standardized .current format', () => {
-      const agent = agentTemplates['kspec-spec.json'];
+      const agent = getAgentTemplates()['kspec-spec.json'];
       assert(agent.prompt.includes('.kiro/specs/'), 'Should reference .kiro/specs/ format');
       assert(agent.prompt.includes('Regenerate .kiro/CONTEXT.md'), 'Should say regenerate CONTEXT.md');
     });
 
     it('kspec-tasks references design.md', () => {
-      const agent = agentTemplates['kspec-tasks.json'];
+      const agent = getAgentTemplates()['kspec-tasks.json'];
       assert(agent.prompt.includes('design.md'), 'Should reference design.md');
     });
 
     it('kspec-build uses regenerate for CONTEXT.md', () => {
-      const agent = agentTemplates['kspec-build.json'];
+      const agent = getAgentTemplates()['kspec-build.json'];
       assert(agent.prompt.includes('regenerate .kiro/CONTEXT.md'), 'Should say regenerate CONTEXT.md');
     });
 
     it('kspec-verify has VERIFY-DESIGN section', () => {
-      const agent = agentTemplates['kspec-verify.json'];
+      const agent = getAgentTemplates()['kspec-verify.json'];
       assert(agent.prompt.includes('VERIFY-DESIGN'), 'Should have VERIFY-DESIGN section');
     });
 
     it('kspec-jira references jira-links.json', () => {
-      const agent = agentTemplates['kspec-jira.json'];
+      const agent = getAgentTemplates()['kspec-jira.json'];
       assert(agent.prompt.includes('jira-links.json'), 'Should reference jira-links.json');
     });
 
     it('all agents have PIPELINE section', () => {
-      for (const [filename, agent] of Object.entries(agentTemplates)) {
+      for (const [filename, agent] of Object.entries(getAgentTemplates())) {
         assert(agent.prompt.includes('PIPELINE'), `${filename}: should have PIPELINE section`);
       }
     });
@@ -857,11 +857,11 @@ describe('kspec', () => {
 
   describe('kspec-design agent', () => {
     it('exists in agent templates', () => {
-      assert(agentTemplates['kspec-design.json'], 'Missing kspec-design agent');
+      assert(getAgentTemplates()['kspec-design.json'], 'Missing kspec-design agent');
     });
 
     it('has correct structure', () => {
-      const agent = agentTemplates['kspec-design.json'];
+      const agent = getAgentTemplates()['kspec-design.json'];
       assert.strictEqual(agent.name, 'kspec-design');
       assert.strictEqual(agent.model, 'claude-sonnet-4.6');
       assert(Array.isArray(agent.tools));
@@ -870,12 +870,12 @@ describe('kspec', () => {
     });
 
     it('has keyboard shortcut', () => {
-      const agent = agentTemplates['kspec-design.json'];
+      const agent = getAgentTemplates()['kspec-design.json'];
       assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+d');
     });
 
     it('prompt mentions design sections', () => {
-      const agent = agentTemplates['kspec-design.json'];
+      const agent = getAgentTemplates()['kspec-design.json'];
       assert(agent.prompt.includes('Architecture Overview'), 'Should mention Architecture Overview');
       assert(agent.prompt.includes('Component Breakdown'), 'Should mention Component Breakdown');
       assert(agent.prompt.includes('Data Models'), 'Should mention Data Models');
@@ -1018,29 +1018,29 @@ describe('kspec', () => {
 
   describe('kspec-jira pull-updates', () => {
     it('agent prompt includes PULL UPDATES capability', () => {
-      const agent = agentTemplates['kspec-jira.json'];
+      const agent = getAgentTemplates()['kspec-jira.json'];
       assert(agent.prompt.includes('PULL UPDATES'), 'Should have PULL UPDATES capability');
     });
 
     it('agent prompt warns against auto-update', () => {
-      const agent = agentTemplates['kspec-jira.json'];
+      const agent = getAgentTemplates()['kspec-jira.json'];
       assert(agent.prompt.includes('NEVER auto-update'), 'Should warn against auto-updating spec');
     });
   });
 
   describe('verify-spec as spec-shaper', () => {
     it('verify agent has interactive spec shaping', () => {
-      const agent = agentTemplates['kspec-verify.json'];
+      const agent = getAgentTemplates()['kspec-verify.json'];
       assert(agent.prompt.includes('Interactive Spec Shaping'), 'Should have Interactive Spec Shaping');
     });
 
     it('verify agent asks clarifying questions', () => {
-      const agent = agentTemplates['kspec-verify.json'];
+      const agent = getAgentTemplates()['kspec-verify.json'];
       assert(agent.prompt.includes('clarifying questions'), 'Should mention clarifying questions');
     });
 
     it('verify agent gets user confirmation', () => {
-      const agent = agentTemplates['kspec-verify.json'];
+      const agent = getAgentTemplates()['kspec-verify.json'];
       assert(agent.prompt.includes('user confirmation') || agent.prompt.includes('Get user confirmation'), 'Should require user confirmation');
     });
   });
@@ -1354,11 +1354,11 @@ describe('kspec', () => {
     });
   });
 
-  describe('autoRefreshSpecLite', () => {
-    let autoRefreshSpecLite;
+  describe('truncateSpecLite', () => {
+    let truncateSpecLite;
 
     before(() => {
-      ({ autoRefreshSpecLite } = require('../src/index.js'));
+      ({ truncateSpecLite } = require('../src/index.js'));
     });
 
     it('creates spec-lite from spec.md when stale', () => {
@@ -1367,7 +1367,7 @@ describe('kspec', () => {
       fs.writeFileSync(path.join(folder, 'spec.md'), '# Test Spec\n\nSome requirements here.');
       // No spec-lite.md exists, so it's stale
 
-      autoRefreshSpecLite(folder);
+      truncateSpecLite(folder);
       assert(fs.existsSync(path.join(folder, 'spec-lite.md')), 'Should create spec-lite.md');
       const content = fs.readFileSync(path.join(folder, 'spec-lite.md'), 'utf8');
       assert(content.includes('Test Spec'), 'Should contain spec content');
@@ -1381,7 +1381,7 @@ describe('kspec', () => {
       fs.utimesSync(path.join(folder, 'spec.md'), now, new Date(now.getTime() - 10000));
       fs.writeFileSync(path.join(folder, 'spec-lite.md'), '# Existing Lite');
 
-      autoRefreshSpecLite(folder);
+      truncateSpecLite(folder);
       const content = fs.readFileSync(path.join(folder, 'spec-lite.md'), 'utf8');
       assert.strictEqual(content, '# Existing Lite', 'Should not overwrite');
     });
@@ -1392,7 +1392,7 @@ describe('kspec', () => {
       const longContent = '# Spec\n' + 'x'.repeat(3000);
       fs.writeFileSync(path.join(folder, 'spec.md'), longContent);
 
-      autoRefreshSpecLite(folder);
+      truncateSpecLite(folder);
       const content = fs.readFileSync(path.join(folder, 'spec-lite.md'), 'utf8');
       assert(content.includes('truncated'), 'Should include truncation note');
       assert(content.length < longContent.length, 'Should be shorter than original');
@@ -1403,7 +1403,7 @@ describe('kspec', () => {
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'spec.md'), '# Spec\n\nRequirements here.\n\n## Contract\n\n```json\n{}\n```');
 
-      autoRefreshSpecLite(folder);
+      truncateSpecLite(folder);
       const content = fs.readFileSync(path.join(folder, 'spec-lite.md'), 'utf8');
       assert(!content.includes('## Contract'), 'Should not include Contract section');
       assert(content.includes('Requirements here'), 'Should include content before Contract');
@@ -1970,7 +1970,7 @@ describe('kspec', () => {
 
   describe('new agent templates', () => {
     it('kspec-fix has correct structure', () => {
-      const agent = agentTemplates['kspec-fix.json'];
+      const agent = getAgentTemplates()['kspec-fix.json'];
       assert.strictEqual(agent.name, 'kspec-fix');
       assert.strictEqual(agent.model, 'claude-sonnet-4.6');
       assert(agent.tools.includes('bash'), 'Fix agent should have bash tool');
@@ -1981,7 +1981,7 @@ describe('kspec', () => {
     });
 
     it('kspec-refactor has correct structure', () => {
-      const agent = agentTemplates['kspec-refactor.json'];
+      const agent = getAgentTemplates()['kspec-refactor.json'];
       assert.strictEqual(agent.name, 'kspec-refactor');
       assert(agent.tools.includes('bash'), 'Refactor agent should have bash tool');
       assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+g');
@@ -1989,7 +1989,7 @@ describe('kspec', () => {
     });
 
     it('kspec-spike has correct structure', () => {
-      const agent = agentTemplates['kspec-spike.json'];
+      const agent = getAgentTemplates()['kspec-spike.json'];
       assert.strictEqual(agent.name, 'kspec-spike');
       assert(!agent.tools.includes('bash'), 'Spike agent should NOT have bash tool');
       assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+i');
@@ -1997,7 +1997,7 @@ describe('kspec', () => {
     });
 
     it('kspec-revise has correct structure', () => {
-      const agent = agentTemplates['kspec-revise.json'];
+      const agent = getAgentTemplates()['kspec-revise.json'];
       assert.strictEqual(agent.name, 'kspec-revise');
       assert(!agent.tools.includes('bash'), 'Revise agent should NOT have bash tool');
       assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+e');
@@ -2005,7 +2005,7 @@ describe('kspec', () => {
     });
 
     it('kspec-demo has correct structure', () => {
-      const agent = agentTemplates['kspec-demo.json'];
+      const agent = getAgentTemplates()['kspec-demo.json'];
       assert.strictEqual(agent.name, 'kspec-demo');
       assert(!agent.tools.includes('bash'), 'Demo agent should NOT have bash tool');
       assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+w');
@@ -2013,7 +2013,7 @@ describe('kspec', () => {
     });
 
     it('kspec-estimate has correct structure', () => {
-      const agent = agentTemplates['kspec-estimate.json'];
+      const agent = getAgentTemplates()['kspec-estimate.json'];
       assert.strictEqual(agent.name, 'kspec-estimate');
       assert(!agent.tools.includes('bash'), 'Estimate agent should NOT have bash tool');
       assert.strictEqual(agent.keyboardShortcut, 'ctrl+shift+x');
@@ -2024,7 +2024,7 @@ describe('kspec', () => {
       const newAgents = ['kspec-fix.json', 'kspec-refactor.json', 'kspec-spike.json',
                          'kspec-revise.json', 'kspec-demo.json', 'kspec-estimate.json'];
       for (const name of newAgents) {
-        const agent = agentTemplates[name];
+        const agent = getAgentTemplates()[name];
         assert(agent.prompt.includes('PIPELINE'), `${name}: should have PIPELINE section`);
       }
     });
@@ -2033,7 +2033,7 @@ describe('kspec', () => {
       const newAgents = ['kspec-fix.json', 'kspec-refactor.json', 'kspec-spike.json',
                          'kspec-revise.json', 'kspec-demo.json', 'kspec-estimate.json'];
       for (const name of newAgents) {
-        const agent = agentTemplates[name];
+        const agent = getAgentTemplates()[name];
         assert.strictEqual(agent.resources[0], 'file://.kiro/CONTEXT.md',
           `${name}: CONTEXT.md should be first resource`);
       }
@@ -2043,7 +2043,7 @@ describe('kspec', () => {
       const newAgents = ['kspec-fix.json', 'kspec-refactor.json', 'kspec-spike.json',
                          'kspec-revise.json', 'kspec-demo.json', 'kspec-estimate.json'];
       for (const name of newAgents) {
-        const agent = agentTemplates[name];
+        const agent = getAgentTemplates()[name];
         assert(agent.welcomeMessage, `${name}: should have welcomeMessage`);
       }
     });
@@ -2077,7 +2077,7 @@ describe('kspec', () => {
 
   describe('all agents count', () => {
     it('has exactly 16 agents', () => {
-      assert.strictEqual(Object.keys(agentTemplates).length, 16, 'Should have exactly 16 agents');
+      assert.strictEqual(Object.keys(getAgentTemplates()).length, 16, 'Should have exactly 16 agents');
     });
   });
 
@@ -2144,6 +2144,80 @@ describe('kspec', () => {
       let MILESTONES_DIR;
       ({ MILESTONES_DIR } = require('../src/index.js'));
       assert.strictEqual(MILESTONES_DIR, path.join('.kiro', 'milestones'));
+    });
+  });
+
+  describe('file locking', () => {
+    let acquireLock, releaseLock;
+
+    before(() => {
+      ({ acquireLock, releaseLock } = require('../src/index.js'));
+    });
+
+    it('acquires lock when no lock exists', () => {
+      const folder = path.join('.kiro', 'specs', 'lock-test');
+      fs.mkdirSync(folder, { recursive: true });
+
+      const result = acquireLock(folder);
+      assert.strictEqual(result, true, 'Should acquire lock');
+      assert(fs.existsSync(path.join(folder, '.kspec-build.lock')), 'Lock file should exist');
+      releaseLock(folder);
+    });
+
+    it('releases lock when owned', () => {
+      const folder = path.join('.kiro', 'specs', 'lock-release-test');
+      fs.mkdirSync(folder, { recursive: true });
+
+      acquireLock(folder);
+      releaseLock(folder);
+      assert(!fs.existsSync(path.join(folder, '.kspec-build.lock')), 'Lock file should be removed');
+    });
+
+    it('lock file contains pid and timestamp', () => {
+      const folder = path.join('.kiro', 'specs', 'lock-content-test');
+      fs.mkdirSync(folder, { recursive: true });
+
+      acquireLock(folder);
+      const lockContent = JSON.parse(fs.readFileSync(path.join(folder, '.kspec-build.lock'), 'utf8'));
+      assert.strictEqual(lockContent.pid, process.pid, 'Should contain current pid');
+      assert(lockContent.timestamp, 'Should contain timestamp');
+      releaseLock(folder);
+    });
+  });
+
+  describe('configurable model', () => {
+    let getConfiguredModel;
+
+    before(() => {
+      ({ getConfiguredModel } = require('../src/index.js'));
+    });
+
+    it('returns default model when not configured', () => {
+      // Clear any existing config by writing empty object
+      const configPath = path.join('.kiro', 'config.json');
+      fs.mkdirSync('.kiro', { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({}, null, 2));
+
+      const model = getConfiguredModel();
+      assert.strictEqual(model, 'claude-sonnet-4.6', 'Should return default model');
+    });
+
+    it('returns configured model when set', () => {
+      const configPath = path.join('.kiro', 'config.json');
+      fs.mkdirSync('.kiro', { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({ model: 'claude-opus-4.6' }, null, 2));
+
+      const model = getConfiguredModel();
+      assert.strictEqual(model, 'claude-opus-4.6', 'Should return configured model');
+    });
+
+    it('agents use configured model', () => {
+      const configPath = path.join('.kiro', 'config.json');
+      fs.mkdirSync('.kiro', { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({ model: 'claude-haiku-4.5' }, null, 2));
+
+      const agents = getAgentTemplates();
+      assert.strictEqual(agents['kspec-build.json'].model, 'claude-haiku-4.5', 'Agent should use configured model');
     });
   });
 });

@@ -15,6 +15,30 @@ Two new agents to stay in kiro-cli without running shell commands:
 
 Total agents: 14 → 16.
 
+### Configurable Model
+
+AI model is now configurable during `kspec init`:
+
+- **claude-sonnet-4.6** (default, recommended)
+- **claude-opus-4.6** (most capable)
+- **claude-haiku-4.5** (fastest)
+- Custom model ID
+
+Model is stored in `config.json` and used by `getAgentTemplates()`.
+
+### File Locking
+
+`kspec build` now uses file locking to prevent concurrent builds:
+
+- Lock file created in spec folder (`.kspec-build.lock`)
+- Contains PID, timestamp, and command for debugging
+- Auto-expires after 30 minutes (stale lock detection)
+- Cleaned up on process exit (including SIGINT/SIGTERM)
+
+### Renamed Function
+
+- `autoRefreshSpecLite()` → `truncateSpecLite()` — clearer name indicating truncation, not AI summary
+
 ### Security Fixes
 
 - **Command injection fix** in `generateSlug()` — added `shellEscape()` function and input sanitization
@@ -34,11 +58,9 @@ Total agents: 14 → 16.
 
 ### Documentation
 
-- Added "Known Limitations" section to README
-- Documented `/compact` hook limitation and workarounds
-- Clarified spec-lite.md is truncation (use `kspec refresh` for AI summary)
-- Noted file locking limitation for concurrent CLI invocations
-- Noted hard-coded model name in agents
+- Added "Known Limitations" section to README (reduced from 4 to 2 after fixes)
+- Added "File Locking" section to Configuration
+- Documented model configuration option
 
 ## [2.1.0] — 2026-02-21
 

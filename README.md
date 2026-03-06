@@ -631,8 +631,13 @@ Set during `kspec init`:
 
 - **Date format**: YYYY-MM-DD, DD-MM-YYYY, or MM-DD-YYYY
 - **Auto-execute**: ask (default), auto, or dry-run
+- **Model**: AI model for agents (claude-sonnet-4.6, claude-opus-4.6, claude-haiku-4.5, or custom)
 - **Jira project**: Default project key for `sync-jira` (when Atlassian MCP detected)
 - **Reviewers**: Multi-CLI reviewers for agentic review loop (Copilot, Claude, Gemini, etc.)
+
+### File Locking
+
+`kspec build` uses file locking to prevent concurrent builds on the same spec. If another build is running, you'll see an error with the PID and lock time. Locks auto-expire after 30 minutes if the process crashes.
 
 ## Auto-Updates
 
@@ -653,9 +658,7 @@ kspec --version
 | Limitation | Workaround |
 |------------|------------|
 | **No `/compact` hook** | CONTEXT.md doesn't auto-refresh on context compaction. Run `/agent swap kspec-context` or `kspec context` manually. |
-| **spec-lite.md is truncation** | `autoRefreshSpecLite()` truncates spec.md, not AI summary. Run `kspec refresh` or `/agent swap kspec-refresh` for AI-generated summary. |
-| **No file locking** | Concurrent `kspec build` invocations may corrupt tasks.md. Avoid running multiple kspec commands simultaneously on same spec. |
-| **Hard-coded model** | Agents use `claude-sonnet-4.6`. To change, edit `.kiro/agents/*.json` after `kspec init`. |
+| **spec-lite.md auto-update is truncation** | `truncateSpecLite()` truncates spec.md (not AI summary). Run `kspec refresh` or `/agent swap kspec-refresh` for AI-generated summary. |
 
 ## Requirements
 
