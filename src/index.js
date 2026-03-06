@@ -288,6 +288,12 @@ function requireCli() {
   return cli;
 }
 
+// Escape string for safe shell usage (prevents command injection)
+function shellEscape(str) {
+  // Use single quotes and escape any single quotes within
+  return "'" + str.replace(/'/g, "'\\''") + "'";
+}
+
 // Generate meaningful slug using LLM, fallback to regex
 async function generateSlug(featureName) {
   const cli = detectCli();
@@ -296,7 +302,9 @@ async function generateSlug(featureName) {
   }
 
   try {
-    const prompt = `Generate a short folder name (2-4 words, lowercase, hyphenated) for this feature: "${featureName}"
+    // Sanitize featureName to prevent injection (remove dangerous chars)
+    const sanitized = featureName.replace(/[`$\\]/g, '');
+    const prompt = `Generate a short folder name (2-4 words, lowercase, hyphenated) for this feature: "${sanitized}"
 
 Rules:
 - Extract the core concept (e.g., "todo app", "user auth", "shopping cart")
@@ -307,7 +315,7 @@ Rules:
 
 Reply with ONLY the folder name, nothing else. Example: todo-nextjs-shadcn`;
 
-    const result = execSync(`${cli} chat "${prompt.replace(/"/g, '\\"')}" --no-interactive 2>/dev/null`, {
+    const result = execSync(`${cli} chat ${shellEscape(prompt)} --no-interactive 2>/dev/null`, {
       encoding: 'utf8',
       timeout: 15000,
       stdio: ['pipe', 'pipe', 'pipe']
@@ -444,25 +452,33 @@ function getTaskStats(folder) {
   const tasksFile = path.join(folder, 'tasks.md');
   if (!fs.existsSync(tasksFile)) return null;
 
-  const content = fs.readFileSync(tasksFile, 'utf8');
-  // Match both [x] and [X] consistently for total and done counts
-  const total = (content.match(/^-\s*\[[ xX]\]/gm) || []).length;
-  const done = (content.match(/^-\s*\[[xX]\]/gm) || []).length;
-  return { total, done, remaining: total - done };
+  try {
+    const content = fs.readFileSync(tasksFile, 'utf8');
+    // Match both [x] and [X] consistently for total and done counts
+    const total = (content.match(/^-\s*\[[ xX]\]/gm) || []).length;
+    const done = (content.match(/^-\s*\[[xX]\]/gm) || []).length;
+    return { total, done, remaining: total - done };
+  } catch {
+    return null; // File unreadable (permissions, locked, etc.)
+  }
 }
 
 function getCurrentTask(folder) {
   const tasksFile = path.join(folder, 'tasks.md');
   if (!fs.existsSync(tasksFile)) return null;
 
-  const content = fs.readFileSync(tasksFile, 'utf8');
-  const lines = content.split('\n');
-  for (const line of lines) {
-    if (/^-\s*\[ \]/.test(line)) {
-      return line.replace(/^-\s*\[ \]\s*/, '').trim();
+  try {
+    const content = fs.readFileSync(tasksFile, 'utf8');
+    const lines = content.split('\n');
+    for (const line of lines) {
+      if (/^-\s*\[ \]/.test(line)) {
+        return line.replace(/^-\s*\[ \]\s*/, '').trim();
+      }
     }
+    return null;
+  } catch {
+    return null; // File unreadable
   }
-  return null;
 }
 
 // Check if spec.md has been modified after spec-lite.md
@@ -470,13 +486,17 @@ function isSpecStale(folder) {
   const specFile = path.join(folder, 'spec.md');
   const specLiteFile = path.join(folder, 'spec-lite.md');
 
-  if (!fs.existsSync(specFile)) return false;
-  if (!fs.existsSync(specLiteFile)) return true; // No spec-lite means stale
+  try {
+    if (!fs.existsSync(specFile)) return false;
+    if (!fs.existsSync(specLiteFile)) return true; // No spec-lite means stale
 
-  const specMtime = fs.statSync(specFile).mtime;
-  const specLiteMtime = fs.statSync(specLiteFile).mtime;
+    const specMtime = fs.statSync(specFile).mtime;
+    const specLiteMtime = fs.statSync(specLiteFile).mtime;
 
-  return specMtime > specLiteMtime;
+    return specMtime > specLiteMtime;
+  } catch {
+    return false; // On error (file deleted between checks), assume not stale
+  }
 }
 
 // Auto-refresh spec-lite.md when spec.md is modified (truncation fallback)
@@ -542,7 +562,6 @@ No active spec. Run: \`kspec spec "Feature Name"\`
   const specLiteFile = path.join(current, 'spec-lite.md');
   const specFile = path.join(current, 'spec.md');
   let specLite = '';
-  let usingSpecFallback = false;
 
   if (stale && fs.existsSync(specFile)) {
     // Use spec.md directly when stale (truncate if too long)
@@ -550,7 +569,6 @@ No active spec. Run: \`kspec spec "Feature Name"\`
     specLite = specContent.length > 3000
       ? specContent.slice(0, 3000) + '\n\n... (truncated, run `kspec refresh` for full summary)'
       : specContent;
-    usingSpecFallback = true;
   } else if (fs.existsSync(specLiteFile)) {
     specLite = fs.readFileSync(specLiteFile, 'utf8');
   }
@@ -920,6 +938,7 @@ CRITICAL:
 - Update .kiro/CONTEXT.md with current task and progress
 - NEVER delete .kiro folders
 - Use non-interactive flags for commands (--yes, -y)
+- After major changes or /compact, run: shell \`kspec context\` to refresh CONTEXT.md
 
 PIPELINE (suggest next steps):
 - When all tasks complete: \`/agent swap kspec-verify\` or \`kspec verify\`
@@ -1395,37 +1414,32 @@ PIPELINE (suggest next steps):
   }
 };
 
-// Reviewer CLI configurations
+// Reviewer CLI configurations (availability checked dynamically via checkCommand)
 const reviewerCliConfigs = {
   copilot: {
     name: 'GitHub Copilot CLI',
     command: 'copilot -p',
-    checkCommand: 'copilot --help',
-    available: false
+    checkCommand: 'copilot --help'
   },
   gemini: {
     name: 'Gemini CLI',
     command: 'gemini -p',
-    checkCommand: 'gemini --version',
-    available: false
+    checkCommand: 'gemini --version'
   },
   claude: {
     name: 'Claude Code CLI',
     command: 'claude -p',
-    checkCommand: 'claude --version',
-    available: false
+    checkCommand: 'claude --version'
   },
   codex: {
     name: 'OpenAI Codex CLI',
     command: 'codex',
-    checkCommand: 'codex --version',
-    available: false
+    checkCommand: 'codex --version'
   },
   aider: {
     name: 'Aider',
     command: 'aider --message',
-    checkCommand: 'aider --version',
-    available: false
+    checkCommand: 'aider --version'
   }
 };
 
@@ -1472,7 +1486,7 @@ Output format:
 - [IMPORTANT] Issue description
 - [?] Question needing clarification`,
 
-  pr: `You are a devil's advocate reviewer. Your job is to challenge and question the PR.
+  review: `You are a devil's advocate reviewer. Your job is to challenge and question the code review.
 
 Review the changes critically:
 - Do the changes match the stated purpose?
@@ -1792,6 +1806,9 @@ When invoking external CLIs (via shell tool), prefer:
 
 // Kiro CLI hooks templates
 // See: https://kiro.dev/docs/cli/hooks/
+// LIMITATION: No hook for /compact command - CONTEXT.md won't auto-refresh on context compaction.
+// Workaround: Agents should run `kspec context` periodically or after major changes.
+// The stop hook updates CONTEXT.md on session end, but not mid-session compaction.
 const hooksTemplateBasic = {
   hooks: {
     postToolUse: [
