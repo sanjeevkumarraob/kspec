@@ -2,6 +2,66 @@
 
 All notable changes to kspec are documented in this file.
 
+## [2.2.0] — 2026-03-06
+
+### New Agents for Inline Execution
+
+Two new agents to stay in kiro-cli without running shell commands:
+
+| Agent | Shortcut | Purpose |
+|-------|----------|---------|
+| kspec-context | Ctrl+Shift+C | Refresh CONTEXT.md inline (use after /compact) |
+| kspec-refresh | — | Generate AI summary of spec (not just truncation) |
+
+Total agents: 14 → 16.
+
+### Configurable Model
+
+AI model is now configurable during `kspec init`:
+
+- **claude-sonnet-4.6** (default, recommended)
+- **claude-opus-4.6** (most capable)
+- **claude-haiku-4.5** (fastest)
+- Custom model ID
+
+Model is stored in `config.json` and used by `getAgentTemplates()`.
+
+### File Locking
+
+`kspec build` now uses file locking to prevent concurrent builds:
+
+- Lock file created in spec folder (`.kspec-build.lock`)
+- Contains PID, timestamp, and command for debugging
+- Auto-expires after 30 minutes (stale lock detection)
+- Cleaned up on process exit (including SIGINT/SIGTERM)
+
+### Renamed Function
+
+- `autoRefreshSpecLite()` → `truncateSpecLite()` — clearer name indicating truncation, not AI summary
+
+### Security Fixes
+
+- **Command injection fix** in `generateSlug()` — added `shellEscape()` function and input sanitization
+- Removed unused code: `usingSpecFallback` variable, `available` field in reviewerCliConfigs
+- Renamed `devilsAdvocatePrompts.pr` to `.review` (was defined but never used)
+
+### Error Handling
+
+- Added try-catch to `getTaskStats()`, `getCurrentTask()`, `isSpecStale()` for robustness
+- Fixed TOCTOU race condition in `isSpecStale()`
+
+### kspec-review Agent Updates
+
+- Correct CLI flags for external reviewers (`-p` for non-interactive mode)
+- Added install instructions for each CLI (copilot, claude, gemini, aider)
+- Clearer agentic loop pattern documentation
+
+### Documentation
+
+- Added "Known Limitations" section to README (reduced from 4 to 2 after fixes)
+- Added "File Locking" section to Configuration
+- Documented model configuration option
+
 ## [2.1.0] — 2026-02-21
 
 ### Closing the Methodology Gaps
