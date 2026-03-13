@@ -904,7 +904,12 @@ function getConfiguredModel() {
 // Agent templates factory (uses configured model)
 function getAgentTemplates() {
   const model = getConfiguredModel();
-  return {
+  const mcpName = getAtlassianMcpName();
+
+  // Agents that should have Atlassian MCP access when configured
+  const mcpAgents = ['kspec-spec', 'kspec-analyse', 'kspec-review', 'kspec-verify', 'kspec-revise', 'kspec-tasks', 'kspec-build'];
+
+  const templates = {
   'kspec-analyse.json': {
     name: 'kspec-analyse',
     description: 'Analyse codebase and update steering docs',
@@ -950,20 +955,25 @@ PIPELINE (suggest next steps):
 
 WORKFLOW (do this autonomously):
 1. Read .kiro/steering/ for project context
-2. Create spec folder: .kiro/specs/YYYY-MM-DD-{feature-slug}/
+2. If user provides a Jira issue key (e.g., PROJ-123):
+   - Use Atlassian MCP to fetch issue details (summary, description, acceptance criteria, comments)
+   - Use the Jira content as the basis for the spec
+   - Include "Source: JIRA-XXX" attribution in the spec
+   - If MCP is not available, inform the user to configure it or use \`kspec spec --jira\`
+3. Create spec folder: .kiro/specs/YYYY-MM-DD-{feature-slug}/
    - Use today's date and a short slug (2-4 words from feature name)
-3. Create spec.md in that folder with:
+4. Create spec.md in that folder with:
    - Problem/Context
    - Requirements (functional + non-functional)
    - Constraints
    - High-level design
    - Acceptance criteria
    - Contract (JSON block with output_files and checks)
-4. Create spec-lite.md (CRITICAL - under 500 words):
+5. Create spec-lite.md (CRITICAL - under 500 words):
    - Concise version for context retention after compression
    - Key requirements only
-5. Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)
-6. Regenerate .kiro/CONTEXT.md with current spec name, path, and progress
+6. Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)
+7. Regenerate .kiro/CONTEXT.md with current spec name, path, and progress
 
 PIPELINE (suggest next steps):
 - Verify spec: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
@@ -1000,6 +1010,11 @@ WORKFLOW:
 6. Regenerate .kiro/CONTEXT.md with updated task count from tasks.md
 
 Tasks must be atomic and independently verifiable.
+
+JIRA INTEGRATION (when Atlassian MCP is available):
+- If user asks to sync/update Jira, create subtasks in Jira for each task
+- Link subtasks to the parent story
+- Keep task status in sync between tasks.md and Jira subtasks
 
 PIPELINE (suggest next steps):
 - Verify tasks: \`/agent swap kspec-verify\` or \`kspec verify-tasks\`
@@ -1040,6 +1055,11 @@ CRITICAL:
 - NEVER delete .kiro folders
 - Use non-interactive flags for commands (--yes, -y)
 - After major changes or /compact: \`/agent swap kspec-context\` to refresh CONTEXT.md
+
+JIRA INTEGRATION (when Atlassian MCP is available):
+- After completing a task, update the corresponding Jira subtask status if user asks
+- Add implementation notes as comments on Jira subtasks
+- Update the parent story with progress summary when requested
 
 PIPELINE (suggest next steps):
 - When all tasks complete: \`/agent swap kspec-verify\` or \`kspec verify\`
@@ -1138,7 +1158,8 @@ If reviewers are configured, use shell to invoke them as devil's advocate:
 
 \`\`\`bash
 # GitHub Copilot CLI (install: npm i -g @github/copilot)
-copilot -p "Review this code for issues: $(git diff HEAD~1 --stat)"
+# Use -s flag to output only the response (no usage stats), making it capturable
+copilot -p -s "Review this code for issues: $(git diff HEAD~1 --stat)"
 
 # Claude Code CLI (install: npm i -g @anthropic-ai/claude-code)
 claude -p "Review this code for issues: $(git diff HEAD~1 --stat)"
@@ -1600,14 +1621,28 @@ PIPELINE:
     welcomeMessage: 'Generating AI summary of spec...'
   }
   };
+
+  // Dynamically inject Atlassian MCP access into agents when configured
+  if (mcpName) {
+    const mcpTool = `@${mcpName}`;
+    for (const [filename, agent] of Object.entries(templates)) {
+      if (mcpAgents.includes(agent.name) && !agent.tools.includes(mcpTool)) {
+        agent.tools = [...agent.tools, mcpTool];
+        agent.allowedTools = [...agent.allowedTools, mcpTool];
+        agent.includeMcpJson = true;
+      }
+    }
+  }
+
+  return templates;
 }
 
 // Reviewer CLI configurations (availability checked dynamically via checkCommand)
 const reviewerCliConfigs = {
   copilot: {
     name: 'GitHub Copilot CLI',
-    command: 'copilot -p',
-    checkCommand: 'copilot --help'
+    command: 'copilot -p -s',
+    checkCommand: 'copilot --version'
   },
   gemini: {
     name: 'Gemini CLI',
@@ -1767,6 +1802,172 @@ function extractCriticalIssues(critique) {
   return issues;
 }
 
+// Run all configured reviewers in parallel with independent full-context prompts
+async function runParallelReview(target, reviewers) {
+  const cfg = loadConfig();
+  const folder = getCurrentSpec();
+  const sessionFile = createReviewSession('parallel-review', target);
+
+  // Gather full context for each reviewer (spec, steering, diff)
+  let specContent = '';
+  if (folder) {
+    const specFile = path.join(folder, 'spec.md');
+    const specLiteFile = path.join(folder, 'spec-lite.md');
+    if (fs.existsSync(specLiteFile)) specContent = fs.readFileSync(specLiteFile, 'utf8');
+    else if (fs.existsSync(specFile)) specContent = fs.readFileSync(specFile, 'utf8');
+  }
+
+  let steeringContent = '';
+  if (fs.existsSync(STEERING_DIR)) {
+    const steeringFiles = fs.readdirSync(STEERING_DIR).filter(f => f.endsWith('.md'));
+    for (const sf of steeringFiles) {
+      steeringContent += `\n### ${sf}\n${fs.readFileSync(path.join(STEERING_DIR, sf), 'utf8')}\n`;
+    }
+  }
+
+  let diffContent = '';
+  try {
+    diffContent = execSync('git diff HEAD~1', { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
+  } catch {
+    try {
+      diffContent = execSync('git diff', { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
+    } catch {}
+  }
+
+  // Build the full independent review prompt — each reviewer gets the same unbiased context
+  const fullReviewPrompt = `You are a code reviewer. Review this implementation independently and thoroughly.
+
+## Specification
+${specContent || '(no spec found)'}
+
+## Coding Standards / Steering
+${steeringContent || '(no steering rules found)'}
+
+## Code Changes (git diff)
+${diffContent || target}
+
+## Your Review Task
+Review the FULL implementation against the specification. Do NOT limit yourself to specific areas.
+Evaluate ALL of the following independently:
+1. Specification compliance — are all requirements implemented?
+2. Missing implementations — what's specified but not built?
+3. Code quality and readability
+4. Test coverage and test quality
+5. Security concerns
+6. Performance implications
+7. Error handling completeness
+8. Edge cases not covered
+
+For each finding, mark severity:
+- [CRITICAL] Must fix before merge
+- [IMPORTANT] Should fix, potential issues
+- [MINOR] Nice to have improvements
+- [?] Questions needing clarification
+
+End with a verdict: APPROVE or REQUEST_CHANGES`;
+
+  console.log(`\n🔀 Parallel Review: ${target}`);
+  console.log(`   Reviewers: kiro-cli (primary) + ${reviewers.join(', ')}`);
+  console.log(`   Each reviewer gets full context independently.\n`);
+
+  appendToSession(sessionFile, 1, 'Configuration', `Reviewers: kiro-cli, ${reviewers.join(', ')}\nTarget: ${target}`);
+
+  // Launch all reviewers in parallel
+  const reviewPromises = [];
+
+  // Reviewer 1: kiro-cli agent (primary)
+  console.log('🚀 Launching kiro-cli review...');
+  const kiroPromise = (async () => {
+    const start = Date.now();
+    await chat(`Review: ${target}
+
+Check compliance with .kiro/steering/
+Evaluate ALL: spec compliance, missing implementations, quality, tests, security, performance, error handling.
+Output: APPROVE or REQUEST_CHANGES with specific issues marked [CRITICAL], [IMPORTANT], [MINOR], or [?].`, 'kspec-review');
+    return { reviewer: 'kiro-cli', duration: Date.now() - start, output: getWorkOutput('review', target) || '(output in agent session)' };
+  })();
+  reviewPromises.push(kiroPromise);
+
+  // Reviewer 2+: External CLI reviewers in parallel
+  for (const reviewer of reviewers) {
+    console.log(`🚀 Launching ${reviewer} review...`);
+    const extPromise = (async () => {
+      const start = Date.now();
+      const output = await invokeReviewerCli(reviewer, fullReviewPrompt);
+      return { reviewer, duration: Date.now() - start, output };
+    })();
+    reviewPromises.push(extPromise);
+  }
+
+  // Wait for all reviewers to complete
+  console.log('\n⏳ Waiting for all reviewers to complete...\n');
+  const results = await Promise.allSettled(reviewPromises);
+
+  // Collect findings
+  const findings = [];
+  for (const result of results) {
+    if (result.status === 'fulfilled' && result.value) {
+      const { reviewer, duration, output } = result.value;
+      const durationSec = Math.round(duration / 1000);
+      console.log(`   ✓ ${reviewer} completed (${durationSec}s)`);
+      appendToSession(sessionFile, 1, `Review: ${reviewer}`, output || '(no output captured)');
+      findings.push({ reviewer, output: output || '' });
+    } else {
+      const reason = result.status === 'rejected' ? result.reason?.message : 'no output';
+      console.log(`   ✗ Review failed: ${reason}`);
+    }
+  }
+
+  // Synthesize: merge all findings and deduplicate via kiro-cli
+  console.log('\n🔄 Synthesizing findings from all reviewers...\n');
+
+  const synthesisInput = findings.map(f =>
+    `### ${f.reviewer} Review\n${f.output}`
+  ).join('\n\n---\n\n');
+
+  await chat(`You have received independent code reviews from ${findings.length} reviewers for: ${target}
+
+## Independent Review Findings
+
+${synthesisInput}
+
+## Your Task: Synthesize
+
+1. Merge findings from all reviewers, deduplicate similar issues
+2. Highlight issues found by MULTIPLE reviewers (higher confidence)
+3. Flag issues found by only ONE reviewer that seem valid
+4. Resolve any contradictions between reviewers
+5. Produce a FINAL consolidated review with:
+   - Severity: [CRITICAL] / [IMPORTANT] / [MINOR]
+   - Which reviewer(s) found it
+   - Specific file/line references where possible
+   - Actionable fix suggestions
+
+6. Final verdict: APPROVE or REQUEST_CHANGES
+
+Note: Issues flagged by multiple independent reviewers are more likely to be real problems.`, 'kspec-review');
+
+  // Extract final findings from session
+  const allQuestions = findings.flatMap(f => extractOpenQuestions(f.output));
+  const allCritical = findings.flatMap(f => extractCriticalIssues(f.output));
+
+  if (allCritical.length === 0 && allQuestions.length === 0) {
+    console.log('\n✅ All reviewers agree — no critical issues found.\n');
+    finalizeSession(sessionFile, 'APPROVED');
+    return { approved: true, sessionFile };
+  }
+
+  if (allQuestions.length > 0) {
+    console.log('\n⚠️  Open questions from reviewers:');
+    [...new Set(allQuestions)].forEach((q, i) => console.log(`  ${i + 1}. ${q}`));
+    finalizeSession(sessionFile, 'NEEDS_HIL', [...new Set(allQuestions)]);
+    return { approved: false, needsHil: true, questions: [...new Set(allQuestions)], sessionFile };
+  }
+
+  finalizeSession(sessionFile, 'REQUEST_CHANGES');
+  return { approved: false, sessionFile };
+}
+
 // Invoke reviewer CLI with prompt
 async function invokeReviewerCli(reviewerName, prompt) {
   const cfg = loadConfig();
@@ -1798,6 +1999,29 @@ async function invokeReviewerCli(reviewerName, prompt) {
 
   console.log(`\n🔍 Invoking ${cliConfig.name} as devil's advocate...\n`);
 
+  // Write prompt to a temp file to avoid shell argument length limits
+  const tmpDir = os.tmpdir();
+  const promptFile = path.join(tmpDir, `kspec-review-prompt-${Date.now()}.txt`);
+  fs.writeFileSync(promptFile, prompt);
+
+  try {
+    // First try: pipe-based capture (works for claude, gemini, codex, aider)
+    const output = await spawnAndCapture(cliConfig, promptFile, prompt);
+
+    if (output && output.trim().length > 0) {
+      return output;
+    }
+
+    // Fallback: use `script` to capture PTY output (needed for copilot CLI
+    // which writes directly to terminal, bypassing stdout pipes)
+    console.log('   Retrying with PTY capture...\n');
+    return await captureViaPty(cliConfig, promptFile, prompt);
+  } finally {
+    try { fs.unlinkSync(promptFile); } catch {}
+  }
+}
+
+function spawnAndCapture(cliConfig, promptFile, prompt) {
   return new Promise((resolve) => {
     const args = cliConfig.command.split(' ').slice(1);
     args.push(prompt);
@@ -1819,6 +2043,44 @@ async function invokeReviewerCli(reviewerName, prompt) {
 
     child.on('close', () => {
       resolve(output);
+    });
+
+    child.on('error', () => {
+      resolve(null);
+    });
+  });
+}
+
+function captureViaPty(cliConfig, promptFile, prompt) {
+  return new Promise((resolve) => {
+    const outputFile = `${promptFile}.out`;
+    // Use `script` to allocate a PTY and capture all terminal output
+    const cmdParts = cliConfig.command.split(' ');
+    const escapedPromptFile = promptFile.replace(/'/g, "'\\''");
+    const fullCmd = `${cmdParts.join(' ')} "$(cat '${escapedPromptFile}')"`;
+
+    const scriptArgs = process.platform === 'darwin'
+      ? ['-q', outputFile, '/bin/bash', '-c', fullCmd]
+      : ['-qc', fullCmd, outputFile];
+
+    const child = spawn('script', scriptArgs, {
+      stdio: ['pipe', 'inherit', 'inherit']
+    });
+
+    child.on('close', () => {
+      try {
+        const captured = fs.readFileSync(outputFile, 'utf8')
+          // Strip ANSI escape codes
+          .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '')
+          // Strip carriage returns
+          .replace(/\r/g, '')
+          .trim();
+        resolve(captured || null);
+      } catch {
+        resolve(null);
+      } finally {
+        try { fs.unlinkSync(outputFile); } catch {}
+      }
     });
 
     child.on('error', () => {
@@ -2419,12 +2681,32 @@ const commands = {
       log(`Created ${hooksPath} (${hooksChoice} hooks)`);
     }
 
-    // Create agents (skip if already exist to preserve customizations)
+    // Create or update agents
     for (const [file, content] of Object.entries(getAgentTemplates())) {
       const p = path.join(AGENTS_DIR, file);
       if (!fs.existsSync(p)) {
         fs.writeFileSync(p, JSON.stringify(content, null, 2));
         log(`Created ${p}`);
+      } else {
+        // Update tools, allowedTools, and includeMcpJson to reflect current MCP config
+        // while preserving any custom prompt modifications
+        try {
+          const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
+          let updated = false;
+          if (JSON.stringify(existing.tools) !== JSON.stringify(content.tools)) {
+            existing.tools = content.tools;
+            existing.allowedTools = content.allowedTools;
+            updated = true;
+          }
+          if (content.includeMcpJson && !existing.includeMcpJson) {
+            existing.includeMcpJson = true;
+            updated = true;
+          }
+          if (updated) {
+            fs.writeFileSync(p, JSON.stringify(existing, null, 2));
+            log(`Updated ${p} (MCP tools)`);
+          }
+        } catch {}
       }
     }
 
@@ -3161,14 +3443,15 @@ After writing, show me what you wrote.`, 'kspec-spec');
 
   async review(args) {
     const skipLoop = args.includes('--simple');
-    const filteredArgs = args.filter(a => a !== '--simple');
+    const useSequential = args.includes('--sequential');
+    const filteredArgs = args.filter(a => !a.startsWith('--'));
     const target = filteredArgs.join(' ') || 'recent changes (git diff HEAD~1)';
 
     const cfg = loadConfig();
     const reviewers = cfg.reviewers || [];
 
     if (skipLoop || reviewers.length === 0) {
-      // Simple review without agentic loop
+      // Simple review without external reviewers
       if (reviewers.length === 0 && !skipLoop) {
         console.log('\n💡 No reviewers configured. Using simple review.');
         console.log('   Run `kspec init` to configure reviewers (Copilot, Claude, etc.)\n');
@@ -3181,11 +3464,12 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
       return;
     }
 
-    // Agentic review loop with configured reviewers
-    console.log(`\n🔄 Agentic Review: ${target}`);
-    console.log(`   Configured reviewers: ${reviewers.join(', ')}\n`);
+    if (useSequential) {
+      // Legacy sequential doer/reviewer loop
+      console.log(`\n🔄 Sequential Review: ${target}`);
+      console.log(`   Configured reviewers: ${reviewers.join(', ')}\n`);
 
-    const doerPrompt = `Review these changes: ${target}
+      const doerPrompt = `Review these changes: ${target}
 
 1. Check compliance with .kiro/steering/ guidelines
 2. Evaluate code quality and readability
@@ -3196,14 +3480,28 @@ Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
 
 Provide detailed findings.`;
 
-    const result = await runReviewLoop('review', doerPrompt, target);
+      const result = await runReviewLoop('review', doerPrompt, target);
+
+      if (result.approved) {
+        console.log('\n✅ Review complete! Changes approved.\n');
+      } else if (result.needsHil) {
+        console.log('\n⚠️  Review needs human input. See questions above.\n');
+      }
+      return;
+    }
+
+    // Default: Parallel independent reviews — each reviewer gets full unbiased context
+    const result = await runParallelReview(target, reviewers);
 
     if (result.approved) {
-      console.log('\n✅ Review complete! Changes approved.\n');
+      console.log('\n✅ Review complete! All reviewers agree — changes approved.\n');
     } else if (result.needsHil) {
       console.log('\n⚠️  Review needs human input. See questions above.\n');
-      console.log('💡 Tip: Run `kspec review --simple` for quick review without loop.\n');
+    } else {
+      console.log('\n🔧 Changes requested. Review session saved.\n');
     }
+    console.log(`   Session: ${result.sessionFile}`);
+    console.log('💡 Tips: --simple (kiro-cli only) | --sequential (old doer/reviewer loop)\n');
   },
 
   list() {
@@ -3851,12 +4149,13 @@ Agentic Review Loop (devil's advocate pattern):
   kspec analyse           Analyse codebase with review loop
   kspec analyse --no-review
                           Skip review loop
-  kspec review [target]   Code review with agentic loop (if reviewers configured)
-  kspec review --simple   Quick review without loop
-  kspec build --review    Build with agentic review loop
+  kspec review [target]       Parallel review (kiro-cli + configured reviewers)
+  kspec review --simple       Quick review (kiro-cli only, no external reviewers)
+  kspec review --sequential   Legacy sequential doer/reviewer loop
+  kspec build --review        Build with agentic review loop
 
   Configure reviewers during 'kspec init' (Copilot, Claude, Gemini, etc.)
-  Loop: 3 rounds max → unresolved questions → human-in-the-loop
+  Default: parallel independent reviews → synthesize findings → consensus verdict
 
 Other:
   kspec refresh           Regenerate spec-lite.md after editing spec.md
