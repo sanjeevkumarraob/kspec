@@ -1505,32 +1505,74 @@ PIPELINE (suggest next steps):
       'file://.kiro/steering/**/*.md',
       'file://.kiro/specs/**/*.md'
     ],
-    prompt: `You are the kspec complexity estimator.
+    prompt: `You are the kspec complexity estimator. You produce realistic estimates using story points (1 SP = 1 developer day).
 
 FIRST: Read .kiro/CONTEXT.md for current state.
 
 WORKFLOW:
-1. Read spec.md thoroughly
-2. Read the codebase to understand current state
+1. Read spec.md thoroughly — identify every requirement and acceptance criterion
+2. Read the ACTUAL codebase to understand:
+   - Existing patterns, models, services, controllers, tests
+   - How similar features are currently implemented
+   - What infrastructure already exists vs what needs to be built
 3. Read .kiro/memory.md for relevant past experience
-4. Provide a COMPLEXITY ASSESSMENT:
+4. Read tasks.md if it exists — use actual task count for calibration
 
-   **T-shirt Size**: S / M / L / XL
+ESTIMATION METHOD:
+Break work into concrete categories and estimate EACH separately:
 
-   **Breakdown**:
-   - New files to create: ~N
-   - Existing files to modify: ~N
-   - Estimated tasks: ~N
-   - Key risks: [list]
+   **Story Points**: N SP (1 SP = 1 developer day)
+
+   **Task Breakdown with Points**:
+   | Category | Tasks | SP | Notes |
+   |----------|-------|----|-------|
+   | Models/DTOs | N | N | New classes, mappers, data models |
+   | Service layer | N | N | Business logic, validation |
+   | API/Controller | N | N | Endpoints, request/response handling |
+   | Client/Integration | N | N | External service calls, API clients |
+   | Tests (unit) | N | N | Service, mapper, controller tests |
+   | Tests (integration) | N | N | API tests, contract tests |
+   | Config/Infra | N | N | Properties, OpenAPI, build config |
+   | **Total** | **N** | **N** | |
+
+   **Effort Multipliers** (apply to base estimate):
+   - Unfamiliar codebase: +30%
+   - Complex business logic: +20%
+   - External API integration: +20%
+   - Security/auth requirements: +15%
+   - Database migrations: +10%
+   - CI/CD changes needed: +10%
+   - Code review + fixes: +15% (always include)
+
+   **Risk-Adjusted Estimate**:
+   - Optimistic: N SP (everything goes smoothly)
+   - Likely: N SP (some issues, normal pace)
+   - Pessimistic: N SP (unforeseen complexity, blockers)
+
+   **T-shirt Size**: S (1-3 SP) / M (3-5 SP) / L (5-10 SP) / XL (10+ SP)
 
    **Confidence**: High / Medium / Low
+   (Low if spec is ambiguous, codebase is unfamiliar, or external dependencies are unknown)
 
-   **Recommendation**:
-   - S: Skip design, go straight to tasks
-   - M: Consider design step
-   - L/XL: Design step recommended, consider breaking into smaller specs
+   **Key Risks**:
+   - [specific risk] → impact on estimate
+   - [specific risk] → mitigation
 
    **Similar past work**: [reference memory.md entries if relevant]
+
+   **Recommendation**:
+   - S (1-3 SP): Skip design, go straight to tasks
+   - M (3-5 SP): Consider design step
+   - L (5-10 SP): Design step recommended
+   - XL (10+ SP): Break into smaller specs, design required
+
+IMPORTANT — be REALISTIC, not optimistic:
+- Include test writing time (often equals or exceeds implementation time)
+- Include code review iteration time (+15% minimum)
+- Include config, wiring, and boilerplate — not just "interesting" code
+- If spec has N acceptance criteria, each one needs at least a test
+- Compare against existing similar implementations in the codebase for calibration
+- When in doubt, round UP
 
 5. Write estimate to estimate.md
 
@@ -3905,34 +3947,23 @@ This is for human review, not AI verification.`, 'kspec-demo');
 
     log(`Estimating complexity: ${folder}`);
 
-    await chat(`ESTIMATE: Assess complexity of the specification in ${folder}/spec.md.
+    await chat(`ESTIMATE: Assess complexity and provide story point estimate for ${folder}/spec.md.
+1 Story Point = 1 developer day.
 
-1. Read ${folder}/spec.md thoroughly
-2. Read the codebase to understand current state
+1. Read ${folder}/spec.md thoroughly — count every requirement and acceptance criterion
+2. Read the ACTUAL codebase — find similar implementations for calibration
 3. Read .kiro/memory.md for relevant past experience
-4. Provide a COMPLEXITY ASSESSMENT:
+4. If ${folder}/tasks.md exists, read it for task count calibration
 
-   **T-shirt Size**: S / M / L / XL
+Produce a REALISTIC estimate with:
+- Task breakdown table by category (models, services, API, tests, config) with SP per category
+- Effort multipliers (unfamiliar code +30%, complex logic +20%, review +15%, etc.)
+- Three-point estimate: optimistic / likely / pessimistic SP
+- T-shirt size: S (1-3 SP) / M (3-5 SP) / L (5-10 SP) / XL (10+ SP)
+- Key risks with impact on estimate
 
-   **Breakdown**:
-   - New files to create: ~N
-   - Existing files to modify: ~N
-   - Estimated tasks: ~N
-   - Key risks: [list]
-
-   **Confidence**: High / Medium / Low
-   (Low if spec is ambiguous or codebase is unfamiliar)
-
-   **Recommendation**:
-   - S: Skip design, go straight to tasks
-   - M: Consider design step
-   - L/XL: Design step recommended, consider breaking into smaller specs
-
-   **Similar past work**: [reference memory.md entries if relevant]
-
-5. Write estimate to ${folder}/estimate.md
-
-This is advisory — it doesn't block any commands.`, 'kspec-estimate');
+Be realistic, not optimistic. Include test writing time, code review, config/boilerplate.
+Write to ${folder}/estimate.md`, 'kspec-estimate');
 
     console.log('\nEstimate written to:');
     console.log(`  ${folder}/estimate.md\n`);
