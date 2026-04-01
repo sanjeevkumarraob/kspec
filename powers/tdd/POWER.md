@@ -97,6 +97,9 @@ test/
 
 ## Steering Instructions
 
+Strict Red-Green-Refactor is the DEFAULT behavior for `kspec build` and `kspec fix`.
+Use `--no-tdd` to opt out and use loose TDD (write test first, then implement).
+
 When building with TDD:
 
 - ALWAYS write the test first, run it, confirm it fails, then implement

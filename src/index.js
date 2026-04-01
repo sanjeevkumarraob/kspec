@@ -28,11 +28,27 @@ const defaultConfig = {
   initialized: false,
   testCommand: null,
   model: 'claude-sonnet-4.6',
+  strictTdd: true,
   jira: {
     project: null,
     enabled: false
   }
 };
+
+const STRICT_TDD_INSTRUCTIONS = `STRICT RED-GREEN-REFACTOR (mandatory for every task):
+  Step 1 (RED): Write a failing test that captures the expected behavior.
+  Step 2 (VERIFY RED): Run the test. CONFIRM it FAILS. Log the failure output.
+         If it passes, the test is wrong or the feature already exists — investigate.
+         Do NOT proceed to implementation until you have a confirmed failing test.
+  Step 3 (GREEN): Write the MINIMUM code to make the failing test pass. Nothing more.
+  Step 4 (VERIFY GREEN): Run the test. Confirm it passes. Log the output.
+  Step 5 (REFACTOR): Clean up if needed. Run tests again to confirm no regression.
+  Step 6 (FULL SUITE): Run ALL tests to ensure nothing else broke.
+
+CRITICAL: Do NOT write implementation code before confirming test failure in Step 2.
+Each Red-Green-Refactor cycle = one commit with descriptive message.`;
+
+const LOOSE_TDD_INSTRUCTIONS = `Write test first (TDD), then implement to pass test. Run tests after each task.`;
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
@@ -554,6 +570,37 @@ function getTaskStats(folder) {
   }
 }
 
+function getChunkStats(folder) {
+  const tasksFile = path.join(folder, 'tasks.md');
+  if (!fs.existsSync(tasksFile)) return null;
+
+  try {
+    const content = fs.readFileSync(tasksFile, 'utf8');
+    const headers = content.match(/^## Chunk \d+:.*$/gm);
+    if (!headers || headers.length === 0) return null;
+
+    const sections = content.split(/^## Chunk \d+:/gm);
+    const chunks = [];
+
+    headers.forEach((header, i) => {
+      const section = sections[i + 1] || '';
+      const total = (section.match(/^-\s*\[[ xX]\]/gm) || []).length;
+      const done = (section.match(/^-\s*\[[xX]\]/gm) || []).length;
+      chunks.push({
+        number: i + 1,
+        name: header.replace(/^## Chunk \d+:\s*/, '').trim(),
+        total,
+        done,
+        remaining: total - done
+      });
+    });
+
+    return chunks;
+  } catch {
+    return null;
+  }
+}
+
 function getCurrentTask(folder) {
   const tasksFile = path.join(folder, 'tasks.md');
   if (!fs.existsSync(tasksFile)) return null;
@@ -953,34 +1000,43 @@ PIPELINE (suggest next steps):
     ],
     prompt: `You are the kspec specification writer.
 
-WORKFLOW (do this autonomously):
+WORKFLOW:
 1. Read .kiro/steering/ for project context
-2. If user provides a Jira issue key (e.g., PROJ-123):
+2. DISCUSS FIRST (before writing any files):
+   - Read the user's feature description and the codebase context
+   - Ask 2-4 quick clarifying questions about functional ambiguity:
+     * Scope boundaries ("I assume this does NOT include X, correct?")
+     * Key user flows ("The primary use case is X, right?")
+     * Non-functional expectations ("Defaults: no auth requirement, standard error handling — OK?")
+   - Propose sensible defaults for each question so the user can just confirm
+   - Wait for answers before proceeding
+   - If user says "skip" or "just do it", proceed with your defaults
+3. If user provides a Jira issue key (e.g., PROJ-123):
    - Use Atlassian MCP to fetch issue details (summary, description, acceptance criteria, comments)
    - Use the Jira content as the basis for the spec
    - Include "Source: JIRA-XXX" attribution in the spec
    - If MCP is not available, inform the user to configure it or use \`kspec spec --jira\`
-3. Create spec folder: .kiro/specs/YYYY-MM-DD-{feature-slug}/
+4. Create spec folder: .kiro/specs/YYYY-MM-DD-{feature-slug}/
    - Use today's date and a short slug (2-4 words from feature name)
-4. Create spec.md in that folder with:
+5. Create spec.md in that folder with:
    - Problem/Context
    - Requirements (functional + non-functional)
    - Constraints
    - High-level design
    - Acceptance criteria
    - Contract (JSON block with output_files and checks)
-5. Create spec-lite.md (CRITICAL - under 500 words):
+6. Create spec-lite.md (CRITICAL - under 500 words):
    - Concise version for context retention after compression
    - Key requirements only
-6. Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)
-7. Regenerate .kiro/CONTEXT.md with current spec name, path, and progress
+7. Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)
+8. Regenerate .kiro/CONTEXT.md with current spec name, path, and progress
 
 PIPELINE (suggest next steps):
 - Verify spec: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
 - Create design: \`/agent swap kspec-design\` or \`kspec design\`
 - Generate tasks: \`/agent swap kspec-tasks\` or \`kspec tasks\` (skip design)`,
     keyboardShortcut: 'ctrl+shift+s',
-    welcomeMessage: 'Ready to create specification. Describe your feature.'
+    welcomeMessage: 'Ready to create specification. Describe your feature and I\'ll ask a few quick questions before writing.'
   },
 
   'kspec-tasks.json': {
@@ -1001,13 +1057,23 @@ WORKFLOW:
 2. Read .kiro/.current to get spec folder path
 3. Read spec.md and spec-lite.md from that folder
 4. If design.md exists in the spec folder, read it for architecture guidance and dependency ordering
-5. Generate tasks.md in the spec folder with:
-   - Checkbox format: "- [ ] Task description"
+5. DISCUSS APPROACH (before generating tasks):
+   - After reading the spec and codebase, ask 2-3 questions about technical approach:
+     * "I see patterns like X in the codebase. Should I follow that pattern?"
+     * "Should tasks target [approach A] or [approach B]?"
+     * "Any existing standards or conventions for test structure?"
+   - Propose sensible defaults. Wait for answers before generating tasks.md.
+   - If user says "skip" or "just do it", proceed with your defaults.
+6. Generate tasks.md in the spec folder with:
+   - Group tasks into PR-sized chunks using headers: "## Chunk 1: <short description>"
+   - Each chunk should contain 3-5 tasks representing a reviewable, deployable unit
+   - Chunk boundaries should align with logical seams (e.g., data layer, API, UI)
+   - Within each chunk, use checkbox format: "- [ ] Task description"
    - TDD approach: test first, then implement
-   - Logical ordering (models → services → API → UI)
+   - Logical ordering within and across chunks
    - Dependencies noted
    - File paths where changes occur
-6. Regenerate .kiro/CONTEXT.md with updated task count from tasks.md
+7. Regenerate .kiro/CONTEXT.md with updated task count from tasks.md
 
 Tasks must be atomic and independently verifiable.
 
@@ -1040,21 +1106,30 @@ WORKFLOW:
 1. Read .kiro/CONTEXT.md for current spec and task progress
 2. Read .kiro/.current to get spec folder path
 3. Read tasks.md from spec folder, find first uncompleted task (- [ ])
-4. For each task:
-   a) Write test first (TDD)
-   b) Implement minimal code to pass
-   c) Run tests
-   d) Mark task complete: change "- [ ]" to "- [x]"
-   e) Update tasks.md file
-   f) After completing tasks, regenerate .kiro/CONTEXT.md with updated progress
-5. Commit after each task with descriptive message
+4. For each task, follow STRICT RED-GREEN-REFACTOR:
+   a) Write a failing test for the expected behavior
+   b) Run test — CONFIRM it FAILS (log output). Do NOT proceed if it passes without new code.
+   c) Write MINIMAL implementation to make the failing test pass
+   d) Run test — confirm it passes (log output)
+   e) Refactor if needed, run tests again
+   f) Run ALL tests to check for regressions
+   g) Mark task complete: change "- [ ]" to "- [x]"
+   h) Update tasks.md file
+   i) Commit with descriptive message
+   j) After completing tasks, regenerate .kiro/CONTEXT.md with updated progress
 
 CRITICAL:
+- NEVER write implementation code before confirming test failure
 - Always update tasks.md after completing each task
 - Update .kiro/CONTEXT.md with current task and progress
 - NEVER delete .kiro folders
 - Use non-interactive flags for commands (--yes, -y)
 - After major changes or /compact: \`/agent swap kspec-context\` to refresh CONTEXT.md
+
+CHUNK BOUNDARIES:
+- If tasks.md contains "## Chunk N:" headers, work on one chunk at a time
+- When all tasks in a chunk are complete, STOP and suggest creating a PR
+- Only continue to the next chunk after user confirms
 
 JIRA INTEGRATION (when Atlassian MCP is available):
 - After completing a task, update the corresponding Jira subtask status if user asks
@@ -1324,20 +1399,28 @@ FIRST: Read .kiro/CONTEXT.md for current state.
 WORKFLOW (abbreviated pipeline — no full spec/design/tasks cycle):
 1. Understand the bug from the description
 2. Read the codebase to find the relevant area
-3. Create spec.md in the spec folder with:
+3. DISCUSS BRIEFLY (before creating files):
+   - After reading the codebase area, ask 1-2 quick questions:
+     * "I think the root cause is X. Does that match what you're seeing?"
+     * "I plan to fix it by doing Y. Any concerns?"
+   - Propose your best guess. Wait for confirmation before executing.
+   - If user says "skip" or "just do it", proceed with your assessment.
+4. Create spec.md in the spec folder with:
    - Bug description
    - Steps to reproduce (if inferable)
    - Expected vs actual behavior
    - Root cause analysis
    - Fix approach
-4. Create tasks.md with fix tasks (test-first):
+5. Create tasks.md with fix tasks
+6. Execute tasks using STRICT RED-GREEN-REFACTOR:
    - Write failing test that reproduces the bug
-   - Implement fix
-   - Verify fix doesn't break existing tests
-5. Execute tasks immediately (TDD)
-6. Mark tasks complete as you go
+   - Run test — CONFIRM it FAILS (this proves the bug exists)
+   - Implement the fix (minimal change)
+   - Run test — confirm it passes
+   - Run ALL tests to verify no regressions
+7. Mark tasks complete as you go
 
-CRITICAL: Write test first, then fix. Update tasks.md after each step.
+CRITICAL: Do NOT implement fix before confirming test failure. Update tasks.md after each step.
 
 PIPELINE (suggest next steps):
 - Verify fix: \`/agent swap kspec-verify\` or \`kspec verify\`
@@ -1363,16 +1446,22 @@ FIRST: Read .kiro/CONTEXT.md for current state.
 
 WORKFLOW:
 1. Read the codebase area being refactored
-2. Create spec.md with:
+2. DISCUSS APPROACH (before creating files):
+   - After reading the code area, ask 1-2 questions:
+     * "I see the current structure is X. I propose restructuring to Y. Sound good?"
+     * "Any areas that should NOT be touched during this refactor?"
+   - Propose defaults. Wait for answers. Skip if told "just do it".
+3. Create spec.md with:
    - Current state (what exists)
    - Target state (what it should look like)
    - Constraints (behavior must not change)
    - Refactor approach
-3. Create tasks.md with refactor tasks:
+4. Create tasks.md with refactor tasks:
    - Ensure existing tests pass first
    - Restructure step by step
    - Run tests after each change
-4. Execute tasks
+   - If adding new tests, follow RED-GREEN-REFACTOR: write failing test, confirm failure, then implement
+5. Execute tasks
 
 CRITICAL: Run existing tests before AND after each change. No behavior changes.
 
@@ -2900,9 +2989,14 @@ IMPORTANT: Include Jira links for traceability.`, 'kspec-jira');
 
 Folder: ${folder}
 
+BEFORE writing any files, ask 2-4 quick clarifying questions about scope and requirements.
+Propose sensible defaults for each question. Wait for my answers, then proceed.
+If I say "skip" or "just do it", use your defaults and proceed immediately.
+
 1. Read .kiro/steering/ for context
-2. Create ${folder}/spec.md with full specification
-3. IMMEDIATELY create ${folder}/spec-lite.md (concise version, <500 words)
+2. Ask clarifying questions (see above)
+3. Create ${folder}/spec.md with full specification
+4. IMMEDIATELY create ${folder}/spec-lite.md (concise version, <500 words)
 
 spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec');
     }
@@ -3192,10 +3286,17 @@ Spec folder: ${folder}
 Read: ${folder}/spec.md and ${folder}/spec-lite.md
 ${hasDesign ? `Design: ${folder}/design.md (use for architecture guidance and dependency ordering)` : ''}
 
+BEFORE generating tasks, ask 2-3 quick questions about technical approach and patterns to follow.
+Propose sensible defaults. Wait for my answers, then proceed.
+If I say "skip" or "just do it", use your defaults and proceed immediately.
+
 Create ${folder}/tasks.md with:
-- Checkbox format: "- [ ] Task description"
+- Group tasks into PR-sized chunks: "## Chunk 1: <description>" headers
+- Each chunk = 3-5 tasks = one reviewable PR
+- Chunk boundaries at logical seams (data layer, API, UI, etc.)
+- Within each chunk: checkbox format "- [ ] Task description"
 - TDD approach (test first)
-- Logical order
+- Logical order within and across chunks
 - File paths for each task`, 'kspec-tasks');
 
     recordMetric(folder, 'tasks-completed');
@@ -3227,7 +3328,14 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
 
   async build(args) {
     const withReview = args.includes('--review');
-    const filteredArgs = args.filter(a => a !== '--review');
+    const noTdd = args.includes('--no-tdd');
+    const buildAll = args.includes('--all');
+    const chunkIndex = args.indexOf('--chunk');
+    const chunkNum = chunkIndex !== -1 && args[chunkIndex + 1] ? parseInt(args[chunkIndex + 1], 10) : null;
+    const filteredArgs = args.filter((a, i) =>
+      a !== '--review' && a !== '--no-tdd' && a !== '--all' &&
+      a !== '--chunk' && (chunkIndex === -1 || i !== chunkIndex + 1)
+    );
     const folder = getOrSelectSpec(filteredArgs.join(' '));
 
     if (!await checkStaleness(folder)) return;
@@ -3255,22 +3363,49 @@ Report: X/Y tasks done, gaps found, coverage assessment.`, 'kspec-verify');
       }
 
       recordMetric(folder, 'build-started');
+
+    // Show chunk progress if tasks are chunked
+    const chunkStatsArr = getChunkStats(folder);
+    if (chunkStatsArr) {
+      console.log('\nChunk progress:');
+      chunkStatsArr.forEach(c => {
+        const status = c.remaining === 0 ? 'DONE' : `${c.done}/${c.total}`;
+        console.log(`  Chunk ${c.number}: ${c.name} [${status}]`);
+      });
+      console.log('');
+    }
+
     const execMode = config.autoExecute || 'ask';
     const execNote = execMode === 'auto' ? 'Auto-execute enabled.' :
                      execMode === 'dry' ? 'Dry-run mode - show commands only.' :
                      'Ask before executing commands.';
 
+    const tddInstructions = noTdd ? LOOSE_TDD_INSTRUCTIONS : STRICT_TDD_INSTRUCTIONS;
+
+    let chunkInstruction = '';
+    if (chunkNum) {
+      chunkInstruction = `\nONLY work on tasks under "## Chunk ${chunkNum}:" header. Ignore tasks in other chunks.
+When all tasks in Chunk ${chunkNum} are complete, STOP and suggest: "Chunk ${chunkNum} complete. Create a PR, then run \`kspec build --chunk ${chunkNum + 1}\` for the next chunk."`;
+    } else if (!buildAll) {
+      chunkInstruction = `\nIf tasks.md contains "## Chunk N:" headers, work on one chunk at a time.
+When a chunk's tasks are all complete, STOP and suggest creating a PR before continuing to the next chunk.
+To build a specific chunk: \`kspec build --chunk N\`
+To build everything without stopping: \`kspec build --all\``;
+    }
+
     const doerPrompt = `Execute tasks from ${folder}/tasks.md
+${chunkInstruction}
 
 ${execNote}
 
+${tddInstructions}
+
 1. Find first uncompleted task (- [ ])
-2. Write test first (TDD)
-3. Implement to pass test
-4. Run tests
-5. Mark complete: change "- [ ]" to "- [x]" in tasks.md
-6. Save tasks.md after each completion
-7. Continue to next task
+2. Follow the TDD instructions above for each task
+3. Mark complete: change "- [ ]" to "- [x]" in tasks.md
+4. Save tasks.md after each completion
+5. Commit with descriptive message after each task
+6. Continue to next task
 
 CRITICAL: Update tasks.md after each task completion.
 NEVER delete .kiro folders.`;
@@ -3652,7 +3787,7 @@ kspec-analyse      Ctrl+Shift+A    Analyse codebase, update steering
 kspec-spec         Ctrl+Shift+S    Create specifications
 kspec-design       Ctrl+Shift+D    Create technical design from spec
 kspec-tasks        Ctrl+Shift+T    Generate tasks from spec
-kspec-build        Ctrl+Shift+B    Execute tasks with TDD
+kspec-build        Ctrl+Shift+B    Execute tasks with strict TDD
 kspec-verify       Ctrl+Shift+V    Verify spec/design/tasks/implementation
 kspec-review       Ctrl+Shift+R    Code review (+ configured reviewers)
 kspec-jira         Ctrl+Shift+J    Jira integration
@@ -3702,7 +3837,9 @@ Powers: contract, document, tdd, code-review, code-intelligence
   },
 
   async fix(args) {
-    const description = args.join(' ');
+    const noTdd = args.includes('--no-tdd');
+    const filteredArgs = args.filter(a => a !== '--no-tdd');
+    const description = filteredArgs.join(' ');
     if (!description) die('Usage: kspec fix "Description of the bug"');
 
     const date = formatDate(config.dateFormat || 'YYYY-MM-DD');
@@ -3720,7 +3857,12 @@ Powers: contract, document, tdd, code-review, code-intelligence
     recordMetric(folder, 'fix-started');
     log(`Bug fix: ${folder}`);
 
+    const tddInstructions = noTdd ? LOOSE_TDD_INSTRUCTIONS : STRICT_TDD_INSTRUCTIONS;
+
     await chat(`BUG FIX MODE: ${description}
+
+BEFORE creating files, briefly confirm your understanding of the bug and proposed fix approach.
+Ask 1-2 quick questions. Proceed with defaults if I say "skip".
 
 1. Read codebase to understand the area related to this bug
 2. Create ${folder}/spec.md with:
@@ -3729,14 +3871,12 @@ Powers: contract, document, tdd, code-review, code-intelligence
    - Expected vs actual behavior
    - Root cause analysis
    - Fix approach
-3. Create ${folder}/tasks.md with fix tasks (test first):
-   - Write failing test that reproduces the bug
-   - Implement fix
-   - Verify fix doesn't break existing tests
-4. Execute tasks immediately (TDD)
+3. Create ${folder}/tasks.md with fix tasks
+4. Execute tasks using:
+${tddInstructions}
 5. Mark tasks complete as you go
 
-CRITICAL: Write test first, then fix. Update tasks.md after each step.`, 'kspec-fix');
+CRITICAL: Do NOT implement fix before confirming test failure. Update tasks.md after each step.`, 'kspec-fix');
 
     recordMetric(folder, 'fix-completed');
     console.log('\nNext step:');
@@ -3765,6 +3905,9 @@ CRITICAL: Write test first, then fix. Update tasks.md after each step.`, 'kspec-
 
     await chat(`REFACTOR MODE: ${description}
 
+BEFORE creating files, briefly discuss your refactoring approach.
+Ask 1-2 quick questions. Proceed with defaults if I say "skip".
+
 1. Read the codebase area being refactored
 2. Create ${folder}/spec.md with:
    - Current state (what exists)
@@ -3775,6 +3918,7 @@ CRITICAL: Write test first, then fix. Update tasks.md after each step.`, 'kspec-
    - Ensure existing tests pass first
    - Restructure step by step
    - Run tests after each change
+   - If adding new tests, follow RED-GREEN-REFACTOR: write failing test, confirm failure, then implement
 4. Execute tasks
 
 CRITICAL: Run existing tests before AND after each change. No behavior changes.`, 'kspec-refactor');
@@ -4122,18 +4266,22 @@ kspec - Spec-driven development for Kiro CLI
 CLI Workflow (outside kiro-cli):
   kspec init              Interactive setup
   kspec analyse           Analyse codebase, update steering
-  kspec spec "Feature"    Create specification
+  kspec spec "Feature"    Create specification (asks clarifying questions first)
   kspec verify-spec       Interactively review and shape spec
   kspec design            Create technical design from spec
   kspec verify-design     Verify design against spec
-  kspec tasks             Generate tasks from spec (uses design if exists)
+  kspec tasks             Generate tasks from spec (discusses approach, outputs PR-sized chunks)
   kspec verify-tasks      Verify tasks cover spec
-  kspec build             Execute tasks with TDD
+  kspec build             Execute tasks with strict TDD (red-green-refactor)
+  kspec build --chunk N   Build only chunk N
+  kspec build --all       Build all chunks without stopping between PRs
+  kspec build --no-tdd    Build without strict TDD enforcement
   kspec verify            Verify implementation
   kspec done              Complete spec, harvest memory
 
 Work Types (abbreviated pipelines):
   kspec fix "Bug description"     Fix a bug (spec→test→fix→verify)
+  kspec fix --no-tdd "Bug desc"   Fix without strict TDD
   kspec refactor "What and why"   Refactor code (no behavior change)
   kspec spike "Question"          Time-boxed investigation (no code)
   kspec revise                    Revise spec from feedback
@@ -4144,7 +4292,7 @@ Inside kiro-cli (recommended):
   /agent swap kspec-spec    → Describe feature → creates spec
   /agent swap kspec-design  → Create technical design
   /agent swap kspec-tasks   → Generates tasks from spec
-  /agent swap kspec-build   → Builds tasks with TDD
+  /agent swap kspec-build   → Builds tasks with strict TDD (red-green-refactor)
   /agent swap kspec-verify  → Verifies spec/design/tasks/implementation
 
   Agents read .kiro/CONTEXT.md automatically for state.
