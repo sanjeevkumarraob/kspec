@@ -2331,6 +2331,89 @@ z`;
     });
   });
 
+  describe('all-MCP injection (Option A)', () => {
+    let getAgentTemplates, getAllMcpNames;
+    const ORIGINAL_CWD = process.cwd();
+    const MCP_TEST_DIR = path.join(__dirname, 'mcp-injection-workspace');
+
+    before(() => {
+      ({ getAgentTemplates, getAllMcpNames } = require('../src/index.js'));
+      fs.mkdirSync(MCP_TEST_DIR, { recursive: true });
+    });
+
+    after(() => {
+      process.chdir(ORIGINAL_CWD);
+      fs.rmSync(MCP_TEST_DIR, { recursive: true, force: true });
+    });
+
+    it('returns empty array when no MCP servers configured', () => {
+      process.chdir(MCP_TEST_DIR);
+      fs.rmSync('.kiro', { recursive: true, force: true });
+      assert.deepStrictEqual(getAllMcpNames(), []);
+    });
+
+    it('detects all MCP servers, not just atlassian', () => {
+      process.chdir(MCP_TEST_DIR);
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: {
+          atlassian: { command: 'npx', args: ['-y', 'mcp-remote', 'https://x'] },
+          github: { command: 'npx', args: ['-y', 'mcp-remote', 'https://y'] },
+          slack: { command: 'npx', args: ['-y', 'mcp-remote', 'https://z'] }
+        }
+      }));
+      const names = getAllMcpNames();
+      assert.deepStrictEqual(names.sort(), ['atlassian', 'github', 'slack']);
+    });
+
+    it('injects every detected MCP into kspec-spec tools', () => {
+      process.chdir(MCP_TEST_DIR);
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: {
+          atlassian: { command: 'npx' },
+          github: { command: 'npx' }
+        }
+      }));
+      const templates = getAgentTemplates();
+      const spec = templates['kspec-spec.json'];
+      assert.ok(spec.tools.includes('@atlassian'), 'should include @atlassian');
+      assert.ok(spec.tools.includes('@github'), 'should include @github');
+      assert.strictEqual(spec.includeMcpJson, true);
+    });
+
+    it('appends MCP usage hint to prompt with idempotent marker', () => {
+      process.chdir(MCP_TEST_DIR);
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: { github: { command: 'npx' } }
+      }));
+      const templates = getAgentTemplates();
+      const spec = templates['kspec-spec.json'];
+      assert.match(spec.prompt, /<!-- kspec:mcp-tools -->/);
+      assert.match(spec.prompt, /## Available MCP Tools/);
+      assert.match(spec.prompt, /`@github`/);
+      // Re-running getAgentTemplates() shouldn't duplicate the section
+      const templates2 = getAgentTemplates();
+      const occurrences = (templates2['kspec-spec.json'].prompt.match(/<!-- kspec:mcp-tools -->/g) || []).length;
+      assert.strictEqual(occurrences, 1, 'marker should appear exactly once');
+    });
+
+    it('does not inject MCP into non-allow-listed agents', () => {
+      process.chdir(MCP_TEST_DIR);
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: { github: { command: 'npx' } }
+      }));
+      const templates = getAgentTemplates();
+      // kspec-context is not on the mcpAgents allow-list
+      const context = templates['kspec-context.json'];
+      if (context) {
+        assert.ok(!context.tools.includes('@github'), 'context agent should not get @github');
+      }
+    });
+  });
+
   describe('init writes IDE markdown agents only when opted in', () => {
     let getAgentTemplates, agentToMarkdown;
     before(() => { ({ getAgentTemplates, agentToMarkdown } = require('../src/index.js')); });

@@ -168,6 +168,16 @@ function getAtlassianMcpName() {
   );
 }
 
+// Return every MCP server name configured in any of the lookup paths.
+// Used by getAgentTemplates() to grant kspec agents access to ALL configured
+// MCP servers, not just Atlassian. Returns an empty array if nothing is
+// configured.
+function getAllMcpNames() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return [];
+  return Object.keys(mcpConfig.mcpServers);
+}
+
 // File locking for concurrent access protection
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes max lock age (stale lock detection)
 const activeLocks = new Map();
@@ -957,9 +967,8 @@ function getConfiguredModel() {
 // Agent templates factory (uses configured model)
 function getAgentTemplates() {
   const model = getConfiguredModel();
-  const mcpName = getAtlassianMcpName();
 
-  // Agents that should have Atlassian MCP access when configured
+  // Agents that should have access to every configured MCP server
   const mcpAgents = ['kspec-spec', 'kspec-analyse', 'kspec-review', 'kspec-verify', 'kspec-revise', 'kspec-tasks', 'kspec-build'];
 
   const templates = {
@@ -1725,14 +1734,38 @@ PIPELINE:
   }
   };
 
-  // Dynamically inject Atlassian MCP access into agents when configured
-  if (mcpName) {
-    const mcpTool = `@${mcpName}`;
+  // Dynamically inject every configured MCP server into agents on the
+  // mcpAgents allow-list. Previously only Atlassian/Jira was injected; now
+  // any MCP the user has configured (github, confluence, slack, etc.) is
+  // exposed to the spec/build/review pipeline so agents can pull external
+  // context without manual lookups.
+  const allMcps = getAllMcpNames();
+  if (allMcps.length > 0) {
     for (const [filename, agent] of Object.entries(templates)) {
-      if (mcpAgents.includes(agent.name) && !agent.tools.includes(mcpTool)) {
-        agent.tools = [...agent.tools, mcpTool];
-        agent.allowedTools = [...agent.allowedTools, mcpTool];
-        agent.includeMcpJson = true;
+      if (!mcpAgents.includes(agent.name)) continue;
+      for (const server of allMcps) {
+        const mcpTool = `@${server}`;
+        if (!agent.tools.includes(mcpTool)) {
+          agent.tools = [...agent.tools, mcpTool];
+          agent.allowedTools = [...agent.allowedTools, mcpTool];
+        }
+      }
+      agent.includeMcpJson = true;
+
+      // Append a usage hint to the prompt so the agent actually reaches for
+      // these tools instead of doing manual research. Idempotent — uses a
+      // marker so re-running doesn't duplicate the section.
+      const marker = '<!-- kspec:mcp-tools -->';
+      if (!agent.prompt.includes(marker)) {
+        const toolList = allMcps.map(s => `\`@${s}\``).join(', ');
+        agent.prompt = `${agent.prompt.replace(/\s+$/, '')}
+
+${marker}
+## Available MCP Tools
+You have access to: ${toolList}.
+- Prefer MCP tools over manual lookups when fetching external context (Jira tickets, GitHub issues, Confluence pages, design docs).
+- Cite the source MCP and resource ID in spec/design output so reviewers can trace provenance.
+- If a relevant MCP is not in your tools list but seems needed, surface that as a question rather than guessing.`;
       }
     }
   }
@@ -2949,6 +2982,15 @@ const commands = {
             existing.includeMcpJson = true;
             updated = true;
           }
+          // Inject MCP-tools usage hint into preserved prompts when the
+          // template now has it but the existing file doesn't.
+          const marker = '<!-- kspec:mcp-tools -->';
+          if (content.prompt.includes(marker) && !existing.prompt.includes(marker)) {
+            const idx = content.prompt.indexOf(marker);
+            const mcpSection = content.prompt.slice(idx);
+            existing.prompt = `${existing.prompt.replace(/\s+$/, '')}\n\n${mcpSection}`;
+            updated = true;
+          }
           if (updated) {
             fs.writeFileSync(p, JSON.stringify(existing, null, 2));
             log(`Updated ${p} (MCP tools)`);
@@ -2968,6 +3010,23 @@ const commands = {
         if (!fs.existsSync(mdPath)) {
           fs.writeFileSync(mdPath, agentToMarkdown(content));
           log(`Created ${mdPath}`);
+        } else {
+          // File exists — refresh tools/model in frontmatter to reflect
+          // current MCP config, but never touch the user-edited body.
+          try {
+            const existing = fs.readFileSync(mdPath, 'utf8');
+            const parsed = parseFrontmatter(existing);
+            const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
+            const currentTools = parsed.frontmatter.tools;
+            if (currentTools !== desiredTools) {
+              parsed.frontmatter.tools = desiredTools;
+              const fmLines = ['---'];
+              for (const [k, v] of Object.entries(parsed.frontmatter)) fmLines.push(`${k}: ${v}`);
+              fmLines.push('---');
+              fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${parsed.body}`);
+              log(`Updated ${mdPath} (MCP tools)`);
+            }
+          } catch {}
         }
       }
     }
@@ -3945,6 +4004,101 @@ Powers: contract, document, tdd, code-review, code-intelligence
 `);
   },
 
+  async 'sync-agents'() {
+    // Re-runs the agent template merge logic from init() without touching
+    // steering, hooks, gitignore, or config. Use this after adding/removing
+    // an MCP server (e.g. `kiro-cli mcp add --name github`) to grant the
+    // new server's tools to all kspec agents.
+    if (!fs.existsSync(AGENTS_DIR)) {
+      die('No .kiro/agents/ directory. Run `kspec init` first.');
+    }
+
+    const allMcps = getAllMcpNames();
+    if (allMcps.length === 0) {
+      console.log('\nℹ️  No MCP servers configured. Nothing to inject.');
+      console.log('   Configure MCP via: kiro-cli mcp add --name <server>');
+      console.log('   Lookup paths checked:');
+      console.log('     - .kiro/settings/mcp.json');
+      console.log('     - .kiro/mcp.json');
+      console.log('     - ~/.kiro/settings/mcp.json');
+      console.log('     - ~/.kiro/mcp.json\n');
+    } else {
+      console.log(`\n🔌 Detected MCP servers: ${allMcps.map(s => `@${s}`).join(', ')}\n`);
+    }
+
+    let jsonUpdated = 0, mdUpdated = 0;
+    const cfg = loadConfig();
+
+    for (const [file, content] of Object.entries(getAgentTemplates())) {
+      const p = path.join(AGENTS_DIR, file);
+
+      // JSON: update tools/allowedTools/includeMcpJson, preserve custom
+      // prompt (only append MCP usage hint if our marker is missing).
+      if (fs.existsSync(p)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
+          let updated = false;
+          if (JSON.stringify(existing.tools) !== JSON.stringify(content.tools)) {
+            existing.tools = content.tools;
+            existing.allowedTools = content.allowedTools;
+            updated = true;
+          }
+          if (content.includeMcpJson && !existing.includeMcpJson) {
+            existing.includeMcpJson = true;
+            updated = true;
+          }
+          // Prompt: only inject the MCP-tools section when (a) the agent is
+          // on the MCP allow-list (template prompt now contains the marker)
+          // and (b) the user's prompt doesn't already have it.
+          const marker = '<!-- kspec:mcp-tools -->';
+          if (content.prompt.includes(marker) && !existing.prompt.includes(marker)) {
+            const idx = content.prompt.indexOf(marker);
+            const mcpSection = content.prompt.slice(idx);
+            existing.prompt = `${existing.prompt.replace(/\s+$/, '')}\n\n${mcpSection}`;
+            updated = true;
+          }
+          if (updated) {
+            fs.writeFileSync(p, JSON.stringify(existing, null, 2));
+            log(`Updated ${p}`);
+            jsonUpdated++;
+          }
+        } catch (e) {
+          log(`Skipped ${p} (parse failed: ${e.message})`);
+        }
+      }
+
+      // IDE markdown: update frontmatter tools line, preserve body
+      if (cfg.ideAgents) {
+        const mdPath = path.join(AGENTS_DIR, file.replace(/\.json$/, '.md'));
+        if (fs.existsSync(mdPath)) {
+          try {
+            const existing = fs.readFileSync(mdPath, 'utf8');
+            const parsed = parseFrontmatter(existing);
+            const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
+            if (parsed.frontmatter.tools !== desiredTools) {
+              parsed.frontmatter.tools = desiredTools;
+              const fmLines = ['---'];
+              for (const [k, v] of Object.entries(parsed.frontmatter)) fmLines.push(`${k}: ${v}`);
+              fmLines.push('---');
+              fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${parsed.body}`);
+              log(`Updated ${mdPath}`);
+              mdUpdated++;
+            }
+          } catch (e) {
+            log(`Skipped ${mdPath} (parse failed: ${e.message})`);
+          }
+        }
+      }
+    }
+
+    console.log(`\n✅ Synced agents (${jsonUpdated} JSON, ${mdUpdated} markdown updated)`);
+    if (jsonUpdated === 0 && mdUpdated === 0) {
+      console.log('   All agents already in sync with current MCP config.\n');
+    } else {
+      console.log('\nRestart any active kiro-cli sessions to pick up new tools.\n');
+    }
+  },
+
   async update() {
     console.log(`\nkspec v${pkg.version}\n`);
     console.log('Checking for updates...');
@@ -4484,6 +4638,7 @@ Other:
   kspec list              List all specs
   kspec status            Current status
   kspec agents            List agents
+  kspec sync-agents       Refresh agent JSON/markdown after adding new MCP servers
   kspec update            Check for updates
   kspec help              Show this help
 
@@ -4536,4 +4691,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames };
