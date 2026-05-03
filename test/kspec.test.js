@@ -2252,7 +2252,7 @@ describe('kspec', () => {
     before(() => { ({ mergeSteeringFile } = require('../src/index.js')); });
 
     const template = `---
-inclusion_mode: always
+inclusion: always
 description: Product context and goals
 ---
 # Product Overview
@@ -2268,7 +2268,7 @@ description: Product context and goals
 
     it('returns null when existing file has all sections', () => {
       const existing = `---
-inclusion_mode: always
+inclusion: always
 description: Product context and goals
 ---
 # Product Overview
@@ -2286,7 +2286,7 @@ Already written.`;
 
     it('appends missing sections without touching existing ones', () => {
       const existing = `---
-inclusion_mode: always
+inclusion: always
 ---
 # Product Overview
 
@@ -2303,7 +2303,7 @@ User wrote this themselves.`;
 
     it('merges missing frontmatter keys without overwriting existing values', () => {
       const existing = `---
-inclusion_mode: on_demand
+inclusion: auto
 ---
 # Product Overview
 
@@ -2318,7 +2318,7 @@ z`;
       const result = mergeSteeringFile(existing, template);
       assert.ok(result);
       assert.ok(result.fmChanged, 'frontmatter should change (description added)');
-      assert.match(result.merged, /inclusion_mode: on_demand/, 'preserves user value');
+      assert.match(result.merged, /inclusion: auto/, 'preserves user value');
       assert.match(result.merged, /description: Product context and goals/, 'adds missing key');
     });
 
@@ -2410,6 +2410,76 @@ z`;
       const context = templates['kspec-context.json'];
       if (context) {
         assert.ok(!context.tools.includes('@github'), 'context agent should not get @github');
+      }
+    });
+  });
+
+  describe('steering templates use Kiro inclusion syntax', () => {
+    let steeringTemplates, mergeSteeringFile;
+    before(() => { ({ steeringTemplates, mergeSteeringFile } = require('../src/index.js')); });
+
+    it('always-included templates use `inclusion: always`', () => {
+      assert.match(steeringTemplates['product.md'], /^---\ninclusion: always\n/);
+      assert.match(steeringTemplates['tech.md'], /^---\ninclusion: always\n/);
+      assert.match(steeringTemplates['testing.md'], /^---\ninclusion: always\n/);
+      assert.match(steeringTemplates['security.md'], /^---\ninclusion: always\n/);
+    });
+
+    it('api-standards uses `inclusion: fileMatch` with fileMatchPattern', () => {
+      const md = steeringTemplates['api-standards.md'];
+      assert.match(md, /inclusion: fileMatch/);
+      assert.match(md, /fileMatchPattern:.*api/);
+    });
+
+    it('ships frontend.md and backend.md fileMatch templates', () => {
+      assert.ok(steeringTemplates['frontend.md'], 'frontend.md should exist');
+      assert.ok(steeringTemplates['backend.md'], 'backend.md should exist');
+      assert.match(steeringTemplates['frontend.md'], /inclusion: fileMatch/);
+      assert.match(steeringTemplates['backend.md'], /inclusion: fileMatch/);
+    });
+
+    it('migrates legacy `inclusion_mode: on_demand` to `inclusion: auto`', () => {
+      const legacy = `---\ninclusion_mode: on_demand\ndescription: x\n---\n# Old File\n\n## Purpose\nstuff`;
+      const template = steeringTemplates['product.md'];
+      const result = mergeSteeringFile(legacy, template);
+      assert.ok(result, 'should produce a merge result');
+      assert.match(result.merged, /inclusion: auto/, 'should translate to inclusion: auto');
+      assert.ok(!result.merged.includes('inclusion_mode'), 'should drop legacy key');
+    });
+
+    it('migrates legacy `inclusion_mode: never` to `inclusion: manual`', () => {
+      const legacy = `---\ninclusion_mode: never\n---\n# X\n\n## Purpose\nstuff`;
+      const result = mergeSteeringFile(legacy, steeringTemplates['product.md']);
+      assert.match(result.merged, /inclusion: manual/);
+    });
+  });
+
+  describe('Agent Skills scaffolding', () => {
+    let skillTemplates;
+    before(() => { ({ skillTemplates } = require('../src/index.js')); });
+
+    it('ships skills for kspec-spec, kspec-build, kspec-review, kspec-verify, kspec-jira', () => {
+      assert.ok(skillTemplates['kspec-spec/SKILL.md']);
+      assert.ok(skillTemplates['kspec-build/SKILL.md']);
+      assert.ok(skillTemplates['kspec-review/SKILL.md']);
+      assert.ok(skillTemplates['kspec-verify/SKILL.md']);
+      assert.ok(skillTemplates['kspec-jira/SKILL.md']);
+    });
+
+    it('every SKILL.md has the required frontmatter (name + description)', () => {
+      for (const [path, content] of Object.entries(skillTemplates)) {
+        assert.match(content, /^---\n/, `${path}: starts with frontmatter`);
+        assert.match(content, /\nname: kspec-/, `${path}: has name`);
+        assert.match(content, /\ndescription: .+/, `${path}: has description`);
+        assert.match(content, /\n---\n/, `${path}: closes frontmatter`);
+      }
+    });
+
+    it('skill names match their directory (so /name slash commands resolve)', () => {
+      for (const [filePath, content] of Object.entries(skillTemplates)) {
+        const dir = filePath.split('/')[0];
+        assert.match(content, new RegExp(`\\nname: ${dir}\\n`),
+          `${filePath}: name field should match directory ${dir}`);
       }
     });
   });

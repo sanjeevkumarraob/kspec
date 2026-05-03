@@ -862,14 +862,16 @@ ${hasDesign ? '- Run `kspec verify-design` to review' : '- Run `kspec design` to
 }
 
 // Templates
-// Steering templates with Kiro-native front matter
-// inclusion_mode: always | on_demand | never
-// always = included in every prompt (default)
-// on_demand = agent can request when needed
-// never = reference only, not auto-included
+// Steering templates with Kiro-native front matter.
+// inclusion: always | auto | fileMatch | manual
+//   always    = included in every prompt
+//   auto      = Kiro decides based on context
+//   fileMatch = loaded only when files matching fileMatchPattern are touched
+//   manual    = reference only (user must explicitly request)
+// See: https://kiro.dev/docs/cli/steering/
 const steeringTemplates = {
   'product.md': `---
-inclusion_mode: always
+inclusion: always
 description: Product context and goals
 ---
 # Product Overview
@@ -884,7 +886,7 @@ description: Product context and goals
 [How success is measured]`,
 
   'tech.md': `---
-inclusion_mode: always
+inclusion: always
 description: Technology stack and architecture
 ---
 # Technology Stack
@@ -899,7 +901,7 @@ description: Technology stack and architecture
 [Build tools, package managers, linters]`,
 
   'testing.md': `---
-inclusion_mode: always
+inclusion: always
 description: Testing standards and TDD approach
 ---
 # Testing Standards
@@ -916,7 +918,7 @@ TDD: Red → Green → Refactor
 [Minimum thresholds]`,
 
   'security.md': `---
-inclusion_mode: always
+inclusion: always
 description: Security requirements and practices
 ---
 # Security Guidelines
@@ -935,8 +937,9 @@ description: Security requirements and practices
 - Reference .env.example for required vars`,
 
   'api-standards.md': `---
-inclusion_mode: on_demand
-description: API design conventions (request when building APIs)
+inclusion: fileMatch
+fileMatchPattern: ['**/api/**', '**/routes/**', '**/handlers/**', '**/controllers/**']
+description: API design conventions (auto-loaded when working in API code)
 ---
 # API Standards
 
@@ -955,7 +958,208 @@ description: API design conventions (request when building APIs)
 \`\`\`
 
 ## Versioning
-[API versioning strategy]`
+[API versioning strategy]`,
+
+  'frontend.md': `---
+inclusion: fileMatch
+fileMatchPattern: ['**/*.tsx', '**/*.jsx', '**/components/**', '**/pages/**', '**/styles/**', '**/*.css', '**/*.scss']
+description: Frontend conventions (auto-loaded when working in UI code)
+---
+# Frontend Standards
+
+## Component Structure
+[Naming, file layout, prop conventions]
+
+## Styling
+[CSS approach: Tailwind / CSS modules / styled-components]
+
+## State Management
+[Local state, global state, server state]
+
+## Accessibility
+- All interactive elements keyboard-accessible
+- Semantic HTML, proper ARIA labels
+- Color contrast meets WCAG AA`,
+
+  'backend.md': `---
+inclusion: fileMatch
+fileMatchPattern: ['**/server/**', '**/services/**', '**/db/**', '**/models/**', '**/migrations/**']
+description: Backend conventions (auto-loaded when working in server code)
+---
+# Backend Standards
+
+## Database
+[Schema migration approach, ORM/query builder]
+
+## Error Handling
+- Never leak internal errors to clients
+- Log structured errors with request ID
+- Use typed error classes
+
+## Performance
+- Add indexes for frequent queries
+- Cache expensive operations
+- Set query timeouts`
+};
+
+// Kiro Agent Skills (CLI 2.1+) — `.kiro/skills/<name>/SKILL.md` files
+// auto-become `/<skill-name>` slash commands inside the default Kiro chat.
+// Skills are lightweight workflow descriptions the default agent can invoke
+// without `/agent swap`. See: https://kiro.dev/docs/cli/skills/
+const SKILLS_DIR = path.join(KIRO_DIR, 'skills');
+
+const skillTemplates = {
+  'kspec-spec/SKILL.md': `---
+name: kspec-spec
+description: Create a kspec specification from a feature description (clarify → spec.md → spec-lite.md)
+---
+# Create a kspec specification
+
+Use this skill when starting any new feature, refactor, or non-trivial bug fix
+that benefits from up-front design.
+
+## When to invoke
+- "Build a feature that does X"
+- "Plan a refactor of Y"
+- "I need to fix Z but it's complex"
+
+## Workflow
+1. Read \`.kiro/CONTEXT.md\` and \`.kiro/steering/\` for project context.
+2. Ask clarifying questions about scope, constraints, success criteria.
+   Don't skip this — ambiguous specs produce wasted code.
+3. Create \`.kiro/specs/YYYY-MM-DD-<slug>/\` with \`spec.md\` (full) and
+   \`spec-lite.md\` (compressed for post-compact recovery).
+4. Update \`.kiro/.current\` and \`.kiro/CONTEXT.md\`.
+5. Suggest \`/kspec-design\` or \`/kspec-tasks\` as the next step.
+
+## Related
+- Terminal equivalent: \`kspec spec "Feature description"\`
+- Direct agent: \`/agent swap kspec-spec\`
+- Verify after: \`/kspec-verify\` or \`kspec verify-spec\`
+`,
+
+  'kspec-build/SKILL.md': `---
+name: kspec-build
+description: Execute kspec tasks with strict TDD (red → green → refactor → full suite)
+---
+# Build a kspec spec with strict TDD
+
+Use this skill to implement an existing kspec spec one task at a time, with
+mandatory red-green-refactor discipline.
+
+## When to invoke
+- "Build the next task"
+- "Implement the spec"
+- "Pick up where we left off"
+
+## Strict TDD (do NOT skip steps)
+1. **RED** — Write a failing test that captures the expected behavior.
+2. **VERIFY RED** — Run the test. Confirm it FAILS. Log the failure output.
+   If it passes, the test is wrong — investigate. Do NOT proceed until you
+   have a confirmed failing test.
+3. **GREEN** — Write the MINIMUM code to make the failing test pass.
+4. **VERIFY GREEN** — Run the test. Confirm it passes.
+5. **REFACTOR** — Clean up. Run tests again to confirm no regression.
+6. **FULL SUITE** — Run ALL tests to ensure nothing else broke.
+
+Each red-green-refactor cycle = one commit with descriptive message.
+
+## Related
+- Terminal: \`kspec build\` (or \`kspec build --chunk N\`, \`--all\`, \`--no-tdd\`)
+- Direct agent: \`/agent swap kspec-build\`
+- After build: \`/kspec-verify\` or \`/kspec-review\`
+`,
+
+  'kspec-review/SKILL.md': `---
+name: kspec-review
+description: Multi-CLI parallel code review (kiro-cli + Copilot/Claude/Gemini/Codex/Aider) with synthesis
+---
+# Review code with multiple AI reviewers
+
+Use this skill when finishing a feature or before merging a PR. Runs every
+configured reviewer CLI in parallel, then synthesizes findings.
+
+## When to invoke
+- "Review my changes"
+- "Check this PR"
+- "What did I miss?"
+
+## Workflow
+1. Read \`.kiro/config.json\` for configured reviewers (copilot, gemini,
+   claude, codex, aider). Skip absent CLIs gracefully.
+2. Gather context: spec, steering rules, git diff vs main.
+3. Launch all configured reviewers in parallel with the same context.
+4. Collect findings, deduplicate, classify by severity.
+5. Output a consolidated report with consensus verdict.
+
+## Compliance check
+- Steering rules in \`.kiro/steering/\`
+- Spec acceptance criteria in \`.kiro/specs/<current>/spec.md\`
+- Test coverage threshold from \`testing.md\`
+
+## Related
+- Terminal: \`kspec review\` (or \`--simple\` for kiro-cli only)
+- Direct agent: \`/agent swap kspec-review\`
+- After review: \`/kspec-build\` to fix issues
+`,
+
+  'kspec-verify/SKILL.md': `---
+name: kspec-verify
+description: Verify a spec, design, tasks, or implementation against acceptance criteria
+---
+# Verify kspec artifacts
+
+Use this skill at any phase boundary (spec → design → tasks → implementation)
+to confirm the artifact is complete, consistent, and meets acceptance criteria.
+
+## When to invoke
+- "Is the spec ready for design?"
+- "Did I cover all the tasks?"
+- "Is the implementation done?"
+
+## Workflow
+1. Read \`.kiro/.current\` to get the current spec folder.
+2. Identify the artifact to verify (spec.md / design.md / tasks.md / code).
+3. Check each acceptance criterion is addressed.
+4. Flag gaps, ambiguities, or missing edge cases.
+5. Output a clear pass/fail verdict with specific gap list.
+
+## Related
+- Terminal: \`kspec verify\` (or \`verify-spec\`, \`verify-design\`, \`verify-tasks\`)
+- Direct agent: \`/agent swap kspec-verify\`
+`,
+
+  'kspec-jira/SKILL.md': `---
+name: kspec-jira
+description: Sync kspec spec/tasks to Jira (create issues, sub-tasks, link spec ↔ tickets)
+---
+# Sync kspec to Jira
+
+Use this skill to push spec progress to Jira. Requires the Atlassian MCP
+server to be configured.
+
+## When to invoke
+- "Create a Jira ticket for this spec"
+- "Sync my tasks to Jira sub-tasks"
+- "Update the Jira issue with progress"
+
+## Prerequisites
+- Atlassian MCP configured (\`kiro-cli mcp add --name atlassian\`)
+- Default Jira project in \`.kiro/config.json\` (set during \`kspec init\`)
+
+## Workflow
+1. Read current spec from \`.kiro/.current\`.
+2. Read existing Jira links from \`<spec>/jira-links.json\`.
+3. If creating: post issue with spec summary + acceptance criteria.
+   If updating: patch description with current progress.
+4. For \`/kspec-jira sub-tasks\`: parse \`tasks.md\` and create one sub-task
+   per task.
+5. Save link mappings back to \`jira-links.json\`.
+
+## Related
+- Terminal: \`kspec sync-jira\`, \`kspec jira-pull\`, \`kspec jira-subtasks\`
+- Direct agent: \`/agent swap kspec-jira\`
+`
 };
 
 // Get configured model (with fallback)
@@ -1993,6 +2197,15 @@ function mergeSteeringFile(existingContent, templateContent) {
   const existing = parseFrontmatter(existingContent);
   const template = parseFrontmatter(templateContent);
 
+  // Migrate legacy `inclusion_mode` (kspec pre-Kiro-1.x) to Kiro's
+  // canonical `inclusion`. on_demand → auto, never → manual.
+  if (existing.frontmatter.inclusion_mode && !existing.frontmatter.inclusion) {
+    const legacyMap = { always: 'always', on_demand: 'auto', never: 'manual' };
+    const legacy = existing.frontmatter.inclusion_mode;
+    existing.frontmatter.inclusion = legacyMap[legacy] || legacy;
+    delete existing.frontmatter.inclusion_mode;
+  }
+
   const mergedFrontmatter = { ...template.frontmatter, ...existing.frontmatter };
   const fmChanged = JSON.stringify(mergedFrontmatter) !== JSON.stringify(existing.frontmatter);
 
@@ -2984,6 +3197,10 @@ const commands = {
       false
     );
 
+    const createSkills = await confirm(
+      'Create Kiro Agent Skills? (CLI 2.1+ — kspec workflows become /slash-commands in default chat)'
+    );
+
     const hooksChoice = await prompt('Configure Kiro hooks?', [
       { label: 'None (skip hooks)', value: 'none' },
       { label: 'Basic (format on save, context on stop)', value: 'basic' },
@@ -3044,6 +3261,7 @@ const commands = {
       model: model.trim() || 'claude-sonnet-4.6',
       jira: jiraConfig,
       ideAgents: createIdeAgents,
+      skills: createSkills,
       reviewers: reviewerClis.length > 0 ? reviewerClis : null
     };
     saveConfig(cfg);
@@ -3190,6 +3408,21 @@ const commands = {
       }
     }
 
+    // Optionally scaffold Kiro Agent Skills (.kiro/skills/<name>/SKILL.md).
+    // CLI 2.1+ surfaces these as /<skill-name> slash commands in the default
+    // chat agent. See: https://kiro.dev/docs/cli/skills/
+    if (createSkills) {
+      ensureDir(SKILLS_DIR);
+      for (const [relPath, content] of Object.entries(skillTemplates)) {
+        const fullPath = path.join(SKILLS_DIR, relPath);
+        ensureDir(path.dirname(fullPath));
+        if (!fs.existsSync(fullPath)) {
+          fs.writeFileSync(fullPath, content);
+          log(`Created ${fullPath}`);
+        }
+      }
+    }
+
     // Create MCP template (safe to commit, uses OAuth via mcp-remote)
     const mcpTemplatePath = path.join('.kiro', 'mcp.json.template');
     if (!fs.existsSync(mcpTemplatePath)) {
@@ -3219,6 +3452,7 @@ const commands = {
 # .kiro/specs/ - specifications, tasks, memory
 # .kiro/steering/ - product, tech, testing guidelines
 # .kiro/agents/ - agent configurations
+# .kiro/skills/ - Kiro Agent Skills (slash commands)
 # .kiro/mcp.json.template - MCP template (no secrets)
 `;
     const gitignorePath = '.gitignore';
@@ -3238,10 +3472,11 @@ const commands = {
 
     console.log('\n✅ kspec initialized!\n');
     console.log('Created:');
-    if (createSteering) console.log('  - .kiro/steering/ (with front matter inclusion modes)');
+    if (createSteering) console.log('  - .kiro/steering/ (inclusion: always|auto|fileMatch|manual)');
     if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
     if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
     console.log(`  - .kiro/agents/ (kspec agents${createIdeAgents ? ', JSON + IDE markdown' : ', JSON for CLI'})`);
+    if (createSkills) console.log('  - .kiro/skills/ (slash commands: /kspec-spec, /kspec-build, /kspec-review, ...)');
     console.log('  - .kiro/CONTEXT.md (agent context file)');
 
     if (reviewerClis.length > 0) {
@@ -4854,4 +5089,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames };
