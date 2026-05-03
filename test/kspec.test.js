@@ -2220,4 +2220,129 @@ describe('kspec', () => {
       assert.strictEqual(agents['kspec-build.json'].model, 'claude-haiku-4.5', 'Agent should use configured model');
     });
   });
+
+  describe('agentToMarkdown', () => {
+    let agentToMarkdown;
+    before(() => { ({ agentToMarkdown } = require('../src/index.js')); });
+
+    it('produces YAML frontmatter with name, description, tools, model', () => {
+      const md = agentToMarkdown({
+        name: 'kspec-spec',
+        description: 'Create a new spec',
+        tools: ['read', 'write'],
+        model: 'claude-sonnet-4.6',
+        prompt: 'You are the kspec spec agent.'
+      });
+      assert.match(md, /^---\n/, 'starts with frontmatter delimiter');
+      assert.match(md, /\nname: kspec-spec\n/);
+      assert.match(md, /\ndescription: "Create a new spec"\n/);
+      assert.match(md, /\ntools: \["read", "write"\]\n/);
+      assert.match(md, /\nmodel: claude-sonnet-4.6\n/);
+      assert.match(md, /---\n\nYou are the kspec spec agent\.\n$/);
+    });
+
+    it('omits optional fields when missing', () => {
+      const md = agentToMarkdown({ name: 'minimal', prompt: 'p' });
+      assert.match(md, /^---\nname: minimal\n---\n\np\n$/);
+    });
+  });
+
+  describe('mergeSteeringFile', () => {
+    let mergeSteeringFile;
+    before(() => { ({ mergeSteeringFile } = require('../src/index.js')); });
+
+    const template = `---
+inclusion_mode: always
+description: Product context and goals
+---
+# Product Overview
+
+## Purpose
+[Define purpose]
+
+## Key Features
+[List features]
+
+## Success Metrics
+[How success is measured]`;
+
+    it('returns null when existing file has all sections', () => {
+      const existing = `---
+inclusion_mode: always
+description: Product context and goals
+---
+# Product Overview
+
+## Purpose
+Already written.
+
+## Key Features
+Already written.
+
+## Success Metrics
+Already written.`;
+      assert.strictEqual(mergeSteeringFile(existing, template), null);
+    });
+
+    it('appends missing sections without touching existing ones', () => {
+      const existing = `---
+inclusion_mode: always
+---
+# Product Overview
+
+## Purpose
+User wrote this themselves.`;
+      const result = mergeSteeringFile(existing, template);
+      assert.ok(result, 'should produce a merge result');
+      assert.deepStrictEqual(result.addedSections.sort(), ['key features', 'success metrics']);
+      assert.match(result.merged, /User wrote this themselves\./, 'preserves user content');
+      assert.match(result.merged, /<!-- added by kspec -->/);
+      assert.match(result.merged, /## Key Features/);
+      assert.match(result.merged, /## Success Metrics/);
+    });
+
+    it('merges missing frontmatter keys without overwriting existing values', () => {
+      const existing = `---
+inclusion_mode: on_demand
+---
+# Product Overview
+
+## Purpose
+x
+
+## Key Features
+y
+
+## Success Metrics
+z`;
+      const result = mergeSteeringFile(existing, template);
+      assert.ok(result);
+      assert.ok(result.fmChanged, 'frontmatter should change (description added)');
+      assert.match(result.merged, /inclusion_mode: on_demand/, 'preserves user value');
+      assert.match(result.merged, /description: Product context and goals/, 'adds missing key');
+    });
+
+    it('handles file with no frontmatter at all', () => {
+      const existing = `# Product Overview\n\n## Purpose\nx`;
+      const result = mergeSteeringFile(existing, template);
+      assert.ok(result);
+      assert.match(result.merged, /^---\n/);
+      assert.match(result.merged, /## Key Features/);
+    });
+  });
+
+  describe('init writes IDE markdown agents only when opted in', () => {
+    let getAgentTemplates, agentToMarkdown;
+    before(() => { ({ getAgentTemplates, agentToMarkdown } = require('../src/index.js')); });
+
+    it('every CLI agent has a parseable markdown counterpart', () => {
+      const templates = getAgentTemplates();
+      for (const [file, content] of Object.entries(templates)) {
+        const md = agentToMarkdown(content);
+        assert.ok(md.startsWith('---\n'), `${file}: starts with frontmatter`);
+        assert.match(md, new RegExp(`\\nname: ${content.name}\\n`), `${file}: name is set`);
+        assert.ok(md.includes(content.prompt.split('\n')[0]), `${file}: prompt body present`);
+      }
+    });
+  });
 });

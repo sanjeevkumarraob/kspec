@@ -464,13 +464,19 @@ async function prompt(question, choices) {
   });
 }
 
-async function confirm(question) {
-  const answer = await prompt(`${question} (Y/n): `);
-  if (!answer) return true; // Empty = yes (default)
+async function confirm(question, defaultValue = true) {
+  const suffix = defaultValue ? '(Y/n)' : '(y/N)';
+  const answer = await prompt(`${question} ${suffix}: `);
+  if (!answer) return defaultValue; // Empty = use the default
   const lower = answer.toLowerCase().trim();
-  // Accept: y, yes, true, 1, or any non-"n"/"no"/"false"/"0" response
-  if (lower === 'n' || lower === 'no' || lower === 'false' || lower === '0') return false;
-  return true; // Default to yes for any other input (including "copilot", "sure", etc.)
+  if (defaultValue) {
+    // Default-yes: only explicit no answers flip to false
+    if (lower === 'n' || lower === 'no' || lower === 'false' || lower === '0') return false;
+    return true;
+  }
+  // Default-no: only explicit yes answers flip to true
+  if (lower === 'y' || lower === 'yes' || lower === 'true' || lower === '1') return true;
+  return false;
 }
 
 function resetToDefaultAgent(cli) {
@@ -1734,6 +1740,100 @@ PIPELINE:
   return templates;
 }
 
+// Convert a kspec agent (JSON shape) to a Kiro IDE chat subagent markdown file
+// Format: YAML frontmatter (name, description, tools, model) + prompt body.
+// See: https://kiro.dev/docs/chat/subagents/
+function agentToMarkdown(agent) {
+  const fm = ['---'];
+  fm.push(`name: ${agent.name}`);
+  if (agent.description) fm.push(`description: ${JSON.stringify(agent.description)}`);
+  if (Array.isArray(agent.tools) && agent.tools.length > 0) {
+    fm.push(`tools: [${agent.tools.map(t => JSON.stringify(t)).join(', ')}]`);
+  }
+  if (agent.model) fm.push(`model: ${agent.model}`);
+  fm.push('---');
+  return `${fm.join('\n')}\n\n${agent.prompt || ''}\n`;
+}
+
+// Parse YAML frontmatter from a markdown file. Returns { frontmatter, body }.
+// Only handles the simple key: value shape we use in steering files.
+function parseFrontmatter(content) {
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: {}, body: content, raw: null };
+  const raw = match[1];
+  const body = match[2];
+  const frontmatter = {};
+  for (const line of raw.split('\n')) {
+    const m = line.match(/^([^:]+):\s*(.*)$/);
+    if (m) frontmatter[m[1].trim()] = m[2].trim();
+  }
+  return { frontmatter, body, raw };
+}
+
+// Extract top-level "## " headings from a markdown body. Case-insensitive,
+// trimmed. Returns a Set of heading strings (without the leading "## ").
+function extractH2Headings(body) {
+  const headings = new Set();
+  for (const line of body.split('\n')) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) headings.add(m[1].trim().toLowerCase());
+  }
+  return headings;
+}
+
+// Split a markdown body into sections keyed by their H2 heading. Preserves
+// any preamble (text before the first H2) under the empty-string key.
+function splitH2Sections(body) {
+  const sections = { '': '' };
+  let current = '';
+  for (const line of body.split('\n')) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) {
+      current = m[1].trim().toLowerCase();
+      sections[current] = line + '\n';
+    } else {
+      sections[current] = (sections[current] || '') + line + '\n';
+    }
+  }
+  return sections;
+}
+
+// Merge a kspec steering template into an existing file without overwriting
+// user content. Adds missing frontmatter keys and appends any H2 sections
+// from the template that the existing file doesn't already have.
+// Returns { merged, addedSections } or null if no changes needed.
+function mergeSteeringFile(existingContent, templateContent) {
+  const existing = parseFrontmatter(existingContent);
+  const template = parseFrontmatter(templateContent);
+
+  const mergedFrontmatter = { ...template.frontmatter, ...existing.frontmatter };
+  const fmChanged = JSON.stringify(mergedFrontmatter) !== JSON.stringify(existing.frontmatter);
+
+  const existingHeadings = extractH2Headings(existing.body);
+  const templateSections = splitH2Sections(template.body);
+
+  const addedSections = [];
+  let appended = '';
+  for (const [heading, sectionText] of Object.entries(templateSections)) {
+    if (heading === '') continue;
+    if (!existingHeadings.has(heading)) {
+      appended += `\n<!-- added by kspec -->\n${sectionText}`;
+      addedSections.push(heading);
+    }
+  }
+
+  if (!fmChanged && addedSections.length === 0) return null;
+
+  const fmLines = ['---'];
+  for (const [k, v] of Object.entries(mergedFrontmatter)) fmLines.push(`${k}: ${v}`);
+  fmLines.push('---');
+
+  const bodyTrimmed = existing.body.replace(/\s+$/, '');
+  const merged = `${fmLines.join('\n')}\n${bodyTrimmed}${appended ? '\n' + appended : ''}`.replace(/\s+$/, '') + '\n';
+
+  return { merged, addedSections, fmChanged };
+}
+
 // Reviewer CLI configurations (availability checked dynamically via checkCommand)
 const reviewerCliConfigs = {
   copilot: {
@@ -2692,6 +2792,11 @@ const commands = {
 
     const createAgentsMd = await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
 
+    const createIdeAgents = await confirm(
+      'Also create Kiro IDE chat subagents (.md format)? Choose if you use Kiro chat in addition to CLI.',
+      false
+    );
+
     const hooksChoice = await prompt('Configure Kiro hooks?', [
       { label: 'None (skip hooks)', value: 'none' },
       { label: 'Basic (format on save, context on stop)', value: 'basic' },
@@ -2751,6 +2856,7 @@ const commands = {
       testCommand: testCommand.trim() || null,
       model: model.trim() || 'claude-sonnet-4.6',
       jira: jiraConfig,
+      ideAgents: createIdeAgents,
       reviewers: reviewerClis.length > 0 ? reviewerClis : null
     };
     saveConfig(cfg);
@@ -2768,6 +2874,25 @@ const commands = {
         if (!fs.existsSync(p)) {
           fs.writeFileSync(p, content);
           log(`Created ${p}`);
+        } else {
+          // File exists (likely from base Kiro IDE init). Merge missing
+          // sections without overwriting user content. Files outside our
+          // template list are left untouched.
+          try {
+            const existing = fs.readFileSync(p, 'utf8');
+            const result = mergeSteeringFile(existing, content);
+            if (result) {
+              fs.writeFileSync(p, result.merged);
+              const parts = [];
+              if (result.fmChanged) parts.push('frontmatter');
+              if (result.addedSections.length > 0) parts.push(`sections: ${result.addedSections.join(', ')}`);
+              log(`Merged ${p} (${parts.join('; ')})`);
+            } else {
+              log(`Skipped ${p} (already complete)`);
+            }
+          } catch (e) {
+            log(`Skipped ${p} (merge failed: ${e.message})`);
+          }
         }
       }
     }
@@ -2832,6 +2957,21 @@ const commands = {
       }
     }
 
+    // Optionally also write Kiro IDE chat subagents (.md with YAML frontmatter).
+    // CLI agents (.json) already exist above; this adds matching .md siblings
+    // so the Kiro IDE chat window can pick them up.
+    // See: https://kiro.dev/docs/chat/subagents/
+    if (createIdeAgents) {
+      for (const [file, content] of Object.entries(getAgentTemplates())) {
+        const mdName = file.replace(/\.json$/, '.md');
+        const mdPath = path.join(AGENTS_DIR, mdName);
+        if (!fs.existsSync(mdPath)) {
+          fs.writeFileSync(mdPath, agentToMarkdown(content));
+          log(`Created ${mdPath}`);
+        }
+      }
+    }
+
     // Create MCP template (safe to commit, uses OAuth via mcp-remote)
     const mcpTemplatePath = path.join('.kiro', 'mcp.json.template');
     if (!fs.existsSync(mcpTemplatePath)) {
@@ -2883,7 +3023,7 @@ const commands = {
     if (createSteering) console.log('  - .kiro/steering/ (with front matter inclusion modes)');
     if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
     if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
-    console.log('  - .kiro/agents/ (kspec agents)');
+    console.log(`  - .kiro/agents/ (kspec agents${createIdeAgents ? ', JSON + IDE markdown' : ', JSON for CLI'})`);
     console.log('  - .kiro/CONTEXT.md (agent context file)');
 
     if (reviewerClis.length > 0) {
@@ -4396,4 +4536,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, getConfiguredModel };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile };
