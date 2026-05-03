@@ -2414,6 +2414,76 @@ z`;
     });
   });
 
+  describe('toolsSettings (least-privilege scoping)', () => {
+    let getAgentTemplates;
+    before(() => { ({ getAgentTemplates } = require('../src/index.js')); });
+
+    it('every write-capable agent has toolsSettings.write.allowedPaths', () => {
+      const templates = getAgentTemplates();
+      for (const [file, agent] of Object.entries(templates)) {
+        if (!agent.tools.includes('write')) continue;
+        assert.ok(agent.toolsSettings, `${file} missing toolsSettings`);
+        assert.ok(Array.isArray(agent.toolsSettings.write.allowedPaths), `${file} missing write.allowedPaths`);
+        assert.ok(agent.toolsSettings.write.allowedPaths.includes('.kiro/**'), `${file} should at least allow .kiro/**`);
+        assert.ok(Array.isArray(agent.toolsSettings.write.deniedPaths), `${file} missing deniedPaths`);
+        assert.ok(agent.toolsSettings.write.deniedPaths.includes('.git/**'), `${file} should deny .git/**`);
+      }
+    });
+
+    it('shell-capable agents have toolsSettings.shell scoping', () => {
+      const templates = getAgentTemplates();
+      for (const [file, agent] of Object.entries(templates)) {
+        if (!agent.tools.includes('shell')) continue;
+        assert.ok(agent.toolsSettings.shell, `${file} missing shell scoping`);
+        assert.ok(Array.isArray(agent.toolsSettings.shell.allowedCommands));
+        assert.ok(Array.isArray(agent.toolsSettings.shell.deniedCommands));
+        assert.strictEqual(agent.toolsSettings.shell.autoAllowReadonly, true);
+      }
+    });
+
+    it('kspec-build has broader source path access than spec-pipeline agents', () => {
+      const templates = getAgentTemplates();
+      const build = templates['kspec-build.json'];
+      const spec = templates['kspec-spec.json'];
+      assert.ok(build.toolsSettings.write.allowedPaths.includes('src/**'));
+      assert.ok(!spec.toolsSettings.write.allowedPaths.includes('src/**'),
+        'kspec-spec should NOT have src/** access');
+    });
+
+    it('every agent declares an explicit availableAgents (delegation graph)', () => {
+      const templates = getAgentTemplates();
+      for (const [file, agent] of Object.entries(templates)) {
+        assert.ok(agent.toolsSettings, `${file} missing toolsSettings`);
+        assert.ok(agent.toolsSettings.subagent, `${file} missing subagent block`);
+        assert.ok(Array.isArray(agent.toolsSettings.subagent.availableAgents),
+          `${file} missing availableAgents array`);
+      }
+    });
+
+    it('kspec-verify is terminal (no subagent delegation)', () => {
+      const verify = getAgentTemplates()['kspec-verify.json'];
+      assert.deepStrictEqual(verify.toolsSettings.subagent.availableAgents, []);
+    });
+
+    it('kspec-build can delegate to verify/review/fix', () => {
+      const build = getAgentTemplates()['kspec-build.json'];
+      assert.deepStrictEqual(
+        build.toolsSettings.subagent.availableAgents.sort(),
+        ['kspec-fix', 'kspec-review', 'kspec-verify']
+      );
+    });
+
+    it('common denied paths block secrets and git internals', () => {
+      const templates = getAgentTemplates();
+      const sample = templates['kspec-spec.json'];
+      const denied = sample.toolsSettings.write.deniedPaths;
+      assert.ok(denied.some(p => p.includes('.env')), 'should deny .env files');
+      assert.ok(denied.some(p => p.includes('secrets')), 'should deny secrets dirs');
+      assert.ok(denied.some(p => p.includes('credentials')), 'should deny credentials dirs');
+      assert.ok(denied.includes('node_modules/**'), 'should deny node_modules');
+    });
+  });
+
   describe('init writes IDE markdown agents only when opted in', () => {
     let getAgentTemplates, agentToMarkdown;
     before(() => { ({ getAgentTemplates, agentToMarkdown } = require('../src/index.js')); });

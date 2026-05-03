@@ -964,6 +964,151 @@ function getConfiguredModel() {
   return cfg.model || 'claude-sonnet-4.6';
 }
 
+// Least-privilege scoping for agent write access. Each agent gets the
+// minimum path glob it needs. See:
+//   https://kiro.dev/docs/cli/custom-agents/configuration-reference/
+const AGENT_PATH_SCOPES = {
+  // State-only agents — only touch .kiro/
+  'kspec-analyse':  ['.kiro/**'],
+  'kspec-context':  ['.kiro/**'],
+  'kspec-refresh':  ['.kiro/**'],
+  'kspec-jira':     ['.kiro/**'],
+  'kspec-demo':     ['.kiro/**'],
+  'kspec-estimate': ['.kiro/**'],
+  'kspec-revise':   ['.kiro/**'],
+  // Spec-pipeline agents — write specs/tasks under .kiro/, may touch a
+  // few root config files (e.g. AGENTS.md updates)
+  'kspec-spec':     ['.kiro/**', 'AGENTS.md'],
+  'kspec-design':   ['.kiro/**'],
+  'kspec-tasks':    ['.kiro/**'],
+  'kspec-spike':    ['.kiro/**'],
+  // Verifiers — read-mostly, may write reports under .kiro/
+  'kspec-verify':   ['.kiro/**'],
+  'kspec-review':   ['.kiro/**'],
+  // Code-modifying agents — broader source access
+  'kspec-build':    ['.kiro/**', 'src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', 'spec/**', '*.md', '*.json', '*.yml', '*.yaml', '*.ts', '*.tsx', '*.js', '*.jsx', '*.py', '*.go', '*.rs'],
+  'kspec-fix':      ['.kiro/**', 'src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', 'spec/**', '*.md', '*.ts', '*.tsx', '*.js', '*.jsx', '*.py', '*.go', '*.rs'],
+  'kspec-refactor': ['.kiro/**', 'src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', 'spec/**', '*.ts', '*.tsx', '*.js', '*.jsx', '*.py', '*.go', '*.rs']
+};
+
+// Always-denied paths — applies to every agent regardless of allowedPaths.
+// Stops accidental writes to secrets, git internals, dependency dirs.
+const COMMON_DENIED_PATHS = [
+  '.env',
+  '.env.*',
+  '**/.env',
+  '**/.env.*',
+  '**/secrets/**',
+  '**/credentials/**',
+  '**/*.pem',
+  '**/*.key',
+  '.git/**',
+  'node_modules/**',
+  'vendor/**',
+  'dist/**',
+  'build/**'
+];
+
+// Shell command scopes for the three agents that have shell access.
+// `autoAllowReadonly: true` exempts safe ls/cat/git-status style commands.
+const AGENT_SHELL_SCOPES = {
+  'kspec-build': {
+    allowedCommands: [
+      'npm *', 'pnpm *', 'yarn *',
+      'pytest', 'pytest *',
+      'go test', 'go test *', 'go build', 'go build *',
+      'cargo test', 'cargo test *', 'cargo build', 'cargo build *',
+      'mvn *', 'gradle *',
+      'git status', 'git diff', 'git diff *', 'git log', 'git log *',
+      'git add *', 'git commit *', 'git checkout *', 'git branch *',
+      'mkdir *', 'touch *',
+      'node *', 'python *', 'python3 *', 'ruby *',
+      'rg *', 'grep *', 'find *', 'ls', 'ls *', 'cat *', 'head *', 'tail *', 'wc *'
+    ],
+    deniedCommands: [
+      'rm -rf *', 'rm -r *',
+      'git push *', 'git reset --hard *', 'git clean -f*', 'git rebase *',
+      'sudo *', 'su *',
+      'curl *', 'wget *',
+      'npm publish*', 'npm install -g*', 'pip install *', 'gem install *',
+      'apt *', 'apt-get *', 'brew *',
+      'chmod 777*', 'chown *'
+    ],
+    autoAllowReadonly: true
+  },
+  // Verifiers/reviewers: read-only command surface
+  'kspec-verify': {
+    allowedCommands: [
+      'npm test', 'npm test *', 'npm run test*',
+      'pnpm test*', 'yarn test*',
+      'pytest', 'pytest *',
+      'go test', 'go test *',
+      'cargo test', 'cargo test *',
+      'git status', 'git diff', 'git diff *', 'git log', 'git log *',
+      'rg *', 'grep *', 'find *', 'ls', 'ls *', 'cat *'
+    ],
+    deniedCommands: ['rm *', 'git push *', 'git commit *', 'git reset *', 'sudo *', 'curl *', 'wget *'],
+    autoAllowReadonly: true
+  },
+  'kspec-review': {
+    allowedCommands: [
+      'git status', 'git diff', 'git diff *', 'git log', 'git log *',
+      'rg *', 'grep *', 'find *', 'ls', 'ls *', 'cat *', 'head *', 'tail *', 'wc *',
+      'npm test*', 'pytest', 'pytest *', 'go test*', 'cargo test*'
+    ],
+    deniedCommands: ['rm *', 'git push *', 'git commit *', 'git reset *', 'git checkout *', 'sudo *', 'curl *', 'wget *'],
+    autoAllowReadonly: true
+  }
+};
+
+// Subagent delegation graph — which kspec agents may invoke which others.
+// Makes the call graph explicit so admins/security review can audit it.
+// `availableAgents` whitelists callable agents; empty list = terminal agent.
+// See: https://kiro.dev/docs/cli/chat/subagents/
+const AGENT_SUBAGENT_GRAPH = {
+  'kspec-analyse':  ['kspec-spec'],
+  'kspec-spec':     ['kspec-verify', 'kspec-design'],
+  'kspec-design':   ['kspec-verify', 'kspec-tasks'],
+  'kspec-tasks':    ['kspec-verify', 'kspec-build'],
+  'kspec-build':    ['kspec-verify', 'kspec-review', 'kspec-fix'],
+  'kspec-verify':   [],
+  'kspec-review':   ['kspec-fix', 'kspec-build'],
+  'kspec-fix':      ['kspec-verify', 'kspec-review'],
+  'kspec-refactor': ['kspec-verify', 'kspec-review'],
+  'kspec-spike':    ['kspec-spec'],
+  'kspec-revise':   ['kspec-verify', 'kspec-tasks'],
+  'kspec-jira':     [],
+  'kspec-context':  [],
+  'kspec-refresh':  [],
+  'kspec-demo':     [],
+  'kspec-estimate': []
+};
+
+// Build a `toolsSettings` block for one agent. Returns undefined if no
+// scoping applies (e.g. unknown agent). Centralizes the conventions above.
+function getAgentToolsSettings(agentName, agentTools) {
+  const settings = {};
+
+  if (agentTools.includes('write')) {
+    const allowedPaths = AGENT_PATH_SCOPES[agentName] || ['.kiro/**'];
+    settings.write = {
+      allowedPaths,
+      deniedPaths: COMMON_DENIED_PATHS
+    };
+  }
+
+  if (agentTools.includes('shell') && AGENT_SHELL_SCOPES[agentName]) {
+    settings.shell = AGENT_SHELL_SCOPES[agentName];
+  }
+
+  const subagents = AGENT_SUBAGENT_GRAPH[agentName];
+  if (subagents !== undefined) {
+    settings.subagent = { availableAgents: subagents };
+  }
+
+  return Object.keys(settings).length > 0 ? settings : undefined;
+}
+
 // Agent templates factory (uses configured model)
 function getAgentTemplates() {
   const model = getConfiguredModel();
@@ -1733,6 +1878,15 @@ PIPELINE:
     welcomeMessage: 'Generating AI summary of spec...'
   }
   };
+
+  // Apply least-privilege toolsSettings to every agent (path scoping for
+  // write, command scoping for shell, explicit subagent delegation graph).
+  // Done before MCP injection so the dynamic MCP additions don't widen
+  // path/command surface.
+  for (const agent of Object.values(templates)) {
+    const settings = getAgentToolsSettings(agent.name, agent.tools);
+    if (settings) agent.toolsSettings = settings;
+  }
 
   // Dynamically inject every configured MCP server into agents on the
   // mcpAgents allow-list. Previously only Atlassian/Jira was injected; now
@@ -2968,8 +3122,9 @@ const commands = {
         fs.writeFileSync(p, JSON.stringify(content, null, 2));
         log(`Created ${p}`);
       } else {
-        // Update tools, allowedTools, and includeMcpJson to reflect current MCP config
-        // while preserving any custom prompt modifications
+        // Update tools, allowedTools, includeMcpJson, and toolsSettings to
+        // reflect current MCP config + scoping rules, while preserving any
+        // custom prompt modifications.
         try {
           const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
           let updated = false;
@@ -2980,6 +3135,10 @@ const commands = {
           }
           if (content.includeMcpJson && !existing.includeMcpJson) {
             existing.includeMcpJson = true;
+            updated = true;
+          }
+          if (content.toolsSettings && JSON.stringify(existing.toolsSettings) !== JSON.stringify(content.toolsSettings)) {
+            existing.toolsSettings = content.toolsSettings;
             updated = true;
           }
           // Inject MCP-tools usage hint into preserved prompts when the
@@ -4045,6 +4204,10 @@ Powers: contract, document, tdd, code-review, code-intelligence
           }
           if (content.includeMcpJson && !existing.includeMcpJson) {
             existing.includeMcpJson = true;
+            updated = true;
+          }
+          if (content.toolsSettings && JSON.stringify(existing.toolsSettings) !== JSON.stringify(content.toolsSettings)) {
+            existing.toolsSettings = content.toolsSettings;
             updated = true;
           }
           // Prompt: only inject the MCP-tools section when (a) the agent is
