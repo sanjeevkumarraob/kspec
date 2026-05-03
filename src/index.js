@@ -2942,6 +2942,166 @@ const hooksTemplateDocumentation = {
   }
 };
 
+// CI-friendly hook preset — designed for headless / GitHub-Actions
+// runs. Uses preToolUse / postToolUse to log + gate, plus
+// onSpecComplete to post Jira progress automatically.
+const hooksTemplateCi = {
+  hooks: {
+    preToolUse: [
+      {
+        tool: 'shell',
+        command: 'echo "[$(date -u +%FT%TZ)] tool=$KIRO_TOOL cmd=$KIRO_COMMAND" >> .kiro/audit.log',
+        description: 'Log every shell invocation for CI audit trail'
+      },
+      {
+        tool: 'shell',
+        pattern: '^(rm -rf|git push|sudo|curl http)',
+        block: true,
+        description: 'Hard-block destructive/network commands in CI'
+      }
+    ],
+    postToolUse: [
+      {
+        tool: 'write',
+        command: 'echo "[$(date -u +%FT%TZ)] write path=$KIRO_FILE" >> .kiro/audit.log',
+        description: 'Log every file write'
+      }
+    ],
+    onSpecComplete: [
+      {
+        command: 'kspec verify',
+        description: 'Verify spec/design/tasks consistency before publishing'
+      },
+      {
+        command: 'kspec sync-jira --progress',
+        description: 'Post progress to linked Jira issues'
+      }
+    ],
+    onSessionStop: [
+      {
+        command: 'kspec refresh',
+        description: 'Refresh CONTEXT.md so the next CI run has fresh state'
+      }
+    ]
+  }
+};
+
+// Enterprise governance steering doc — auto-loaded so agents are aware
+// of org-level constraints (model registry, MCP allow-list, prompt
+// logging, IdP). Values get filled in during `kspec init --enterprise`.
+function getEnterpriseGovernanceTemplate(opts = {}) {
+  const mcpReg = opts.mcpRegistryUrl || '[admin-hosted JSON URL]';
+  const modelReg = opts.modelRegistryUrl || '[admin-hosted JSON URL]';
+  const idp = opts.idp || '[Okta / Entra ID / IAM Identity Center]';
+  return `---
+inclusion: always
+description: Enterprise governance — admin-controlled MCP registry, model registry, prompt logging, IdP
+---
+# Enterprise Governance
+
+## MCP Registry (admin-controlled)
+Approved MCP servers are listed at: ${mcpReg}
+
+Kiro fetches this allow-list every 24h and terminates any MCP server
+not on the list. Do NOT manually add MCP servers without approval —
+they will be auto-revoked.
+
+To request a new MCP server: contact your Kiro admin.
+
+## Model Registry (admin-controlled)
+Approved models are listed at: ${modelReg}
+
+Agent \`model:\` fields must reference an approved model ID. Off-policy
+models will be silently rewritten to the org default.
+
+## Prompt Logging
+This workspace runs with prompt logging ENABLED for SOC2 / regulatory
+auditability. All prompts and conversations are recorded by Kiro.
+
+- Do NOT include secrets, PII, customer data, or production credentials
+  in prompts.
+- Use placeholders or test fixtures for sensitive examples.
+- Reference \`secrets/\` files by path, never paste contents.
+
+## Identity Provider
+Authentication uses ${idp}.
+
+- Sign in via the corporate IdP — never use personal accounts for
+  enterprise workspaces.
+- Token refresh and revocation are handled by the IdP. Sessions expire
+  per org policy.
+
+## What this means for agents
+- Cite governance constraints in spec output when relevant (e.g. "this
+  feature requires a new MCP — admin approval needed").
+- Surface model/MCP gaps as questions, never silently substitute.
+- Treat \`audit.log\` and \`.kiro/sessions/\` as evidence — do not delete.
+
+## See also
+- https://kiro.dev/docs/cli/enterprise/governance/mcp/
+- https://kiro.dev/docs/cli/enterprise/governance/model/
+- https://kiro.dev/docs/cli/enterprise/monitor-and-track/prompt-logging/
+`;
+}
+
+// GitHub Actions starter for headless kspec review on every PR.
+// Uses kiro-cli --no-interactive with KIRO_API_KEY (org secret) and
+// --trust-tools scoping per Kiro CLI 2.0+ headless mode.
+// See: https://kiro.dev/docs/cli/headless/
+const githubActionsKspecReview = `name: kspec review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  kspec-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install kiro-cli
+        run: |
+          curl -fsSL https://kiro.dev/install.sh | sh
+          echo "$HOME/.kiro/bin" >> $GITHUB_PATH
+
+      - name: Install kspec
+        run: npm install -g kspec
+
+      - name: Run kspec review (headless)
+        env:
+          KIRO_API_KEY: \${{ secrets.KIRO_API_KEY }}
+        run: |
+          kspec review --simple \\
+            --trust-tools=read,shell \\
+            --no-interactive \\
+            > review-output.md
+
+      - name: Post review as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('review-output.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '## kspec review\\n\\n' + body
+            });
+`;
+
 function validateContract(folder) {
   const specFile = path.join(folder, 'spec.md');
   if (!fs.existsSync(specFile)) return { success: true, checks: [], errors: [] };
@@ -3158,9 +3318,14 @@ async function migrateV1toV2() {
 
 // Commands
 const commands = {
-  async init() {
+  async init(args = []) {
+    const enterpriseMode = args.includes('--enterprise');
+    const ciMode = args.includes('--ci');
+
     console.log('\n🚀 Welcome to kspec!\n');
-    
+    if (enterpriseMode) console.log('🏢 Enterprise mode: will configure governance + audit settings.\n');
+    if (ciMode) console.log('🤖 CI mode: will scaffold GitHub Actions workflow + CI hooks preset.\n');
+
     const dateFormat = await prompt('Date format for spec folders:', [
       { label: 'YYYY-MM-DD (2026-01-22) - sorts chronologically', value: 'YYYY-MM-DD' },
       { label: 'DD-MM-YYYY (22-01-2026)', value: 'DD-MM-YYYY' },
@@ -3201,12 +3366,35 @@ const commands = {
       'Create Kiro Agent Skills? (CLI 2.1+ — kspec workflows become /slash-commands in default chat)'
     );
 
-    const hooksChoice = await prompt('Configure Kiro hooks?', [
+    const hooksChoice = ciMode ? 'ci' : await prompt('Configure Kiro hooks?', [
       { label: 'None (skip hooks)', value: 'none' },
       { label: 'Basic (format on save, context on stop)', value: 'basic' },
       { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
-      { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' }
+      { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' },
+      { label: 'CI (preToolUse audit + block destructive, onSpecComplete verify)', value: 'ci' }
     ]);
+
+    // Enterprise governance prompts (gathered up-front so we can include
+    // them in the steering doc and config). Only asked under --enterprise.
+    let enterpriseConfig = null;
+    if (enterpriseMode) {
+      console.log('\n🏢 Enterprise governance setup:');
+      const mcpRegistryUrl = await prompt('MCP registry URL (admin-hosted JSON allow-list, leave blank to skip): ');
+      const modelRegistryUrl = await prompt('Model registry URL (approved model list, leave blank to skip): ');
+      const idp = await prompt('Identity provider:', [
+        { label: 'Okta', value: 'Okta' },
+        { label: 'Microsoft Entra ID', value: 'Microsoft Entra ID' },
+        { label: 'AWS IAM Identity Center', value: 'AWS IAM Identity Center' },
+        { label: 'Other / not configured', value: 'Other' }
+      ]);
+      const promptLogging = await confirm('Enable prompt logging steering doc? (records that prompts are logged for audit)');
+      enterpriseConfig = {
+        mcpRegistryUrl: mcpRegistryUrl?.trim() || null,
+        modelRegistryUrl: modelRegistryUrl?.trim() || null,
+        idp,
+        promptLogging
+      };
+    }
 
     // Multi-CLI review configuration
     const configureReviewers = await confirm('Configure multi-CLI reviewers? (Copilot, Gemini, Claude, Codex)');
@@ -3262,6 +3450,7 @@ const commands = {
       jira: jiraConfig,
       ideAgents: createIdeAgents,
       skills: createSkills,
+      enterprise: enterpriseConfig,
       reviewers: reviewerClis.length > 0 ? reviewerClis : null
     };
     saveConfig(cfg);
@@ -3300,6 +3489,27 @@ const commands = {
           }
         }
       }
+
+      // Enterprise governance steering doc — only written under
+      // --enterprise. Documents MCP/model registries, prompt logging,
+      // and IdP so agents are aware of org-level constraints.
+      if (enterpriseConfig) {
+        const govPath = path.join(STEERING_DIR, 'enterprise-governance.md');
+        const govContent = getEnterpriseGovernanceTemplate(enterpriseConfig);
+        if (!fs.existsSync(govPath)) {
+          fs.writeFileSync(govPath, govContent);
+          log(`Created ${govPath}`);
+        } else {
+          try {
+            const existing = fs.readFileSync(govPath, 'utf8');
+            const result = mergeSteeringFile(existing, govContent);
+            if (result) {
+              fs.writeFileSync(govPath, result.merged);
+              log(`Merged ${govPath}`);
+            }
+          } catch {}
+        }
+      }
     }
 
     // Create AGENTS.md (auto-included by Kiro)
@@ -3324,6 +3534,9 @@ const commands = {
           break;
         case 'documentation':
           hooksContent = hooksTemplateDocumentation;
+          break;
+        case 'ci':
+          hooksContent = hooksTemplateCi;
           break;
         default:
           hooksContent = hooksTemplateBasic;
@@ -3440,6 +3653,23 @@ const commands = {
       log(`Created ${mcpTemplatePath} (commit this, OAuth handles auth)`);
     }
 
+    // Scaffold GitHub Actions workflow when --ci is passed. Drops a
+    // sample headless review workflow at .github/workflows/kspec-review.yml
+    // that runs on every PR using KIRO_API_KEY (org secret) and
+    // --trust-tools scoping. See: https://kiro.dev/docs/cli/headless/
+    if (ciMode) {
+      const workflowsDir = path.join('.github', 'workflows');
+      ensureDir(workflowsDir);
+      const workflowPath = path.join(workflowsDir, 'kspec-review.yml');
+      if (!fs.existsSync(workflowPath)) {
+        fs.writeFileSync(workflowPath, githubActionsKspecReview);
+        log(`Created ${workflowPath}`);
+        log('  ↳ Add KIRO_API_KEY as a repo secret to enable.');
+      } else {
+        log(`Skipped ${workflowPath} (already exists — review for updates manually)`);
+      }
+    }
+
     // Update .gitignore for kspec (append if exists, create if not)
     const kspecGitignore = `
 # kspec local state (don't commit - personal working state)
@@ -3477,11 +3707,28 @@ const commands = {
     if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
     console.log(`  - .kiro/agents/ (kspec agents${createIdeAgents ? ', JSON + IDE markdown' : ', JSON for CLI'})`);
     if (createSkills) console.log('  - .kiro/skills/ (slash commands: /kspec-spec, /kspec-build, /kspec-review, ...)');
+    if (enterpriseConfig) console.log('  - .kiro/steering/enterprise-governance.md (MCP/model registries, prompt logging, IdP)');
+    if (ciMode) console.log('  - .github/workflows/kspec-review.yml (headless review on every PR)');
     console.log('  - .kiro/CONTEXT.md (agent context file)');
 
     if (reviewerClis.length > 0) {
       console.log(`\n📋 Multi-CLI Reviewers: ${reviewerClis.join(', ')}`);
       console.log('   Use: kspec review (auto-invokes configured reviewers)');
+    }
+
+    if (ciMode) {
+      console.log('\n🤖 CI setup complete. Next steps:');
+      console.log('   1. Add KIRO_API_KEY as a GitHub Actions repo secret.');
+      console.log('   2. Commit .github/workflows/kspec-review.yml.');
+      console.log('   3. Open a PR — kspec review will post automatically.');
+    }
+
+    if (enterpriseConfig) {
+      console.log('\n🏢 Enterprise governance configured:');
+      if (enterpriseConfig.mcpRegistryUrl) console.log(`   - MCP registry: ${enterpriseConfig.mcpRegistryUrl}`);
+      if (enterpriseConfig.modelRegistryUrl) console.log(`   - Model registry: ${enterpriseConfig.modelRegistryUrl}`);
+      console.log(`   - IdP: ${enterpriseConfig.idp}`);
+      if (enterpriseConfig.promptLogging) console.log('   - Prompt logging: documented in enterprise-governance.md');
     }
 
     console.log('\nAvailable powers (browse powers/ directory):');
@@ -4957,6 +5204,8 @@ kspec - Spec-driven development for Kiro CLI
 
 CLI Workflow (outside kiro-cli):
   kspec init              Interactive setup
+  kspec init --enterprise Setup with governance (MCP/model registries, prompt logging, IdP)
+  kspec init --ci         Setup with GitHub Actions workflow + CI hooks preset
   kspec analyse           Analyse codebase, update steering
   kspec spec "Feature"    Create specification (asks clarifying questions first)
   kspec verify-spec       Interactively review and shape spec
@@ -5089,4 +5338,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames };

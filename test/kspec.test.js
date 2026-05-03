@@ -2554,6 +2554,88 @@ z`;
     });
   });
 
+  describe('CI hooks preset', () => {
+    let hooksTemplateCi;
+    before(() => { ({ hooksTemplateCi } = require('../src/index.js')); });
+
+    it('has preToolUse hooks for shell audit + destructive-block', () => {
+      assert.ok(hooksTemplateCi.hooks.preToolUse, 'preToolUse hooks present');
+      assert.ok(hooksTemplateCi.hooks.preToolUse.length >= 2, 'has audit + block hooks');
+      const blocker = hooksTemplateCi.hooks.preToolUse.find(h => h.block === true);
+      assert.ok(blocker, 'has at least one blocking hook');
+      assert.match(blocker.pattern, /git push|sudo|rm -rf/, 'blocks destructive commands');
+    });
+
+    it('has postToolUse hook for write audit', () => {
+      const post = hooksTemplateCi.hooks.postToolUse;
+      assert.ok(post, 'postToolUse hooks present');
+      assert.ok(post.some(h => h.tool === 'write'), 'audits write tool');
+    });
+
+    it('has onSpecComplete hook running kspec verify', () => {
+      const complete = hooksTemplateCi.hooks.onSpecComplete;
+      assert.ok(complete);
+      assert.ok(complete.some(h => h.command === 'kspec verify'));
+    });
+  });
+
+  describe('GitHub Actions workflow template', () => {
+    let githubActionsKspecReview;
+    before(() => { ({ githubActionsKspecReview } = require('../src/index.js')); });
+
+    it('runs on pull_request events', () => {
+      assert.match(githubActionsKspecReview, /on:\s*\n\s*pull_request:/);
+    });
+
+    it('uses KIRO_API_KEY secret', () => {
+      assert.match(githubActionsKspecReview, /KIRO_API_KEY:\s*\$\{\{\s*secrets\.KIRO_API_KEY/);
+    });
+
+    it('runs kspec review with --no-interactive and --trust-tools', () => {
+      assert.match(githubActionsKspecReview, /kspec review/);
+      assert.match(githubActionsKspecReview, /--no-interactive/);
+      assert.match(githubActionsKspecReview, /--trust-tools/);
+    });
+
+    it('posts review as PR comment', () => {
+      assert.match(githubActionsKspecReview, /createComment/);
+    });
+  });
+
+  describe('Enterprise governance steering template', () => {
+    let getEnterpriseGovernanceTemplate;
+    before(() => { ({ getEnterpriseGovernanceTemplate } = require('../src/index.js')); });
+
+    it('uses inclusion: always so agents are aware', () => {
+      const md = getEnterpriseGovernanceTemplate();
+      assert.match(md, /^---\ninclusion: always\n/);
+    });
+
+    it('substitutes provided MCP/model/idp values', () => {
+      const md = getEnterpriseGovernanceTemplate({
+        mcpRegistryUrl: 'https://internal.example.com/mcp-registry.json',
+        modelRegistryUrl: 'https://internal.example.com/models.json',
+        idp: 'Okta'
+      });
+      assert.match(md, /https:\/\/internal\.example\.com\/mcp-registry\.json/);
+      assert.match(md, /https:\/\/internal\.example\.com\/models\.json/);
+      assert.match(md, /Authentication uses Okta\./);
+    });
+
+    it('falls back to placeholders when values missing', () => {
+      const md = getEnterpriseGovernanceTemplate();
+      assert.match(md, /\[admin-hosted JSON URL\]/);
+      assert.match(md, /\[Okta \/ Entra ID \/ IAM Identity Center\]/);
+    });
+
+    it('mentions prompt logging compliance', () => {
+      const md = getEnterpriseGovernanceTemplate();
+      assert.match(md, /Prompt Logging/);
+      assert.match(md, /SOC2/);
+      assert.match(md, /Do NOT include secrets/);
+    });
+  });
+
   describe('init writes IDE markdown agents only when opted in', () => {
     let getAgentTemplates, agentToMarkdown;
     before(() => { ({ getAgentTemplates, agentToMarkdown } = require('../src/index.js')); });
