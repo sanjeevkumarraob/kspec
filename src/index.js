@@ -3801,19 +3801,33 @@ const commands = {
           log(`Created ${mdPath}`);
         } else {
           // File exists — refresh tools/model in frontmatter to reflect
-          // current MCP config, but never touch the user-edited body.
+          // current MCP config + configured model, but never touch the
+          // user-edited body.
           try {
             const existing = fs.readFileSync(mdPath, 'utf8');
             const parsed = parseFrontmatter(existing);
             const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
-            const currentTools = parsed.frontmatter.tools;
-            if (currentTools !== desiredTools) {
+            const desiredModel = content.model;
+            let mdChanged = false;
+            const changedParts = [];
+            if (parsed.frontmatter.tools !== desiredTools) {
               parsed.frontmatter.tools = desiredTools;
+              mdChanged = true;
+              changedParts.push('MCP tools');
+            }
+            // Model can drift when the user re-runs `kspec init` after
+            // changing the configured model in .kiro/config.json.
+            if (desiredModel && parsed.frontmatter.model !== desiredModel) {
+              parsed.frontmatter.model = desiredModel;
+              mdChanged = true;
+              changedParts.push('model');
+            }
+            if (mdChanged) {
               const fmLines = ['---'];
               for (const [k, v] of Object.entries(parsed.frontmatter)) fmLines.push(`${k}: ${v}`);
               fmLines.push('---');
               fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${parsed.body}`);
-              log(`Updated ${mdPath} (MCP tools)`);
+              log(`Updated ${mdPath} (${changedParts.join(', ')})`);
             }
           } catch {}
         }
@@ -4927,9 +4941,17 @@ Powers: contract, document, tdd, code-review, code-intelligence
             const existing = fs.readFileSync(mdPath, 'utf8');
             const parsed = parseFrontmatter(existing);
             const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
+            const desiredModel = content.model;
             let mdUpdatedThisFile = false;
             if (parsed.frontmatter.tools !== desiredTools) {
               parsed.frontmatter.tools = desiredTools;
+              mdUpdatedThisFile = true;
+            }
+            // Same model-drift fix as the init re-init path: keep the
+            // IDE markdown agent's model line in sync with the
+            // configured model.
+            if (desiredModel && parsed.frontmatter.model !== desiredModel) {
+              parsed.frontmatter.model = desiredModel;
               mdUpdatedThisFile = true;
             }
             let newBody = parsed.body;
