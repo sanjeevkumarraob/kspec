@@ -1090,7 +1090,9 @@ that benefits from up-front design.
 3. Create \`.kiro/specs/YYYY-MM-DD-<slug>/\` with \`spec.md\` (full) and
    \`spec-lite.md\` (compressed for post-compact recovery).
 4. Update \`.kiro/.current\` and \`.kiro/CONTEXT.md\`.
-5. Suggest \`/kspec-design\` or \`/kspec-tasks\` as the next step.
+5. Point users at the next step using existing entry points: run
+   \`kspec design\` / \`kspec tasks\` from the terminal, or
+   \`/agent swap kspec-design\` / \`/agent swap kspec-tasks\` in chat.
 
 ## Related
 - Terminal equivalent: \`kspec spec "Feature description"\`
@@ -3771,14 +3773,22 @@ const commands = {
             existing.toolsSettings = content.toolsSettings;
             updated = true;
           }
-          // Inject MCP-tools usage hint into preserved prompts when the
-          // template now has it but the existing file doesn't.
-          const marker = '<!-- kspec:mcp-tools -->';
-          if (content.prompt.includes(marker) && !existing.prompt.includes(marker)) {
-            const idx = content.prompt.indexOf(marker);
-            const mcpSection = content.prompt.slice(idx);
-            existing.prompt = `${existing.prompt.replace(/\s+$/, '')}\n\n${mcpSection}`;
-            updated = true;
+          // Refresh the MCP-tools prompt section in-place so a re-init
+          // after MCP rename/removal doesn't leave stale `@server`
+          // instructions behind. Mirrors the sync-agents logic.
+          if (content.prompt.includes(MCP_TOOLS_MARKER)) {
+            const refreshed = applyMcpToolsSection(existing.prompt, getAllMcpNames());
+            if (refreshed !== existing.prompt) {
+              existing.prompt = refreshed;
+              updated = true;
+            }
+          } else if (existing.prompt.includes(MCP_TOOLS_MARKER)) {
+            // Template no longer wants the section (agent off allow-list).
+            const stripped = applyMcpToolsSection(existing.prompt, []);
+            if (stripped !== existing.prompt) {
+              existing.prompt = stripped;
+              updated = true;
+            }
           }
           if (updated) {
             fs.writeFileSync(p, JSON.stringify(existing, null, 2));
