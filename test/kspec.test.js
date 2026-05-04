@@ -2452,6 +2452,31 @@ z`;
       const result = mergeSteeringFile(legacy, steeringTemplates['product.md']);
       assert.match(result.merged, /inclusion: manual/);
     });
+
+    it('migrates `inclusion_mode` even when all template sections already exist', () => {
+      // Regression: previously, if no sections needed appending and the
+      // template's frontmatter was a subset of the (post-migration) existing
+      // frontmatter, the migration was silently dropped.
+      const legacy = `---
+inclusion_mode: on_demand
+description: Product context and goals
+---
+# Product Overview
+
+## Purpose
+x
+
+## Key Features
+y
+
+## Success Metrics
+z`;
+      const result = mergeSteeringFile(legacy, steeringTemplates['product.md']);
+      assert.ok(result, 'should produce a merge result so the migration is persisted');
+      assert.match(result.merged, /inclusion: auto/, 'should translate inclusion_mode → inclusion');
+      assert.ok(!result.merged.includes('inclusion_mode'), 'should drop legacy key');
+      assert.deepStrictEqual(result.addedSections, [], 'no sections should be appended');
+    });
   });
 
   describe('Agent Skills scaffolding', () => {
@@ -2597,6 +2622,67 @@ z`;
       assert.match(githubActionsKspecReview, /--trust-tools/);
     });
 
+    describe('headless flag forwarding to kiro-cli', () => {
+      let buildChatArgs;
+      before(() => { ({ buildChatArgs } = require('../src/index.js')); });
+
+      it('appends passthrough flags between --agent and the prompt', () => {
+        const argv = buildChatArgs('Review: ...', 'kspec-review', ['--no-interactive', '--trust-tools=read,shell']);
+        assert.deepStrictEqual(argv, [
+          'chat',
+          '--agent',
+          'kspec-review',
+          '--no-interactive',
+          '--trust-tools=read,shell',
+          'Review: ...'
+        ]);
+      });
+
+      it('omits passthrough block when none are provided', () => {
+        const argv = buildChatArgs('hello', 'kspec-review');
+        assert.deepStrictEqual(argv, ['chat', '--agent', 'kspec-review', 'hello']);
+      });
+
+      it('review() forwards unknown --flags but consumes --simple/--sequential', async () => {
+        // Stub spawn to capture the kiro-cli invocation that review() builds.
+        // Collect every spawn so we can find the chat call (other spawns
+        // happen too — e.g. agent swap on close, refreshContext).
+        const childProcess = require('child_process');
+        const origSpawn = childProcess.spawn;
+        const captured = [];
+        childProcess.spawn = (cmd, argv) => {
+          captured.push({ cmd, argv });
+          const { EventEmitter } = require('events');
+          const fake = new EventEmitter();
+          fake.stdio = 'inherit';
+          fake.stdout = new EventEmitter();
+          fake.stderr = new EventEmitter();
+          setImmediate(() => fake.emit('close', 0));
+          return fake;
+        };
+        // Force a clean reload so chat() picks up the stubbed spawn.
+        delete require.cache[require.resolve('../src/index.js')];
+        try {
+          const { commands } = require('../src/index.js');
+          // No reviewers configured → falls into the simple/chat path.
+          await commands.review(['--simple', '--no-interactive', '--trust-tools=read,shell', 'PR123']);
+          const chatCall = captured.find(c => Array.isArray(c.argv) && c.argv[0] === 'chat');
+          assert.ok(chatCall, 'kiro-cli chat should have been spawned');
+          assert.ok(chatCall.argv.includes('--no-interactive'), 'forwards --no-interactive');
+          assert.ok(chatCall.argv.includes('--trust-tools=read,shell'), 'forwards --trust-tools');
+          assert.ok(!chatCall.argv.includes('--simple'), 'consumes --simple internally');
+          assert.ok(!chatCall.argv.includes('--sequential'), 'does not invent --sequential');
+          // Forwarded flags must precede the prompt body so kiro-cli parses them as flags.
+          const promptIdx = chatCall.argv.findIndex(a => typeof a === 'string' && a.startsWith('Review: '));
+          const trustIdx = chatCall.argv.indexOf('--trust-tools=read,shell');
+          assert.ok(trustIdx !== -1 && trustIdx < promptIdx, 'flags appear before prompt');
+        } finally {
+          childProcess.spawn = origSpawn;
+          delete require.cache[require.resolve('../src/index.js')];
+        }
+      });
+    });
+
     it('posts review as PR comment', () => {
       assert.match(githubActionsKspecReview, /createComment/);
     });
@@ -2633,6 +2719,17 @@ z`;
       assert.match(md, /Prompt Logging/);
       assert.match(md, /SOC2/);
       assert.match(md, /Do NOT include secrets/);
+    });
+
+    it('documents prompt logging as ENABLED by default and when opt-in', () => {
+      assert.match(getEnterpriseGovernanceTemplate(), /prompt logging ENABLED/);
+      assert.match(getEnterpriseGovernanceTemplate({ promptLogging: true }), /prompt logging ENABLED/);
+    });
+
+    it('documents prompt logging as DISABLED when user opts out', () => {
+      const md = getEnterpriseGovernanceTemplate({ promptLogging: false });
+      assert.doesNotMatch(md, /prompt logging ENABLED/, 'must not claim ENABLED when opted out');
+      assert.match(md, /prompt logging is DISABLED/i, 'should document the disabled state');
     });
   });
 

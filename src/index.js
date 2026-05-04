@@ -498,12 +498,21 @@ function resetToDefaultAgent(cli) {
   }
 }
 
-function chat(message, agent) {
+// Build the kiro-cli argv for a chat invocation. Pure helper so we can
+// unit-test that headless/passthrough flags survive the kspec → kiro-cli
+// hop. `passthroughArgs` is appended ahead of the message so kiro-cli
+// parses them as flags, not as part of the prompt body.
+function buildChatArgs(message, agent, passthroughArgs = []) {
+  const base = agent ? ['chat', '--agent', agent] : ['chat'];
+  return [...base, ...passthroughArgs, message];
+}
+
+function chat(message, agent, passthroughArgs = []) {
   // Refresh context before each chat to ensure LLM has latest state
   refreshContext();
 
   const cli = requireCli();
-  const args = agent ? ['chat', '--agent', agent, message] : ['chat', message];
+  const args = buildChatArgs(message, agent, passthroughArgs);
   const child = spawn(cli, args, { stdio: 'inherit' });
   return new Promise((resolve, reject) => {
     child.on('error', err => {
@@ -2199,15 +2208,19 @@ function mergeSteeringFile(existingContent, templateContent) {
 
   // Migrate legacy `inclusion_mode` (kspec pre-Kiro-1.x) to Kiro's
   // canonical `inclusion`. on_demand → auto, never → manual.
+  // Tracked separately because mutating `existing.frontmatter` here would
+  // mask the migration from the post-mutation `fmChanged` comparison.
+  let migrated = false;
   if (existing.frontmatter.inclusion_mode && !existing.frontmatter.inclusion) {
     const legacyMap = { always: 'always', on_demand: 'auto', never: 'manual' };
     const legacy = existing.frontmatter.inclusion_mode;
     existing.frontmatter.inclusion = legacyMap[legacy] || legacy;
     delete existing.frontmatter.inclusion_mode;
+    migrated = true;
   }
 
   const mergedFrontmatter = { ...template.frontmatter, ...existing.frontmatter };
-  const fmChanged = JSON.stringify(mergedFrontmatter) !== JSON.stringify(existing.frontmatter);
+  const fmChanged = migrated || JSON.stringify(mergedFrontmatter) !== JSON.stringify(existing.frontmatter);
 
   const existingHeadings = extractH2Headings(existing.body);
   const templateSections = splitH2Sections(template.body);
@@ -2993,6 +3006,25 @@ function getEnterpriseGovernanceTemplate(opts = {}) {
   const mcpReg = opts.mcpRegistryUrl || '[admin-hosted JSON URL]';
   const modelReg = opts.modelRegistryUrl || '[admin-hosted JSON URL]';
   const idp = opts.idp || '[Okta / Entra ID / IAM Identity Center]';
+  // Default to ENABLED so the doc is correct when opts is empty (no init
+  // was run yet). Only opting out via promptLogging:false flips the text.
+  const promptLoggingEnabled = opts.promptLogging !== false;
+  const promptLoggingSection = promptLoggingEnabled
+    ? `This workspace runs with prompt logging ENABLED for SOC2 / regulatory
+auditability. All prompts and conversations are recorded by Kiro.
+
+- Do NOT include secrets, PII, customer data, or production credentials
+  in prompts.
+- Use placeholders or test fixtures for sensitive examples.
+- Reference \`secrets/\` files by path, never paste contents.`
+    : `Per workspace configuration, prompt logging is DISABLED. Prompts and
+conversations are NOT recorded by Kiro for this workspace.
+
+- Sensitive-data hygiene still applies — treat prompts as if they could
+  be retained downstream (model providers, integrations, screenshots).
+- Do NOT include secrets, PII, customer data, or production credentials
+  in prompts.
+- Reference \`secrets/\` files by path, never paste contents.`;
   return `---
 inclusion: always
 description: Enterprise governance — admin-controlled MCP registry, model registry, prompt logging, IdP
@@ -3015,13 +3047,7 @@ Agent \`model:\` fields must reference an approved model ID. Off-policy
 models will be silently rewritten to the org default.
 
 ## Prompt Logging
-This workspace runs with prompt logging ENABLED for SOC2 / regulatory
-auditability. All prompts and conversations are recorded by Kiro.
-
-- Do NOT include secrets, PII, customer data, or production credentials
-  in prompts.
-- Use placeholders or test fixtures for sensitive examples.
-- Reference \`secrets/\` files by path, never paste contents.
+${promptLoggingSection}
 
 ## Identity Provider
 Authentication uses ${idp}.
@@ -3507,26 +3533,29 @@ const commands = {
           }
         }
       }
+    }
 
-      // Enterprise governance steering doc — only written under
-      // --enterprise. Documents MCP/model registries, prompt logging,
-      // and IdP so agents are aware of org-level constraints.
-      if (enterpriseConfig) {
-        const govPath = path.join(STEERING_DIR, 'enterprise-governance.md');
-        const govContent = getEnterpriseGovernanceTemplate(enterpriseConfig);
-        if (!fs.existsSync(govPath)) {
-          fs.writeFileSync(govPath, govContent);
-          log(`Created ${govPath}`);
-        } else {
-          try {
-            const existing = fs.readFileSync(govPath, 'utf8');
-            const result = mergeSteeringFile(existing, govContent);
-            if (result) {
-              fs.writeFileSync(govPath, result.merged);
-              log(`Merged ${govPath}`);
-            }
-          } catch {}
-        }
+    // Enterprise governance steering doc — only written under
+    // --enterprise, but independent of createSteering: the doc is
+    // marked `inclusion: always` so agents always need it when
+    // enterprise mode is on, regardless of whether the user opted in
+    // to the generic steering templates.
+    if (enterpriseConfig) {
+      ensureDir(STEERING_DIR);
+      const govPath = path.join(STEERING_DIR, 'enterprise-governance.md');
+      const govContent = getEnterpriseGovernanceTemplate(enterpriseConfig);
+      if (!fs.existsSync(govPath)) {
+        fs.writeFileSync(govPath, govContent);
+        log(`Created ${govPath}`);
+      } else {
+        try {
+          const existing = fs.readFileSync(govPath, 'utf8');
+          const result = mergeSteeringFile(existing, govContent);
+          if (result) {
+            fs.writeFileSync(govPath, result.merged);
+            log(`Merged ${govPath}`);
+          }
+        } catch {}
       }
     }
 
@@ -4470,6 +4499,15 @@ After writing, show me what you wrote.`, 'kspec-spec');
   async review(args) {
     const skipLoop = args.includes('--simple');
     const useSequential = args.includes('--sequential');
+    // Flags kspec consumes itself; everything else gets forwarded to
+    // kiro-cli (e.g. --no-interactive, --trust-tools=...) so headless
+    // mode in CI actually reaches Kiro.
+    const KSPEC_REVIEW_FLAGS = new Set(['--simple', '--sequential']);
+    const passthroughArgs = args.filter(a => {
+      if (!a.startsWith('--')) return false;
+      const name = a.split('=')[0];
+      return !KSPEC_REVIEW_FLAGS.has(name);
+    });
     const filteredArgs = args.filter(a => !a.startsWith('--'));
     const target = filteredArgs.join(' ') || 'recent changes (git diff HEAD~1)';
 
@@ -4486,7 +4524,7 @@ After writing, show me what you wrote.`, 'kspec-spec');
 
 Check compliance with .kiro/steering/
 Evaluate quality, tests, security.
-Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
+Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review', passthroughArgs);
       return;
     }
 
@@ -5357,4 +5395,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs };
