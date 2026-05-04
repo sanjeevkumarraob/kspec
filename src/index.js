@@ -3042,6 +3042,39 @@ const hooksTemplateDocumentation = {
   }
 };
 
+// Upgrade an existing `.gitignore` from the old kspec rules to the
+// current shape. Returns the new content, or `null` if no change.
+// Migrations:
+//  - whole-dir `.kiro/settings/` → per-file `.kiro/settings/*` plus
+//    `!.kiro/settings/hooks.json` so the CI hooks file is shareable.
+//  - ensure `.kiro/audit.log` is ignored.
+// Pure function so existing-init upgrades are testable without fs.
+function upgradeKspecGitignore(existing) {
+  let upgraded = existing;
+  if (/^\.kiro\/settings\/$/m.test(upgraded)) {
+    upgraded = upgraded.replace(
+      /^\.kiro\/settings\/$/m,
+      '.kiro/settings/*\n!.kiro/settings/hooks.json'
+    );
+  }
+  if (!/^\.kiro\/audit\.log$/m.test(upgraded)) {
+    if (/^!\.kiro\/settings\/hooks\.json$/m.test(upgraded)) {
+      upgraded = upgraded.replace(
+        /^!\.kiro\/settings\/hooks\.json$/m,
+        '!.kiro/settings/hooks.json\n.kiro/audit.log'
+      );
+    } else if (/^\.kiro\/settings\/\*$/m.test(upgraded)) {
+      upgraded = upgraded.replace(
+        /^\.kiro\/settings\/\*$/m,
+        '.kiro/settings/*\n!.kiro/settings/hooks.json\n.kiro/audit.log'
+      );
+    } else {
+      upgraded = upgraded.replace(/\n*$/, '') + '\n.kiro/audit.log\n';
+    }
+  }
+  return upgraded === existing ? null : upgraded;
+}
+
 // .gitignore block written by `kspec init`. Per-file rules under
 // `.kiro/settings/*` so we can opt-out specific shareable files
 // (hooks.json) from the directory-wide ignore. Audit log is local-only.
@@ -3092,11 +3125,11 @@ const hooksTemplateCi = {
       {
         command: 'kspec verify',
         description: 'Verify spec/design/tasks consistency before publishing'
-      },
-      {
-        command: 'kspec sync-jira --progress',
-        description: 'Post progress to linked Jira issues'
       }
+      // Jira progress sync is opt-in: the enterprise preset adds
+      // `kspec sync-jira --progress` here, but the CI preset must work
+      // for non-Jira projects too (sync-jira dies without Atlassian
+      // MCP configured). Users can copy that hook over manually.
     ],
     onSessionStop: [
       {
@@ -3825,7 +3858,8 @@ const commands = {
       }
     }
 
-    // Update .gitignore for kspec (append if exists, create if not)
+    // Update .gitignore for kspec (append on first init, migrate on
+    // re-init from older versions, create if missing).
     const kspecGitignore = KSPEC_GITIGNORE_BLOCK;
     const gitignorePath = '.gitignore';
     if (fs.existsSync(gitignorePath)) {
@@ -3833,6 +3867,15 @@ const commands = {
       if (!existing.includes('.kiro/.current')) {
         fs.appendFileSync(gitignorePath, kspecGitignore);
         log('Updated .gitignore with kspec entries');
+      } else {
+        // Already-initialized project. Migrate the kspec block from the
+        // old whole-dir rule and add audit.log if missing — necessary
+        // for the new shareable CI hooks file.
+        const upgraded = upgradeKspecGitignore(existing);
+        if (upgraded) {
+          fs.writeFileSync(gitignorePath, upgraded);
+          log('Migrated .gitignore to new kspec rules (settings/*, audit.log)');
+        }
       }
     } else {
       fs.writeFileSync(gitignorePath, kspecGitignore.trim() + '\n');
@@ -5510,4 +5553,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, KSPEC_GITIGNORE_BLOCK };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };

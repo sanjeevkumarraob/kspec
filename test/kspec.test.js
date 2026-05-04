@@ -2742,6 +2742,43 @@ z`;
       assert.ok(complete.some(h => h.command === 'kspec verify'));
     });
 
+    it('upgradeKspecGitignore migrates whole-dir rule and adds audit.log', () => {
+      // Regression: re-running `kspec init --ci` on an existing project
+      // (already had `.kiro/.current` in .gitignore) skipped the
+      // gitignore append entirely, leaving the old `.kiro/settings/`
+      // rule in place — which silently ignored the new hooks.json.
+      const { upgradeKspecGitignore } = require('../src/index.js');
+      const old = `node_modules/
+.env
+
+# kspec local state
+.kiro/.current
+.kiro/CONTEXT.md
+.kiro/settings/
+`;
+      const upgraded = upgradeKspecGitignore(old);
+      assert.ok(upgraded, 'should produce an upgrade');
+      assert.match(upgraded, /^\.kiro\/settings\/\*$/m, 'replaces whole-dir with per-file rule');
+      assert.match(upgraded, /^!\.kiro\/settings\/hooks\.json$/m, 'un-ignores shareable hooks.json');
+      assert.match(upgraded, /^\.kiro\/audit\.log$/m, 'ignores audit log');
+      assert.doesNotMatch(upgraded, /^\.kiro\/settings\/$/m, 'old whole-dir rule must be gone');
+      assert.match(upgraded, /node_modules\//, 'preserves unrelated entries');
+    });
+
+    it('upgradeKspecGitignore returns null when already migrated', () => {
+      const { upgradeKspecGitignore, KSPEC_GITIGNORE_BLOCK } = require('../src/index.js');
+      assert.strictEqual(upgradeKspecGitignore(KSPEC_GITIGNORE_BLOCK), null,
+        'fully-current block needs no migration');
+    });
+
+    it('upgradeKspecGitignore appends audit.log to gitignore that lacks any kspec settings rule', () => {
+      const { upgradeKspecGitignore } = require('../src/index.js');
+      const partial = `.kiro/.current\n.kiro/CONTEXT.md\n`;
+      const upgraded = upgradeKspecGitignore(partial);
+      assert.ok(upgraded, 'should append audit.log');
+      assert.match(upgraded, /^\.kiro\/audit\.log$/m);
+    });
+
     it('gitignore block keeps hooks.json shareable and ignores audit.log', () => {
       // Regression: previously `.kiro/settings/` ignored the whole dir,
       // so the CI hook preset (`.kiro/settings/hooks.json`) silently
@@ -2758,6 +2795,16 @@ z`;
       // The whole-directory pattern would block negation; ensure absent.
       assert.doesNotMatch(KSPEC_GITIGNORE_BLOCK, /^\.kiro\/settings\/$/m,
         'must not use the whole-dir form (negation cannot re-include)');
+    });
+
+    it('CI preset omits `kspec sync-jira --progress` (would die for non-Jira projects)', () => {
+      // Regression: sync-jira's first action is requireAtlassianMcp(),
+      // which die()s without an Atlassian MCP. Including it in the CI
+      // preset broke `kspec init --ci` for default projects.
+      const complete = hooksTemplateCi.hooks.onSpecComplete;
+      assert.ok(complete);
+      assert.ok(!complete.some(h => h.command && h.command.includes('sync-jira')),
+        'CI preset must not invoke sync-jira (Jira is opt-in; users with Jira can add it manually)');
     });
 
     it('onSessionStop refreshes context with `kspec context`, not `kspec refresh`', () => {
