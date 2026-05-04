@@ -2529,8 +2529,17 @@ async function runParallelReview(target, reviewers, passthroughArgs = []) {
   }
 
   let diffContent = '';
+  // Honor an explicit target like `origin/main...HEAD` (set by the CI
+  // workflow for full PR coverage) instead of always reviewing HEAD~1.
+  // A target is treated as a git range/ref if it has no whitespace and
+  // contains git-range syntax (`..`/`...`, `^`, `~`, or is literal `HEAD`).
+  const targetIsGitRange = typeof target === 'string'
+    && target.length > 0
+    && !/\s/.test(target)
+    && /\.{2,3}|\^|~|^HEAD$/.test(target);
+  const diffCmd = targetIsGitRange ? `git diff ${shellEscape(target)}` : 'git diff HEAD~1';
   try {
-    diffContent = execSync('git diff HEAD~1', { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
+    diffContent = execSync(diffCmd, { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
   } catch {
     try {
       diffContent = execSync('git diff', { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
@@ -2972,7 +2981,7 @@ const hooksTemplateBasic = {
     ],
     onSessionStop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
       }
     ]
@@ -2989,7 +2998,7 @@ const hooksTemplateEnterprise = {
     ],
     onSessionStop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
       }
     ],
@@ -3031,7 +3040,7 @@ const hooksTemplateDocumentation = {
     ],
     onSessionStop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
       },
       {
@@ -3117,11 +3126,13 @@ const hooksTemplateCi = {
         tool: 'shell',
         // Catch destructive verbs at start-of-command, after a chain
         // separator (`;`, `&&`, `||`, `|`), or after whitespace inside
-        // a command list. Anchored only at line start let things like
-        // `cd app && rm -rf dist` or `npm test; git push` slip through.
-        pattern: '(?:^|[;&|]\\s*|\\s+)(rm -rf|git push|sudo|curl http)',
+        // a command list. The `[^\s]*[/\\\\]?` prefix lets us match
+        // path-qualified binaries (`/bin/rm`, `\\rm`) that would
+        // otherwise bypass a literal-only check. Whitespace within the
+        // verb (`rm  -rf`, `rm\\t-rf`) is collapsed via `\\s+`.
+        pattern: '(?:^|[;&|]\\s*|\\s+)(?:[^\\s]*[/\\\\])?(rm\\s+-rf?|git\\s+push|sudo|curl\\s+http|wget\\s+http)',
         block: true,
-        description: 'Hard-block destructive/network commands in CI (incl. chained via &&, ;, |)'
+        description: 'Hard-block destructive/network commands in CI (incl. chained, path-prefixed, and whitespace variants)'
       }
     ],
     postToolUse: [
@@ -3501,6 +3512,7 @@ const commands = {
   async init(args = []) {
     const enterpriseFlag = args.includes('--enterprise');
     const ciMode = args.includes('--ci');
+    const yesFlag = args.includes('--yes') || args.includes('-y');
 
     // KSPEC_ENTERPRISE=1 (or =true) flips the default of the opt-in
     // prompt to Yes — orgs can set this in their dev container / shell
@@ -3509,83 +3521,116 @@ const commands = {
     const envEnterprise = process.env.KSPEC_ENTERPRISE === '1'
       || process.env.KSPEC_ENTERPRISE === 'true';
 
+    // `--ci`, `--enterprise`, and `--yes` are non-interactive flags:
+    // accept safe defaults for every subsequent prompt rather than
+    // hanging on stdin in CI/headless environments. Override individual
+    // defaults via env vars (KSPEC_MODEL, KSPEC_TEST_COMMAND).
+    const autoAccept = ciMode || enterpriseFlag || yesFlag;
+
     console.log('\n🚀 Welcome to kspec!\n');
     if (ciMode) console.log('🤖 CI mode: will scaffold GitHub Actions workflow + CI hooks preset.\n');
+    if (autoAccept) console.log('⏩ Non-interactive mode: using safe defaults for prompts.\n');
 
     // Hybrid enterprise opt-in: --enterprise flag forces Yes (for CI
     // / non-interactive use); otherwise ask, defaulting based on
     // KSPEC_ENTERPRISE env var.
     let enterpriseMode = enterpriseFlag;
-    if (!enterpriseFlag) {
+    if (!enterpriseFlag && !autoAccept) {
       enterpriseMode = await confirm(
         'Configure enterprise governance? (MCP/model registries, prompt logging, IdP)',
         envEnterprise
       );
+    } else if (!enterpriseFlag && autoAccept) {
+      enterpriseMode = envEnterprise;
     }
     if (enterpriseMode) console.log('🏢 Enterprise mode enabled — will configure governance + audit settings.\n');
 
-    const dateFormat = await prompt('Date format for spec folders:', [
+    const dateFormat = autoAccept ? 'YYYY-MM-DD' : await prompt('Date format for spec folders:', [
       { label: 'YYYY-MM-DD (2026-01-22) - sorts chronologically', value: 'YYYY-MM-DD' },
       { label: 'DD-MM-YYYY (22-01-2026)', value: 'DD-MM-YYYY' },
       { label: 'MM-DD-YYYY (01-22-2026)', value: 'MM-DD-YYYY' }
     ]);
 
-    const autoExecute = await prompt('Command execution during build:', [
+    // CI defaults to 'auto' so the build loop can actually execute; users
+    // who want manual gating shouldn't be running with --ci anyway.
+    const autoExecute = autoAccept ? 'auto' : await prompt('Command execution during build:', [
       { label: 'Ask for permission (recommended)', value: 'ask' },
       { label: 'Auto-execute (faster)', value: 'auto' },
       { label: 'Dry-run only (show, don\'t run)', value: 'dry' }
     ]);
 
-    const testCommand = await prompt('Test command (e.g., npm test, pytest) — leave empty to skip: ');
+    const testCommand = autoAccept
+      ? (process.env.KSPEC_TEST_COMMAND || '')
+      : await prompt('Test command (e.g., npm test, pytest) — leave empty to skip: ');
 
-    const modelChoice = await prompt('AI model for agents:', [
-      { label: 'claude-sonnet-4.6 (recommended)', value: 'claude-sonnet-4.6' },
-      { label: 'claude-opus-4.6 (most capable)', value: 'claude-opus-4.6' },
-      { label: 'claude-haiku-4.5 (fastest)', value: 'claude-haiku-4.5' },
-      { label: 'Custom (enter manually)', value: 'custom' }
-    ]);
+    const modelChoice = autoAccept
+      ? (process.env.KSPEC_MODEL || 'claude-sonnet-4.6')
+      : await prompt('AI model for agents:', [
+        { label: 'claude-sonnet-4.6 (recommended)', value: 'claude-sonnet-4.6' },
+        { label: 'claude-opus-4.6 (most capable)', value: 'claude-opus-4.6' },
+        { label: 'claude-haiku-4.5 (fastest)', value: 'claude-haiku-4.5' },
+        { label: 'Custom (enter manually)', value: 'custom' }
+      ]);
 
     let model = modelChoice;
     if (modelChoice === 'custom') {
-      model = await prompt('Enter custom model ID: ');
+      model = autoAccept
+        ? 'claude-sonnet-4.6'
+        : await prompt('Enter custom model ID: ');
       if (!model.trim()) model = 'claude-sonnet-4.6';
     }
 
-    const createSteering = await confirm('Create steering doc templates?');
+    const createSteering = autoAccept ? true : await confirm('Create steering doc templates?');
 
-    const createAgentsMd = await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
+    const createAgentsMd = autoAccept ? true : await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
 
-    const createIdeAgents = await confirm(
+    // CI doesn't use the IDE chat — default to false even with --yes.
+    const createIdeAgents = autoAccept ? false : await confirm(
       'Also create Kiro IDE chat subagents (.md format)? Choose if you use Kiro chat in addition to CLI.',
       false
     );
 
-    const createSkills = await confirm(
+    const createSkills = autoAccept ? true : await confirm(
       'Create Kiro Agent Skills? (CLI 2.1+ — kspec workflows become /slash-commands in default chat)'
     );
 
-    const hooksChoice = ciMode ? 'ci' : await prompt('Configure Kiro hooks?', [
-      { label: 'None (skip hooks)', value: 'none' },
-      { label: 'Basic (format on save, context on stop)', value: 'basic' },
-      { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
-      { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' },
-      { label: 'CI (preToolUse audit + block destructive, onSpecComplete verify)', value: 'ci' }
-    ]);
+    // Hook preset selection: --ci forces 'ci'; in autoAccept mode pick
+    // the safest default (basic) so users aren't surprised by a CI-only
+    // hook running in dev. Override via the explicit --ci flag.
+    const hooksChoice = ciMode
+      ? 'ci'
+      : (autoAccept ? 'basic' : await prompt('Configure Kiro hooks?', [
+          { label: 'None (skip hooks)', value: 'none' },
+          { label: 'Basic (format on save, context on stop)', value: 'basic' },
+          { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
+          { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' },
+          { label: 'CI (preToolUse audit + block destructive, onSpecComplete verify)', value: 'ci' }
+        ]));
 
     // Enterprise governance prompts (gathered up-front so we can include
-    // them in the steering doc and config). Only asked under --enterprise.
+    // them in the steering doc and config). In non-interactive mode,
+    // values come from env vars; missing values fall through to template
+    // placeholders so users can fill them in later.
     let enterpriseConfig = null;
     if (enterpriseMode) {
       console.log('\n🏢 Enterprise governance setup:');
-      const mcpRegistryUrl = await prompt('MCP registry URL (admin-hosted JSON allow-list, leave blank to skip): ');
-      const modelRegistryUrl = await prompt('Model registry URL (approved model list, leave blank to skip): ');
-      const idp = await prompt('Identity provider:', [
-        { label: 'Okta', value: 'Okta' },
-        { label: 'Microsoft Entra ID', value: 'Microsoft Entra ID' },
-        { label: 'AWS IAM Identity Center', value: 'AWS IAM Identity Center' },
-        { label: 'Other / not configured', value: 'Other' }
-      ]);
-      const promptLogging = await confirm('Enable prompt logging steering doc? (records that prompts are logged for audit)');
+      const mcpRegistryUrl = autoAccept
+        ? (process.env.KSPEC_MCP_REGISTRY_URL || '')
+        : await prompt('MCP registry URL (admin-hosted JSON allow-list, leave blank to skip): ');
+      const modelRegistryUrl = autoAccept
+        ? (process.env.KSPEC_MODEL_REGISTRY_URL || '')
+        : await prompt('Model registry URL (approved model list, leave blank to skip): ');
+      const idp = autoAccept
+        ? (process.env.KSPEC_IDP || 'Other')
+        : await prompt('Identity provider:', [
+            { label: 'Okta', value: 'Okta' },
+            { label: 'Microsoft Entra ID', value: 'Microsoft Entra ID' },
+            { label: 'AWS IAM Identity Center', value: 'AWS IAM Identity Center' },
+            { label: 'Other / not configured', value: 'Other' }
+          ]);
+      const promptLogging = autoAccept
+        ? (process.env.KSPEC_PROMPT_LOGGING !== 'false')
+        : await confirm('Enable prompt logging steering doc? (records that prompts are logged for audit)');
       enterpriseConfig = {
         mcpRegistryUrl: mcpRegistryUrl?.trim() || null,
         modelRegistryUrl: modelRegistryUrl?.trim() || null,
@@ -3594,8 +3639,10 @@ const commands = {
       };
     }
 
-    // Multi-CLI review configuration
-    const configureReviewers = await confirm('Configure multi-CLI reviewers? (Copilot, Gemini, Claude, Codex)');
+    // Multi-CLI review configuration. Skipped entirely in non-interactive
+    // mode since reviewers require external CLIs that may not be present
+    // in CI; users can run `kspec sync-agents` later to wire them up.
+    const configureReviewers = autoAccept ? false : await confirm('Configure multi-CLI reviewers? (Copilot, Gemini, Claude, Codex)');
     let reviewerClis = [];
 
     if (configureReviewers) {
