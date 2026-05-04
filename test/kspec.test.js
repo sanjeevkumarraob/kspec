@@ -2435,6 +2435,39 @@ z`;
       assert.strictEqual(occurrences, 1, 'marker should appear exactly once');
     });
 
+    it('applyMcpToolsSection replaces a stale MCP section, does not just skip when marker exists', () => {
+      // Regression: when an MCP is removed/renamed, the existing prompt
+      // section still listed the old `@github` tool. The helper must
+      // overwrite the marker-bounded block with the current set.
+      const { applyMcpToolsSection } = require('../src/index.js');
+      const stale = `Original prompt body.
+
+<!-- kspec:mcp-tools -->
+## Available MCP Tools
+You have access to: \`@github\`.
+- Prefer MCP tools over manual lookups.`;
+      const fresh = applyMcpToolsSection(stale, ['slack']);
+      assert.match(fresh, /`@slack`/, 'should reflect new MCP set');
+      assert.doesNotMatch(fresh, /`@github`/, 'must drop stale MCP reference');
+      assert.match(fresh, /Original prompt body\./, 'must keep the prompt body');
+      // Marker should appear exactly once.
+      const occurrences = (fresh.match(/<!-- kspec:mcp-tools -->/g) || []).length;
+      assert.strictEqual(occurrences, 1);
+    });
+
+    it('applyMcpToolsSection strips the section entirely when no MCPs remain', () => {
+      const { applyMcpToolsSection } = require('../src/index.js');
+      const stale = `Body.
+
+<!-- kspec:mcp-tools -->
+## Available MCP Tools
+You have access to: \`@github\`.`;
+      const fresh = applyMcpToolsSection(stale, []);
+      assert.doesNotMatch(fresh, /<!-- kspec:mcp-tools -->/, 'marker should be removed');
+      assert.doesNotMatch(fresh, /Available MCP Tools/, 'section should be removed');
+      assert.match(fresh, /^Body\.\s*$/, 'body should be preserved (trimmed)');
+    });
+
     it('does not inject MCP into non-allow-listed agents', () => {
       process.chdir(MCP_TEST_DIR);
       fs.mkdirSync('.kiro/settings', { recursive: true });
@@ -2487,6 +2520,42 @@ z`;
       const legacy = `---\ninclusion_mode: never\n---\n# X\n\n## Purpose\nstuff`;
       const result = mergeSteeringFile(legacy, steeringTemplates['product.md']);
       assert.match(result.merged, /inclusion: manual/);
+    });
+
+    it('preserves multiline YAML frontmatter (e.g. fileMatchPattern array) on merge', () => {
+      // Regression: the prior merge rebuilt frontmatter from only the
+      // parsed scalar keys. For valid YAML like
+      //   fileMatchPattern:
+      //     - '**/api/**'
+      // the indented continuation lines were dropped, destroying the array
+      // whenever a section was appended or migration ran.
+      const existingMultiline = `---
+inclusion: fileMatch
+fileMatchPattern:
+  - '**/api/**'
+  - '**/openapi/**'
+---
+# API Standards
+
+## Purpose
+x`;
+      const tmpl = `---
+inclusion: fileMatch
+description: API standards
+---
+# API Standards
+
+## Purpose
+x
+
+## Verification
+y`;
+      const result = mergeSteeringFile(existingMultiline, tmpl);
+      assert.ok(result, 'merge should occur — Verification section is missing');
+      assert.match(result.merged, /fileMatchPattern:/, 'keeps fileMatchPattern key');
+      assert.match(result.merged, /'\*\*\/api\/\*\*'/, 'preserves first list item');
+      assert.match(result.merged, /'\*\*\/openapi\/\*\*'/, 'preserves second list item');
+      assert.match(result.merged, /## Verification/, 'still appends the missing section');
     });
 
     it('migrates `inclusion_mode` even when all template sections already exist', () => {
@@ -2729,6 +2798,28 @@ z`;
         const { passthroughArgs, targetArgs } = classifyReviewArgs(['--simple', 'PR-7']);
         assert.deepStrictEqual(passthroughArgs, []);
         assert.deepStrictEqual(targetArgs, ['PR-7']);
+      });
+
+      it('classifyReviewArgs forwards `--flag value` separate-token form', () => {
+        // Regression: previously only `--flag=value` worked. With separate
+        // tokens, `value` leaked into the review target and kiro-cli got
+        // a flag with no value, breaking headless usage.
+        const { classifyReviewArgs } = require('../src/index.js');
+        const { passthroughArgs, targetArgs } = classifyReviewArgs([
+          '--simple', '--trust-tools', 'read,shell', '--model', 'claude-sonnet-4.6', 'PR-7'
+        ]);
+        assert.deepStrictEqual(passthroughArgs,
+          ['--trust-tools', 'read,shell', '--model', 'claude-sonnet-4.6']);
+        assert.deepStrictEqual(targetArgs, ['PR-7']);
+      });
+
+      it('classifyReviewArgs treats `--no-*` flags as boolean (no value consumed)', () => {
+        const { classifyReviewArgs } = require('../src/index.js');
+        const { passthroughArgs, targetArgs } = classifyReviewArgs([
+          '--simple', '--no-interactive', 'my-target'
+        ]);
+        assert.deepStrictEqual(passthroughArgs, ['--no-interactive']);
+        assert.deepStrictEqual(targetArgs, ['my-target']);
       });
 
       it('end-to-end: workflow flags reach buildChatArgs in correct order', () => {

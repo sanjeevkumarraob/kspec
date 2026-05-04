@@ -527,14 +527,34 @@ function buildChatArgs(message, agent, passthroughArgs = []) {
 // (b) flags forwarded to kiro-cli (e.g. --no-interactive,
 // --trust-tools=...) so headless mode in CI actually reaches Kiro.
 // Pure helper so we can test classification without spawning kiro-cli.
+//
+// Heuristics for unknown forwarded flags (without a flag schema):
+// - `--flag=value` is self-contained → forwarded as one token.
+// - `--no-foo` is treated as boolean → no value consumed.
+// - `--foo` followed by a non-`-`-prefixed token consumes that token as
+//   its value (Unix convention). Targets that follow value-bearing flags
+//   should be passed as `--flag=value` to disambiguate.
 const KSPEC_REVIEW_FLAGS = new Set(['--simple', '--sequential']);
 function classifyReviewArgs(args) {
-  const passthroughArgs = args.filter(a => {
-    if (!a.startsWith('--')) return false;
-    const name = a.split('=')[0];
-    return !KSPEC_REVIEW_FLAGS.has(name);
-  });
-  const targetArgs = args.filter(a => !a.startsWith('--'));
+  const passthroughArgs = [];
+  const targetArgs = [];
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i];
+    if (!tok.startsWith('--')) {
+      targetArgs.push(tok);
+      continue;
+    }
+    const name = tok.split('=')[0];
+    if (KSPEC_REVIEW_FLAGS.has(name)) continue;
+    passthroughArgs.push(tok);
+    if (tok.includes('=')) continue;          // --flag=value form
+    if (name.startsWith('--no-')) continue;    // boolean flag
+    const next = args[i + 1];
+    if (next !== undefined && !next.startsWith('-')) {
+      passthroughArgs.push(next);
+      i++;
+    }
+  }
   return { passthroughArgs, targetArgs };
 }
 
@@ -2162,25 +2182,34 @@ PIPELINE:
       }
       agent.includeMcpJson = true;
 
-      // Append a usage hint to the prompt so the agent actually reaches for
-      // these tools instead of doing manual research. Idempotent — uses a
-      // marker so re-running doesn't duplicate the section.
-      const marker = '<!-- kspec:mcp-tools -->';
-      if (!agent.prompt.includes(marker)) {
-        const toolList = allMcps.map(s => `\`@${s}\``).join(', ');
-        agent.prompt = `${agent.prompt.replace(/\s+$/, '')}
+      // Append a usage hint to the prompt so the agent actually reaches
+      // for these tools. Helper REPLACES any pre-existing section so the
+      // prompt stays in sync when MCPs are renamed or removed.
+      agent.prompt = applyMcpToolsSection(agent.prompt, allMcps);
+    }
+  }
 
-${marker}
+  return templates;
+}
+
+// Inject (or refresh) the MCP-tools usage hint section in an agent
+// prompt. The section is delimited by the `<!-- kspec:mcp-tools -->`
+// marker; everything from the marker to end-of-prompt is replaced. If
+// `mcpServers` is empty, the section is removed entirely. Idempotent.
+const MCP_TOOLS_MARKER = '<!-- kspec:mcp-tools -->';
+function applyMcpToolsSection(prompt, mcpServers) {
+  const idx = prompt.indexOf(MCP_TOOLS_MARKER);
+  const base = (idx === -1 ? prompt : prompt.slice(0, idx)).replace(/\s+$/, '');
+  if (!mcpServers || mcpServers.length === 0) return base;
+  const toolList = mcpServers.map(s => `\`@${s}\``).join(', ');
+  return `${base}
+
+${MCP_TOOLS_MARKER}
 ## Available MCP Tools
 You have access to: ${toolList}.
 - Prefer MCP tools over manual lookups when fetching external context (Jira tickets, GitHub issues, Confluence pages, design docs).
 - Cite the source MCP and resource ID in spec/design output so reviewers can trace provenance.
 - If a relevant MCP is not in your tools list but seems needed, surface that as a question rather than guessing.`;
-      }
-    }
-  }
-
-  return templates;
 }
 
 // Convert a kspec agent (JSON shape) to a Kiro IDE chat subagent markdown file
@@ -2244,26 +2273,45 @@ function splitH2Sections(body) {
 // Merge a kspec steering template into an existing file without overwriting
 // user content. Adds missing frontmatter keys and appends any H2 sections
 // from the template that the existing file doesn't already have.
-// Returns { merged, addedSections } or null if no changes needed.
+//
+// Operates on `existing.raw` (the raw YAML text) instead of rebuilding
+// frontmatter from parsed scalars, so multiline values like
+// `fileMatchPattern:\n  - '**/api/**'` survive unchanged.
+//
+// Returns { merged, addedSections, fmChanged } or null if no changes needed.
 function mergeSteeringFile(existingContent, templateContent) {
   const existing = parseFrontmatter(existingContent);
   const template = parseFrontmatter(templateContent);
 
+  // Build a working copy of the raw YAML. If existing had no frontmatter,
+  // start empty and we'll seed from the template below.
+  let rawFm = existing.raw == null ? '' : existing.raw;
+
   // Migrate legacy `inclusion_mode` (kspec pre-Kiro-1.x) to Kiro's
   // canonical `inclusion`. on_demand → auto, never → manual.
-  // Tracked separately because mutating `existing.frontmatter` here would
-  // mask the migration from the post-mutation `fmChanged` comparison.
   let migrated = false;
   if (existing.frontmatter.inclusion_mode && !existing.frontmatter.inclusion) {
     const legacyMap = { always: 'always', on_demand: 'auto', never: 'manual' };
-    const legacy = existing.frontmatter.inclusion_mode;
-    existing.frontmatter.inclusion = legacyMap[legacy] || legacy;
+    const newValue = legacyMap[existing.frontmatter.inclusion_mode] || existing.frontmatter.inclusion_mode;
+    rawFm = rawFm.replace(/^inclusion_mode\s*:.*$/m, `inclusion: ${newValue}`);
+    existing.frontmatter.inclusion = newValue;
     delete existing.frontmatter.inclusion_mode;
     migrated = true;
   }
 
-  const mergedFrontmatter = { ...template.frontmatter, ...existing.frontmatter };
-  const fmChanged = migrated || JSON.stringify(mergedFrontmatter) !== JSON.stringify(existing.frontmatter);
+  // Append template keys that are missing from the existing frontmatter.
+  // We only append (never overwrite) so user values are preserved.
+  let appendedKeys = '';
+  for (const [k, v] of Object.entries(template.frontmatter)) {
+    if (!(k in existing.frontmatter)) {
+      const sep = rawFm && !rawFm.endsWith('\n') ? '\n' : '';
+      appendedKeys += `${sep}${k}: ${v}\n`;
+      existing.frontmatter[k] = v;
+    }
+  }
+  rawFm = (rawFm + appendedKeys).replace(/\s+$/, '');
+
+  const fmChanged = migrated || appendedKeys.length > 0 || existing.raw == null;
 
   const existingHeadings = extractH2Headings(existing.body);
   const templateSections = splitH2Sections(template.body);
@@ -2280,12 +2328,8 @@ function mergeSteeringFile(existingContent, templateContent) {
 
   if (!fmChanged && addedSections.length === 0) return null;
 
-  const fmLines = ['---'];
-  for (const [k, v] of Object.entries(mergedFrontmatter)) fmLines.push(`${k}: ${v}`);
-  fmLines.push('---');
-
   const bodyTrimmed = existing.body.replace(/\s+$/, '');
-  const merged = `${fmLines.join('\n')}\n${bodyTrimmed}${appended ? '\n' + appended : ''}`.replace(/\s+$/, '') + '\n';
+  const merged = `---\n${rawFm}\n---\n${bodyTrimmed}${appended ? '\n' + appended : ''}`.replace(/\s+$/, '') + '\n';
 
   return { merged, addedSections, fmChanged };
 }
@@ -4782,15 +4826,22 @@ Powers: contract, document, tdd, code-review, code-intelligence
             existing.toolsSettings = content.toolsSettings;
             updated = true;
           }
-          // Prompt: only inject the MCP-tools section when (a) the agent is
-          // on the MCP allow-list (template prompt now contains the marker)
-          // and (b) the user's prompt doesn't already have it.
-          const marker = '<!-- kspec:mcp-tools -->';
-          if (content.prompt.includes(marker) && !existing.prompt.includes(marker)) {
-            const idx = content.prompt.indexOf(marker);
-            const mcpSection = content.prompt.slice(idx);
-            existing.prompt = `${existing.prompt.replace(/\s+$/, '')}\n\n${mcpSection}`;
-            updated = true;
+          // Prompt: refresh the MCP-tools section so removed/renamed MCPs
+          // don't leave stale `@github` / `@slack` references behind. The
+          // helper replaces any pre-existing section in-place.
+          if (content.prompt.includes(MCP_TOOLS_MARKER)) {
+            const refreshed = applyMcpToolsSection(existing.prompt, allMcps);
+            if (refreshed !== existing.prompt) {
+              existing.prompt = refreshed;
+              updated = true;
+            }
+          } else if (existing.prompt.includes(MCP_TOOLS_MARKER)) {
+            // Agent is no longer on the MCP allow-list — strip the section.
+            const stripped = applyMcpToolsSection(existing.prompt, []);
+            if (stripped !== existing.prompt) {
+              existing.prompt = stripped;
+              updated = true;
+            }
           }
           if (updated) {
             fs.writeFileSync(p, JSON.stringify(existing, null, 2));
@@ -5429,4 +5480,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection };
