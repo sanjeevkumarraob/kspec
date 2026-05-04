@@ -3042,6 +3042,27 @@ const hooksTemplateDocumentation = {
   }
 };
 
+// .gitignore block written by `kspec init`. Per-file rules under
+// `.kiro/settings/*` so we can opt-out specific shareable files
+// (hooks.json) from the directory-wide ignore. Audit log is local-only.
+const KSPEC_GITIGNORE_BLOCK = `
+# kspec local state (don't commit - personal working state)
+.kiro/.current
+.kiro/CONTEXT.md
+.kiro/settings/*
+!.kiro/settings/hooks.json
+.kiro/audit.log
+
+# DO commit these for team collaboration:
+# .kiro/settings/hooks.json - shared CI / team hooks (auto-included)
+# .kiro/config.json - project preferences
+# .kiro/specs/ - specifications, tasks, memory
+# .kiro/steering/ - product, tech, testing guidelines
+# .kiro/agents/ - agent configurations
+# .kiro/skills/ - Kiro Agent Skills (slash commands)
+# .kiro/mcp.json.template - MCP template (no secrets)
+`;
+
 // CI-friendly hook preset — designed for headless / GitHub-Actions
 // runs. Uses preToolUse / postToolUse to log + gate, plus
 // onSpecComplete to post Jira progress automatically.
@@ -3805,20 +3826,7 @@ const commands = {
     }
 
     // Update .gitignore for kspec (append if exists, create if not)
-    const kspecGitignore = `
-# kspec local state (don't commit - personal working state)
-.kiro/.current
-.kiro/CONTEXT.md
-.kiro/settings/
-
-# DO commit these for team collaboration:
-# .kiro/config.json - project preferences
-# .kiro/specs/ - specifications, tasks, memory
-# .kiro/steering/ - product, tech, testing guidelines
-# .kiro/agents/ - agent configurations
-# .kiro/skills/ - Kiro Agent Skills (slash commands)
-# .kiro/mcp.json.template - MCP template (no secrets)
-`;
+    const kspecGitignore = KSPEC_GITIGNORE_BLOCK;
     const gitignorePath = '.gitignore';
     if (fs.existsSync(gitignorePath)) {
       const existing = fs.readFileSync(gitignorePath, 'utf8');
@@ -5502,4 +5510,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, KSPEC_GITIGNORE_BLOCK };
