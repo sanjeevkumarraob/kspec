@@ -507,6 +507,21 @@ function buildChatArgs(message, agent, passthroughArgs = []) {
   return [...base, ...passthroughArgs, message];
 }
 
+// Split `kspec review` argv into (a) flags kspec consumes itself and
+// (b) flags forwarded to kiro-cli (e.g. --no-interactive,
+// --trust-tools=...) so headless mode in CI actually reaches Kiro.
+// Pure helper so we can test classification without spawning kiro-cli.
+const KSPEC_REVIEW_FLAGS = new Set(['--simple', '--sequential']);
+function classifyReviewArgs(args) {
+  const passthroughArgs = args.filter(a => {
+    if (!a.startsWith('--')) return false;
+    const name = a.split('=')[0];
+    return !KSPEC_REVIEW_FLAGS.has(name);
+  });
+  const targetArgs = args.filter(a => !a.startsWith('--'));
+  return { passthroughArgs, targetArgs };
+}
+
 function chat(message, agent, passthroughArgs = []) {
   // Refresh context before each chat to ensure LLM has latest state
   refreshContext();
@@ -4499,17 +4514,8 @@ After writing, show me what you wrote.`, 'kspec-spec');
   async review(args) {
     const skipLoop = args.includes('--simple');
     const useSequential = args.includes('--sequential');
-    // Flags kspec consumes itself; everything else gets forwarded to
-    // kiro-cli (e.g. --no-interactive, --trust-tools=...) so headless
-    // mode in CI actually reaches Kiro.
-    const KSPEC_REVIEW_FLAGS = new Set(['--simple', '--sequential']);
-    const passthroughArgs = args.filter(a => {
-      if (!a.startsWith('--')) return false;
-      const name = a.split('=')[0];
-      return !KSPEC_REVIEW_FLAGS.has(name);
-    });
-    const filteredArgs = args.filter(a => !a.startsWith('--'));
-    const target = filteredArgs.join(' ') || 'recent changes (git diff HEAD~1)';
+    const { passthroughArgs, targetArgs } = classifyReviewArgs(args);
+    const target = targetArgs.join(' ') || 'recent changes (git diff HEAD~1)';
 
     const cfg = loadConfig();
     const reviewers = cfg.reviewers || [];
@@ -5395,4 +5401,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs };

@@ -2643,43 +2643,39 @@ z`;
         assert.deepStrictEqual(argv, ['chat', '--agent', 'kspec-review', 'hello']);
       });
 
-      it('review() forwards unknown --flags but consumes --simple/--sequential', async () => {
-        // Stub spawn to capture the kiro-cli invocation that review() builds.
-        // Collect every spawn so we can find the chat call (other spawns
-        // happen too — e.g. agent swap on close, refreshContext).
-        const childProcess = require('child_process');
-        const origSpawn = childProcess.spawn;
-        const captured = [];
-        childProcess.spawn = (cmd, argv) => {
-          captured.push({ cmd, argv });
-          const { EventEmitter } = require('events');
-          const fake = new EventEmitter();
-          fake.stdio = 'inherit';
-          fake.stdout = new EventEmitter();
-          fake.stderr = new EventEmitter();
-          setImmediate(() => fake.emit('close', 0));
-          return fake;
-        };
-        // Force a clean reload so chat() picks up the stubbed spawn.
-        delete require.cache[require.resolve('../src/index.js')];
-        try {
-          const { commands } = require('../src/index.js');
-          // No reviewers configured → falls into the simple/chat path.
-          await commands.review(['--simple', '--no-interactive', '--trust-tools=read,shell', 'PR123']);
-          const chatCall = captured.find(c => Array.isArray(c.argv) && c.argv[0] === 'chat');
-          assert.ok(chatCall, 'kiro-cli chat should have been spawned');
-          assert.ok(chatCall.argv.includes('--no-interactive'), 'forwards --no-interactive');
-          assert.ok(chatCall.argv.includes('--trust-tools=read,shell'), 'forwards --trust-tools');
-          assert.ok(!chatCall.argv.includes('--simple'), 'consumes --simple internally');
-          assert.ok(!chatCall.argv.includes('--sequential'), 'does not invent --sequential');
-          // Forwarded flags must precede the prompt body so kiro-cli parses them as flags.
-          const promptIdx = chatCall.argv.findIndex(a => typeof a === 'string' && a.startsWith('Review: '));
-          const trustIdx = chatCall.argv.indexOf('--trust-tools=read,shell');
-          assert.ok(trustIdx !== -1 && trustIdx < promptIdx, 'flags appear before prompt');
-        } finally {
-          childProcess.spawn = origSpawn;
-          delete require.cache[require.resolve('../src/index.js')];
-        }
+      it('classifyReviewArgs forwards unknown --flags but consumes --simple/--sequential', () => {
+        const { classifyReviewArgs } = require('../src/index.js');
+        const { passthroughArgs, targetArgs } = classifyReviewArgs([
+          '--simple',
+          '--no-interactive',
+          '--trust-tools=read,shell',
+          '--sequential',
+          'PR123',
+          'extra-target'
+        ]);
+        assert.deepStrictEqual(passthroughArgs, ['--no-interactive', '--trust-tools=read,shell']);
+        assert.deepStrictEqual(targetArgs, ['PR123', 'extra-target']);
+      });
+
+      it('classifyReviewArgs returns empty passthrough when only kspec flags are present', () => {
+        const { classifyReviewArgs } = require('../src/index.js');
+        const { passthroughArgs, targetArgs } = classifyReviewArgs(['--simple', 'PR-7']);
+        assert.deepStrictEqual(passthroughArgs, []);
+        assert.deepStrictEqual(targetArgs, ['PR-7']);
+      });
+
+      it('end-to-end: workflow flags reach buildChatArgs in correct order', () => {
+        const { classifyReviewArgs, buildChatArgs } = require('../src/index.js');
+        // Simulate the workflow: `kspec review --simple --trust-tools=read,shell --no-interactive`
+        const { passthroughArgs, targetArgs } = classifyReviewArgs(['--simple', '--trust-tools=read,shell', '--no-interactive']);
+        const target = targetArgs.join(' ') || 'recent changes (git diff HEAD~1)';
+        const argv = buildChatArgs(`Review: ${target}`, 'kspec-review', passthroughArgs);
+        // Flags must come before the message so kiro-cli parses them.
+        const promptIdx = argv.findIndex(a => a.startsWith('Review: '));
+        const trustIdx = argv.indexOf('--trust-tools=read,shell');
+        const noInteractiveIdx = argv.indexOf('--no-interactive');
+        assert.ok(trustIdx !== -1 && trustIdx < promptIdx, '--trust-tools precedes prompt');
+        assert.ok(noInteractiveIdx !== -1 && noInteractiveIdx < promptIdx, '--no-interactive precedes prompt');
       });
     });
 
