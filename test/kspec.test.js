@@ -2468,6 +2468,23 @@ You have access to: \`@github\`.`;
       assert.match(fresh, /^Body\.\s*$/, 'body should be preserved (trimmed)');
     });
 
+    it('applyMcpToolsSection refreshes a section embedded in a parseFrontmatter body shape', () => {
+      // Regression: IDE markdown sync passes `parsed.body` (which starts
+      // with a leading newline from parseFrontmatter) to the helper. The
+      // helper must still strip stale tools and re-inject current ones.
+      const { applyMcpToolsSection } = require('../src/index.js');
+      const mdBody = `\nYou are the kspec-spec agent.
+
+<!-- kspec:mcp-tools -->
+## Available MCP Tools
+You have access to: \`@github\`.
+- Prefer MCP tools over manual lookups.`;
+      const refreshed = applyMcpToolsSection(mdBody, ['atlassian']);
+      assert.match(refreshed, /`@atlassian`/, 'should reflect new MCP set');
+      assert.doesNotMatch(refreshed, /`@github`/, 'must drop stale MCP');
+      assert.match(refreshed, /You are the kspec-spec agent\./, 'preserves prompt body');
+    });
+
     it('does not inject MCP into non-allow-listed agents', () => {
       process.chdir(MCP_TEST_DIR);
       fs.mkdirSync('.kiro/settings', { recursive: true });

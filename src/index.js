@@ -4853,7 +4853,9 @@ Powers: contract, document, tdd, code-review, code-intelligence
         }
       }
 
-      // IDE markdown: update frontmatter tools line, preserve body
+      // IDE markdown: update frontmatter tools line AND refresh the
+      // MCP-tools body section so renamed/removed MCPs don't leave
+      // stale `@server` guidance behind.
       if (cfg.ideAgents) {
         const mdPath = path.join(AGENTS_DIR, file.replace(/\.json$/, '.md'));
         if (fs.existsSync(mdPath)) {
@@ -4861,12 +4863,32 @@ Powers: contract, document, tdd, code-review, code-intelligence
             const existing = fs.readFileSync(mdPath, 'utf8');
             const parsed = parseFrontmatter(existing);
             const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
+            let mdUpdatedThisFile = false;
             if (parsed.frontmatter.tools !== desiredTools) {
               parsed.frontmatter.tools = desiredTools;
+              mdUpdatedThisFile = true;
+            }
+            let newBody = parsed.body;
+            // Mirror the JSON-prompt logic: refresh the section for
+            // allow-list agents, strip it for agents no longer on the list.
+            if (content.prompt.includes(MCP_TOOLS_MARKER)) {
+              const refreshed = applyMcpToolsSection(newBody, allMcps);
+              if (refreshed !== newBody.replace(/\s+$/, '')) {
+                newBody = refreshed;
+                mdUpdatedThisFile = true;
+              }
+            } else if (newBody.includes(MCP_TOOLS_MARKER)) {
+              const stripped = applyMcpToolsSection(newBody, []);
+              if (stripped !== newBody.replace(/\s+$/, '')) {
+                newBody = stripped;
+                mdUpdatedThisFile = true;
+              }
+            }
+            if (mdUpdatedThisFile) {
               const fmLines = ['---'];
               for (const [k, v] of Object.entries(parsed.frontmatter)) fmLines.push(`${k}: ${v}`);
               fmLines.push('---');
-              fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${parsed.body}`);
+              fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${newBody}\n`);
               log(`Updated ${mdPath}`);
               mdUpdated++;
             }
