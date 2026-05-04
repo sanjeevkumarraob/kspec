@@ -3319,12 +3319,30 @@ async function migrateV1toV2() {
 // Commands
 const commands = {
   async init(args = []) {
-    const enterpriseMode = args.includes('--enterprise');
+    const enterpriseFlag = args.includes('--enterprise');
     const ciMode = args.includes('--ci');
 
+    // KSPEC_ENTERPRISE=1 (or =true) flips the default of the opt-in
+    // prompt to Yes — orgs can set this in their dev container / shell
+    // init so devs land in enterprise mode by default but can still
+    // opt out per-project.
+    const envEnterprise = process.env.KSPEC_ENTERPRISE === '1'
+      || process.env.KSPEC_ENTERPRISE === 'true';
+
     console.log('\n🚀 Welcome to kspec!\n');
-    if (enterpriseMode) console.log('🏢 Enterprise mode: will configure governance + audit settings.\n');
     if (ciMode) console.log('🤖 CI mode: will scaffold GitHub Actions workflow + CI hooks preset.\n');
+
+    // Hybrid enterprise opt-in: --enterprise flag forces Yes (for CI
+    // / non-interactive use); otherwise ask, defaulting based on
+    // KSPEC_ENTERPRISE env var.
+    let enterpriseMode = enterpriseFlag;
+    if (!enterpriseFlag) {
+      enterpriseMode = await confirm(
+        'Configure enterprise governance? (MCP/model registries, prompt logging, IdP)',
+        envEnterprise
+      );
+    }
+    if (enterpriseMode) console.log('🏢 Enterprise mode enabled — will configure governance + audit settings.\n');
 
     const dateFormat = await prompt('Date format for spec folders:', [
       { label: 'YYYY-MM-DD (2026-01-22) - sorts chronologically', value: 'YYYY-MM-DD' },
@@ -5203,9 +5221,10 @@ Be conservative — when in doubt, keep the entry.`, 'kspec-analyse');
 kspec - Spec-driven development for Kiro CLI
 
 CLI Workflow (outside kiro-cli):
-  kspec init              Interactive setup
-  kspec init --enterprise Setup with governance (MCP/model registries, prompt logging, IdP)
+  kspec init              Interactive setup (asks once whether to configure enterprise governance)
+  kspec init --enterprise Skip the prompt — go straight into enterprise governance setup
   kspec init --ci         Setup with GitHub Actions workflow + CI hooks preset
+                          Tip: set KSPEC_ENTERPRISE=1 in your shell to default the prompt to Yes
   kspec analyse           Analyse codebase, update steering
   kspec spec "Feature"    Create specification (asks clarifying questions first)
   kspec verify-spec       Interactively review and shape spec
