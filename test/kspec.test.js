@@ -2363,7 +2363,43 @@ z`;
         }
       }));
       const names = getAllMcpNames();
-      assert.deepStrictEqual(names.sort(), ['atlassian', 'github', 'slack']);
+      // workspace-local set is included; user-level may add more on dev
+      // machines, so check inclusion not equality.
+      for (const expected of ['atlassian', 'github', 'slack']) {
+        assert.ok(names.includes(expected), `expected MCP ${expected} in result`);
+      }
+    });
+
+    it('aggregates MCP servers across multiple lookup paths (workspace-settings + workspace-root)', () => {
+      // Regression: previously getMcpConfig() returned only the first
+      // matching file, so getAllMcpNames() omitted servers from later
+      // lookup paths in workspace-plus-user setups.
+      process.chdir(MCP_TEST_DIR);
+      fs.rmSync('.kiro', { recursive: true, force: true });
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: { onlyInSettings: { command: 'npx' } }
+      }));
+      fs.writeFileSync('.kiro/mcp.json', JSON.stringify({
+        mcpServers: { onlyInRoot: { command: 'npx' } }
+      }));
+      const names = getAllMcpNames();
+      assert.ok(names.includes('onlyInSettings'),
+        'aggregates server from .kiro/settings/mcp.json');
+      assert.ok(names.includes('onlyInRoot'),
+        'aggregates server from .kiro/mcp.json');
+    });
+
+    it('deduplicates MCP server names that appear in multiple lookup paths', () => {
+      process.chdir(MCP_TEST_DIR);
+      fs.rmSync('.kiro', { recursive: true, force: true });
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      const config = JSON.stringify({ mcpServers: { atlassian: { command: 'npx' } } });
+      fs.writeFileSync('.kiro/settings/mcp.json', config);
+      fs.writeFileSync('.kiro/mcp.json', config);
+      const names = getAllMcpNames();
+      const atlassianCount = names.filter(n => n === 'atlassian').length;
+      assert.strictEqual(atlassianCount, 1, 'duplicate name should appear once');
     });
 
     it('injects every detected MCP into kspec-spec tools', () => {
@@ -2577,6 +2613,23 @@ z`;
       assert.ok(denied.some(p => p.includes('credentials')), 'should deny credentials dirs');
       assert.ok(denied.includes('node_modules/**'), 'should deny node_modules');
     });
+
+    it('agents declaring `bash` tool also get shell scoping', () => {
+      // Regression: previously the gating only matched `agentTools.includes('shell')`,
+      // so kspec-fix/kspec-refactor (declared with `bash`) shipped unrestricted.
+      const templates = getAgentTemplates();
+      for (const file of ['kspec-fix.json', 'kspec-refactor.json']) {
+        const agent = templates[file];
+        assert.ok(agent.tools.includes('bash'), `${file} declares bash tool`);
+        assert.ok(agent.toolsSettings, `${file} should have toolsSettings`);
+        assert.ok(agent.toolsSettings.shell, `${file} should have shell scope`);
+        assert.ok(Array.isArray(agent.toolsSettings.shell.deniedCommands)
+          && agent.toolsSettings.shell.deniedCommands.length > 0,
+          `${file} should deny destructive commands`);
+        assert.ok(agent.toolsSettings.shell.deniedCommands.some(p => /sudo/.test(p)),
+          `${file} should deny sudo`);
+      }
+    });
   });
 
   describe('CI hooks preset', () => {
@@ -2601,6 +2654,20 @@ z`;
       const complete = hooksTemplateCi.hooks.onSpecComplete;
       assert.ok(complete);
       assert.ok(complete.some(h => h.command === 'kspec verify'));
+    });
+
+    it('onSessionStop refreshes context with `kspec context`, not `kspec refresh`', () => {
+      // Regression: `kspec refresh` regenerates spec-lite.md via another
+      // Kiro chat and requires a current spec — wrong command for the
+      // CONTEXT.md refresh this hook describes.
+      const stop = hooksTemplateCi.hooks.onSessionStop;
+      assert.ok(Array.isArray(stop) && stop.length > 0, 'has onSessionStop hooks');
+      const ctx = stop.find(h => /context/i.test(h.description));
+      assert.ok(ctx, 'has a context-refresh hook');
+      assert.strictEqual(ctx.command, 'kspec context',
+        'context-refresh hook must run `kspec context`');
+      assert.ok(!stop.some(h => h.command === 'kspec refresh'),
+        'must not invoke `kspec refresh` from onSessionStop');
     });
   });
 

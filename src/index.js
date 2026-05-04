@@ -168,14 +168,30 @@ function getAtlassianMcpName() {
   );
 }
 
-// Return every MCP server name configured in any of the lookup paths.
-// Used by getAgentTemplates() to grant kspec agents access to ALL configured
-// MCP servers, not just Atlassian. Returns an empty array if nothing is
-// configured.
+// Return every MCP server name configured in ANY of the lookup paths,
+// merged and deduplicated. Used by getAgentTemplates() to grant kspec
+// agents access to all configured MCP servers — workspace-plus-user
+// setups (workspace mcp.json + global ~/.kiro/...) need both files
+// aggregated, since getMcpConfig() returns only the first match for
+// backward-compat reasons.
 function getAllMcpNames() {
-  const mcpConfig = getMcpConfig();
-  if (!mcpConfig || !mcpConfig.mcpServers) return [];
-  return Object.keys(mcpConfig.mcpServers);
+  const lookupPaths = [
+    KIRO_MCP_CONFIG_WORKSPACE_SETTINGS,
+    KIRO_MCP_CONFIG_WORKSPACE_ROOT,
+    KIRO_MCP_CONFIG_USER,
+    KIRO_MCP_CONFIG_LEGACY
+  ];
+  const names = new Set();
+  for (const configPath of lookupPaths) {
+    try {
+      if (!fs.existsSync(configPath)) continue;
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (cfg && cfg.mcpServers) {
+        for (const name of Object.keys(cfg.mcpServers)) names.add(name);
+      }
+    } catch {}
+  }
+  return [...names];
 }
 
 // File locking for concurrent access protection
@@ -1237,33 +1253,41 @@ const COMMON_DENIED_PATHS = [
   'build/**'
 ];
 
-// Shell command scopes for the three agents that have shell access.
-// `autoAllowReadonly: true` exempts safe ls/cat/git-status style commands.
+// Shared shell scope for code-modifying agents (build/fix/refactor):
+// can run tests, install deps locally, and edit-then-commit, but no
+// destructive ops, no global installs, no network fetchers.
+const BUILD_SHELL_SCOPE = {
+  allowedCommands: [
+    'npm *', 'pnpm *', 'yarn *',
+    'pytest', 'pytest *',
+    'go test', 'go test *', 'go build', 'go build *',
+    'cargo test', 'cargo test *', 'cargo build', 'cargo build *',
+    'mvn *', 'gradle *',
+    'git status', 'git diff', 'git diff *', 'git log', 'git log *',
+    'git add *', 'git commit *', 'git checkout *', 'git branch *',
+    'mkdir *', 'touch *',
+    'node *', 'python *', 'python3 *', 'ruby *',
+    'rg *', 'grep *', 'find *', 'ls', 'ls *', 'cat *', 'head *', 'tail *', 'wc *'
+  ],
+  deniedCommands: [
+    'rm -rf *', 'rm -r *',
+    'git push *', 'git reset --hard *', 'git clean -f*', 'git rebase *',
+    'sudo *', 'su *',
+    'curl *', 'wget *',
+    'npm publish*', 'npm install -g*', 'pip install *', 'gem install *',
+    'apt *', 'apt-get *', 'brew *',
+    'chmod 777*', 'chown *'
+  ],
+  autoAllowReadonly: true
+};
+
+// Shell command scopes per agent. `autoAllowReadonly: true` exempts safe
+// ls/cat/git-status style commands. Both `'shell'` and `'bash'` tool
+// declarations get gated by getAgentToolsSettings().
 const AGENT_SHELL_SCOPES = {
-  'kspec-build': {
-    allowedCommands: [
-      'npm *', 'pnpm *', 'yarn *',
-      'pytest', 'pytest *',
-      'go test', 'go test *', 'go build', 'go build *',
-      'cargo test', 'cargo test *', 'cargo build', 'cargo build *',
-      'mvn *', 'gradle *',
-      'git status', 'git diff', 'git diff *', 'git log', 'git log *',
-      'git add *', 'git commit *', 'git checkout *', 'git branch *',
-      'mkdir *', 'touch *',
-      'node *', 'python *', 'python3 *', 'ruby *',
-      'rg *', 'grep *', 'find *', 'ls', 'ls *', 'cat *', 'head *', 'tail *', 'wc *'
-    ],
-    deniedCommands: [
-      'rm -rf *', 'rm -r *',
-      'git push *', 'git reset --hard *', 'git clean -f*', 'git rebase *',
-      'sudo *', 'su *',
-      'curl *', 'wget *',
-      'npm publish*', 'npm install -g*', 'pip install *', 'gem install *',
-      'apt *', 'apt-get *', 'brew *',
-      'chmod 777*', 'chown *'
-    ],
-    autoAllowReadonly: true
-  },
+  'kspec-build':    BUILD_SHELL_SCOPE,
+  'kspec-fix':      BUILD_SHELL_SCOPE,
+  'kspec-refactor': BUILD_SHELL_SCOPE,
   // Verifiers/reviewers: read-only command surface
   'kspec-verify': {
     allowedCommands: [
@@ -1325,7 +1349,11 @@ function getAgentToolsSettings(agentName, agentTools) {
     };
   }
 
-  if (agentTools.includes('shell') && AGENT_SHELL_SCOPES[agentName]) {
+  // Some agents (e.g. kspec-fix, kspec-refactor) declare the `bash` tool
+  // instead of `shell`; gate both so write-capable agents don't escape
+  // least-privilege scoping.
+  const wantsShell = agentTools.includes('shell') || agentTools.includes('bash');
+  if (wantsShell && AGENT_SHELL_SCOPES[agentName]) {
     settings.shell = AGENT_SHELL_SCOPES[agentName];
   }
 
@@ -3007,7 +3035,7 @@ const hooksTemplateCi = {
     ],
     onSessionStop: [
       {
-        command: 'kspec refresh',
+        command: 'kspec context',
         description: 'Refresh CONTEXT.md so the next CI run has fresh state'
       }
     ]
