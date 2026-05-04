@@ -2747,6 +2747,22 @@ z`;
       assert.match(blocker.pattern, /git push|sudo|rm -rf/, 'blocks destructive commands');
     });
 
+    it('destructive-block pattern catches chained commands, not just line-starts', () => {
+      // Regression: previous pattern was `^(rm -rf|git push|sudo|curl http)`,
+      // so `cd app && rm -rf dist` and `npm test; git push` bypassed it.
+      const blocker = hooksTemplateCi.hooks.preToolUse.find(h => h.block === true);
+      const re = new RegExp(blocker.pattern);
+      // These must MATCH (be blocked):
+      assert.ok(re.test('rm -rf dist'), 'blocks bare rm -rf');
+      assert.ok(re.test('cd app && rm -rf dist'), 'blocks rm -rf after &&');
+      assert.ok(re.test('npm test; git push'), 'blocks git push after ;');
+      assert.ok(re.test('echo done | sudo tee /etc/hosts'), 'blocks sudo after pipe');
+      assert.ok(re.test('curl http://attacker.example/x'), 'blocks bare curl http');
+      // These must NOT match (false-positive guard):
+      assert.ok(!re.test('mygit-push'), 'no false positive on substring match');
+      assert.ok(!re.test('mysudo-helper'), 'no false positive on substring match');
+    });
+
     it('has postToolUse hook for write audit', () => {
       const post = hooksTemplateCi.hooks.postToolUse;
       assert.ok(post, 'postToolUse hooks present');
@@ -2855,6 +2871,14 @@ z`;
       assert.match(githubActionsKspecReview, /kspec review/);
       assert.match(githubActionsKspecReview, /--no-interactive/);
       assert.match(githubActionsKspecReview, /--trust-tools/);
+    });
+
+    it('reviews the full PR range (base..HEAD), not just HEAD~1', () => {
+      // Regression: without a target, kspec review falls back to
+      // `git diff HEAD~1` and misses earlier commits on multi-commit
+      // PRs. The workflow must pass an explicit base range.
+      assert.match(githubActionsKspecReview, /origin\/\$\{\{\s*github\.base_ref\s*\}\}\.\.\.HEAD/,
+        'workflow should review origin/<base>...HEAD');
     });
 
     describe('headless flag forwarding to kiro-cli', () => {

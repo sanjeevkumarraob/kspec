@@ -3113,9 +3113,13 @@ const hooksTemplateCi = {
       },
       {
         tool: 'shell',
-        pattern: '^(rm -rf|git push|sudo|curl http)',
+        // Catch destructive verbs at start-of-command, after a chain
+        // separator (`;`, `&&`, `||`, `|`), or after whitespace inside
+        // a command list. Anchored only at line start let things like
+        // `cd app && rm -rf dist` or `npm test; git push` slip through.
+        pattern: '(?:^|[;&|]\\s*|\\s+)(rm -rf|git push|sudo|curl http)',
         block: true,
-        description: 'Hard-block destructive/network commands in CI'
+        description: 'Hard-block destructive/network commands in CI (incl. chained via &&, ;, |)'
       }
     ],
     postToolUse: [
@@ -3253,7 +3257,10 @@ jobs:
         env:
           KIRO_API_KEY: \${{ secrets.KIRO_API_KEY }}
         run: |
-          kspec review --simple \\
+          # Review the full PR diff against the base branch — without an
+          # explicit target, kspec falls back to \`git diff HEAD~1\`,
+          # which only catches the last commit on multi-commit PRs.
+          kspec review "origin/\${{ github.base_ref }}...HEAD" --simple \\
             --trust-tools=read,shell \\
             --no-interactive \\
             > review-output.md
