@@ -2646,7 +2646,7 @@ ${synthesisInput}
 
 6. Final verdict: APPROVE or REQUEST_CHANGES
 
-Note: Issues flagged by multiple independent reviewers are more likely to be real problems.`, 'kspec-review');
+Note: Issues flagged by multiple independent reviewers are more likely to be real problems.`, 'kspec-review', passthroughArgs);
 
   // Extract final findings from session
   const allQuestions = findings.flatMap(f => extractOpenQuestions(f.output));
