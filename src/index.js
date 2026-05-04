@@ -1390,7 +1390,11 @@ function getAgentTemplates() {
   const model = getConfiguredModel();
 
   // Agents that should have access to every configured MCP server
-  const mcpAgents = ['kspec-spec', 'kspec-analyse', 'kspec-review', 'kspec-verify', 'kspec-revise', 'kspec-tasks', 'kspec-build'];
+  // Agents on the dynamic MCP injection allow-list. kspec-jira is here
+  // (not just hard-coding `@atlassian`) so workspaces using non-default
+  // Atlassian MCP server names like `@jira` still get the configured
+  // server injected into the agent's tools list.
+  const mcpAgents = ['kspec-spec', 'kspec-analyse', 'kspec-review', 'kspec-verify', 'kspec-revise', 'kspec-tasks', 'kspec-build', 'kspec-jira'];
 
   const templates = {
   'kspec-analyse.json': {
@@ -2500,7 +2504,7 @@ function extractCriticalIssues(critique) {
 }
 
 // Run all configured reviewers in parallel with independent full-context prompts
-async function runParallelReview(target, reviewers) {
+async function runParallelReview(target, reviewers, passthroughArgs = []) {
   const cfg = loadConfig();
   const folder = getCurrentSpec();
   const sessionFile = createReviewSession('parallel-review', target);
@@ -2580,7 +2584,7 @@ End with a verdict: APPROVE or REQUEST_CHANGES`;
 
 Check compliance with .kiro/steering/
 Evaluate ALL: spec compliance, missing implementations, quality, tests, security, performance, error handling.
-Output: APPROVE or REQUEST_CHANGES with specific issues marked [CRITICAL], [IMPORTANT], [MINOR], or [?].`, 'kspec-review');
+Output: APPROVE or REQUEST_CHANGES with specific issues marked [CRITICAL], [IMPORTANT], [MINOR], or [?].`, 'kspec-review', passthroughArgs);
     return { reviewer: 'kiro-cli', duration: Date.now() - start, output: getWorkOutput('review', target) || '(output in agent session)' };
   })();
   reviewPromises.push(kiroPromise);
@@ -4683,8 +4687,10 @@ Provide detailed findings.`;
       return;
     }
 
-    // Default: Parallel independent reviews — each reviewer gets full unbiased context
-    const result = await runParallelReview(target, reviewers);
+    // Default: Parallel independent reviews — each reviewer gets full unbiased context.
+    // Forwarded headless flags reach the kiro-cli reviewer leg so CI runs
+    // don't hang once external reviewers are configured.
+    const result = await runParallelReview(target, reviewers, passthroughArgs);
 
     if (result.approved) {
       console.log('\n✅ Review complete! All reviewers agree — changes approved.\n');

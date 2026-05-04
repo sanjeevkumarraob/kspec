@@ -2485,6 +2485,23 @@ You have access to: \`@github\`.
       assert.match(refreshed, /You are the kspec-spec agent\./, 'preserves prompt body');
     });
 
+    it('injects non-default Atlassian MCP server name (`@jira`) into kspec-jira', () => {
+      // Regression: kspec-jira hard-codes `@atlassian`, but workspaces
+      // sometimes name the Atlassian MCP `jira` instead. Without
+      // dynamic injection, sync-jira/jira-pull launched the agent
+      // without the configured MCP available.
+      process.chdir(MCP_TEST_DIR);
+      fs.rmSync('.kiro', { recursive: true, force: true });
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: { jira: { command: 'npx' } }
+      }));
+      const templates = getAgentTemplates();
+      const jiraAgent = templates['kspec-jira.json'];
+      assert.ok(jiraAgent.tools.includes('@jira'),
+        'kspec-jira must include the configured `@jira` MCP via dynamic injection');
+    });
+
     it('does not inject MCP into non-allow-listed agents', () => {
       process.chdir(MCP_TEST_DIR);
       fs.mkdirSync('.kiro/settings', { recursive: true });
