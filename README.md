@@ -5,6 +5,21 @@
 
 Spec-driven development workflow for Kiro CLI with context management, verification at every step, and Jira integration.
 
+## What's new in 2.2.0
+
+| Area | What you get |
+|---|---|
+| **Enterprise governance** | `kspec init --enterprise` (or `KSPEC_ENTERPRISE=1`) — single opt-in prompt that scaffolds an MCP-registry / model-registry / IdP / prompt-logging governance steering doc auto-loaded into every agent prompt |
+| **CI/headless mode** | `kspec init --ci` scaffolds `.github/workflows/kspec-review.yml` running `kspec review --no-interactive` on every PR + a CI hooks preset (preToolUse audit + destructive-command block) |
+| **Least-privilege agents** | Every agent now ships with `toolsSettings`: write paths scoped per-role, shell commands allow/denylisted, secrets/git/`node_modules` always-denied, explicit `subagent.availableAgents` delegation graph |
+| **Kiro Agent Skills** | 5 SKILL.md files (`/kspec-spec`, `/kspec-build`, `/kspec-review`, `/kspec-verify`, `/kspec-jira`) — auto-become slash commands in CLI 2.1+ default chat |
+| **All-MCP injection** | `kspec-spec` and the spec/build/review pipeline now see every configured MCP (not just Atlassian) — `@github`, `@confluence`, `@slack`, etc. |
+| **`kspec sync-agents`** | Refresh agent JSON + IDE markdown after adding a new MCP — no full `kspec init` re-run |
+| **IDE chat subagents** | Optional `.md` agent files alongside `.json` so Kiro IDE chat can use kspec workflows |
+| **Smart steering** | `inclusion: fileMatch` so `api-standards.md`, `frontend.md`, `backend.md` only auto-load when matching files are touched. Existing `inclusion_mode` files migrated transparently |
+
+See [CHANGELOG](CHANGELOG.md#220) for the full release notes.
+
 ## Why kspec?
 
 AI coding assistants forget context, drift from requirements, and repeat mistakes. kspec solves this:
@@ -91,7 +106,10 @@ init → analyse → spec → verify-spec → design (optional) → tasks → ve
 
 | Command | Description |
 |---------|-------------|
-| `kspec init` | Interactive setup (date format, execution mode, Jira project) |
+| `kspec init` | Interactive setup (date format, execution mode, Jira project, enterprise opt-in) |
+| `kspec init --enterprise` | Skip the prompt — go straight into governance setup (MCP/model registries, IdP, prompt logging) |
+| `kspec init --ci` | Setup with GitHub Actions workflow + CI hooks preset (audit + destructive-block) |
+| `kspec sync-agents` | Refresh agent JSON/markdown after adding a new MCP server (idempotent) |
 | `kspec analyse` | Analyse codebase, update steering docs |
 | `kspec spec "Name"` | Create spec.md + spec-lite.md |
 | `kspec verify-spec` | Interactively review and shape spec with clarifying questions |
@@ -339,6 +357,117 @@ Add a `## Contract` section to your `spec.md`:
 
 See [Contracts Documentation](docs/contracts.md) for full details.
 
+## Enterprise Governance
+
+For teams operating under SOC2, regulated environments, or any org with central control over MCP/model usage. **All four governance settings are off by default**: kspec asks once during `kspec init` whether to configure them, and the prompt only fires when you opt in.
+
+### How to enable
+
+```bash
+# Option 1 — opt in interactively
+kspec init
+> Configure enterprise governance? (MCP/model registries, prompt logging, IdP) (y/N): y
+
+# Option 2 — flip the prompt default to Yes for the whole org
+export KSPEC_ENTERPRISE=1   # in dev container / shell init
+kspec init                  # prompt now defaults Y, devs can still opt out per-project
+
+# Option 3 — non-interactive (CI / org templates)
+kspec init --enterprise
+```
+
+### What it configures
+
+| Setting | What it does | Why it matters |
+|---|---|---|
+| **MCP registry URL** | Admin-hosted JSON allow-list of approved MCP servers. Kiro fetches it every 24h and auto-revokes unapproved servers | Central fleet control, automatic revocation |
+| **Model registry URL** | Admin-hosted approved-models list. Off-policy `model:` fields get rewritten to the org default | Cost control + regulatory model whitelisting |
+| **Identity provider** | Okta / Microsoft Entra ID / AWS IAM Identity Center / Other | Required for the above governance features |
+| **Prompt logging** | Documents (in steering) that prompts are recorded by Kiro for SOC2 / regulatory audit | Surfaces "don't paste secrets" guidance to every agent |
+
+### What it ships
+
+Opting in writes `.kiro/steering/enterprise-governance.md` with `inclusion: always`, so every agent loads it as context. It substitutes your registry URLs and IdP into the doc and reminds agents to:
+
+- Cite governance gaps in spec output instead of silently ignoring them
+- Surface model/MCP needs as questions rather than guessing
+- Treat `audit.log` and `.kiro/sessions/` as evidence (don't delete)
+
+See [Kiro enterprise governance docs](https://kiro.dev/docs/cli/enterprise/governance/mcp/) for the upstream feature spec.
+
+## CI/CD Integration
+
+`kspec init --ci` scaffolds two things so kspec runs on every PR:
+
+### 1. GitHub Actions workflow
+
+Drops `.github/workflows/kspec-review.yml`:
+
+```yaml
+name: kspec review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  kspec-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: curl -fsSL https://kiro.dev/install.sh | sh
+      - run: npm install -g kspec
+      - env: { KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }} }
+        run: kspec review --simple --trust-tools=read,shell --no-interactive
+      # ...posts review as PR comment via actions/github-script
+```
+
+You only need to add `KIRO_API_KEY` as a repo secret — everything else is wired up.
+
+### 2. CI hooks preset
+
+`.kiro/settings/hooks.json` with:
+
+- **`preToolUse`** — audit-log every shell command, hard-block destructive patterns (`rm -rf`, `git push`, `sudo`, `curl http`)
+- **`postToolUse`** — audit-log every file write
+- **`onSpecComplete`** — runs `kspec verify` and `kspec sync-jira --progress` automatically
+- **`onSessionStop`** — refreshes CONTEXT.md so the next CI run starts clean
+
+Powered by Kiro CLI 2.0+ headless mode (`--no-interactive`, `KIRO_API_KEY`, `--trust-tools`). See [Kiro headless docs](https://kiro.dev/docs/cli/headless/).
+
+## Agent Skills (Kiro CLI 2.1+)
+
+In addition to the JSON custom agents (`/agent swap kspec-spec`), kspec ships **Agent Skills** as `.kiro/skills/<name>/SKILL.md`. In Kiro CLI 2.1+ these auto-become slash commands in the **default** chat agent — no `/agent swap` required.
+
+```
+> /kspec-spec
+> Build a payment processing feature
+  (clarifies → spec.md → spec-lite.md)
+
+> /kspec-build
+  (executes tasks with strict TDD)
+
+> /kspec-review
+  (multi-CLI parallel review)
+```
+
+5 skills shipped: `kspec-spec`, `kspec-build`, `kspec-review`, `kspec-verify`, `kspec-jira`. Created when you answer `Y` to "Create Kiro Agent Skills?" during `kspec init` (default Yes). See [Kiro skills docs](https://kiro.dev/docs/cli/skills/).
+
+## Agent Permissions (Least-Privilege)
+
+Every kspec agent ships with a `toolsSettings` block scoping what it can touch:
+
+| Agent type | Write paths | Shell scope |
+|---|---|---|
+| State-only (analyse, context, refresh, jira, demo, estimate) | `.kiro/**` | none |
+| Spec pipeline (spec, design, tasks, revise, spike) | `.kiro/**` (+ `AGENTS.md` for spec) | none |
+| Verifiers (verify, review) | `.kiro/**` | read-only commands + test runners |
+| Code-modifying (build, fix, refactor) | `.kiro/**`, `src/**`, `lib/**`, `test/**`, `*.ts/.js/.py/.go/.rs`, ... | npm/pnpm/yarn, pytest, go test, cargo, git status/diff/add/commit |
+
+**Universal denylist** (all agents): `.env*`, `**/secrets/**`, `**/credentials/**`, `*.pem`, `*.key`, `.git/**`, `node_modules/**`, `vendor/**`, `dist/**`, `build/**`.
+
+**Shell denylist** (build/verify/review): `rm -rf`, `git push`, `git reset --hard`, `sudo`, `curl`, `wget`, `npm publish`, `pip install`, `apt`.
+
+**Subagent delegation graph** — every agent declares an explicit `availableAgents` list (e.g. `kspec-build → [verify, review, fix]`, `kspec-verify → []` terminal). Makes the call graph auditable and admin-restrictable. See [Kiro custom agents reference](https://kiro.dev/docs/cli/custom-agents/configuration-reference/).
+
 ## Powers
 
 Powers are modular knowledge files that enhance AI agent capabilities. kspec ships with 5 powers:
@@ -356,6 +485,32 @@ Powers are modular knowledge files that enhance AI agent capabilities. kspec shi
 **With kspec CLI:** Powers are reference documentation in the `powers/` directory. Agents can read them for context.
 
 **Custom Powers:** Create your own in `powers/{name}/POWER.md` following the [Kiro power format](https://kiro.dev/docs/powers/create/).
+
+## Steering Documents
+
+Steering files in `.kiro/steering/` are project rules that agents load as context. kspec ships 7 templates with [Kiro-native `inclusion`](https://kiro.dev/docs/cli/steering/) modes:
+
+| File | Inclusion | When it loads |
+|---|---|---|
+| `product.md` | `always` | Every prompt |
+| `tech.md` | `always` | Every prompt |
+| `testing.md` | `always` | Every prompt |
+| `security.md` | `always` | Every prompt |
+| `api-standards.md` | `fileMatch` | When `**/api/**`, `**/routes/**`, `**/handlers/**`, `**/controllers/**` files are touched |
+| `frontend.md` | `fileMatch` | When `**/*.tsx`, `**/*.jsx`, `**/components/**`, `**/styles/**`, `**/*.css` files are touched |
+| `backend.md` | `fileMatch` | When `**/server/**`, `**/services/**`, `**/db/**`, `**/migrations/**` files are touched |
+
+`fileMatch` keeps context small in monorepos — frontend rules don't pollute backend agent prompts.
+
+### Non-destructive merge
+
+If a steering file already exists (e.g. from base Kiro IDE init), `kspec init` merges instead of overwriting:
+
+- Missing H2 sections are appended with a `<!-- added by kspec -->` marker
+- Missing frontmatter keys are added; existing values never overwritten
+- Files outside the 7 known templates are left fully untouched
+
+Legacy `inclusion_mode: on_demand` files are auto-migrated to `inclusion: auto` on next init.
 
 ## Context Management
 
@@ -481,10 +636,19 @@ See: https://kiro.dev/docs/cli/code-intelligence/
 │       └── jira-links.json # Jira issue links (commit)
 ├── milestones/           # Milestone groupings (commit)
 ├── sessions/             # Review session logs (local only)
-├── steering/             # Project rules (commit)
-├── agents/               # kspec-generated agents (commit)
-├── settings/mcp.json     # MCP config (local only)
+├── steering/             # Project rules — incl. enterprise-governance.md if --enterprise (commit)
+├── agents/               # kspec-generated agents — *.json (CLI) + *.md (IDE chat, optional) (commit)
+├── skills/               # Kiro Agent Skills — /<name> slash commands in default chat (commit)
+├── settings/
+│   ├── mcp.json          # MCP config (local only)
+│   └── hooks.json        # Hooks (basic / enterprise / documentation / ci preset)
 └── mcp.json.template     # MCP config template (commit, no secrets)
+```
+
+When `kspec init --ci` is used, also creates:
+
+```
+.github/workflows/kspec-review.yml   # Headless review on every PR (commit)
 ```
 
 ## Team Collaboration
@@ -495,16 +659,19 @@ kspec is designed for team collaboration. Most files should be committed to shar
 
 | Path | Commit? | Why |
 |------|---------|-----|
-| `.kiro/config.json` | Yes | Project preferences |
+| `.kiro/config.json` | Yes | Project preferences (incl. enterprise + ideAgents + skills flags) |
 | `.kiro/specs/` | Yes | Specifications, designs, tasks, memory |
-| `.kiro/steering/` | Yes | Shared product, tech, testing guidelines |
-| `.kiro/agents/` | Yes | Consistent agent configurations |
+| `.kiro/steering/` | Yes | Shared product, tech, testing guidelines (+ enterprise-governance.md if `--enterprise`) |
+| `.kiro/agents/` | Yes | Agent configurations — JSON for CLI, optional `.md` for IDE chat |
+| `.kiro/skills/` | Yes | Kiro Agent Skills — `/<name>` slash commands |
 | `.kiro/mcp.json.template` | Yes | MCP setup template (no secrets) |
 | `.kiro/memory.md` | Yes | Project learnings |
+| `.github/workflows/kspec-review.yml` | Yes | If `--ci` was used — headless review on PRs |
 | `.kiro/.current` | No | Personal working state |
 | `.kiro/CONTEXT.md` | No | Auto-generated, local state |
+| `.kiro/audit.log` | No | CI hooks audit trail (local only) |
 | `.kiro/sessions/` | No | Review session logs |
-| `.kiro/settings/` | No | Local MCP config |
+| `.kiro/settings/` | No | Local MCP config + hooks.json |
 | `~/.kiro/mcp.json` | N/A | Personal secrets in home directory |
 
 ### Setting Up MCP for Teams
@@ -634,6 +801,17 @@ Set during `kspec init`:
 - **Model**: AI model for agents (claude-sonnet-4.6, claude-opus-4.6, claude-haiku-4.5, or custom)
 - **Jira project**: Default project key for `sync-jira` (when Atlassian MCP detected)
 - **Reviewers**: Multi-CLI reviewers for agentic review loop (Copilot, Claude, Gemini, etc.)
+- **IDE chat subagents**: Optional `.md` agent files for Kiro IDE chat (default No)
+- **Agent Skills**: Slash-command skills (`/kspec-spec` etc.) for default chat (default Yes)
+- **Enterprise governance**: MCP/model registry URLs, IdP, prompt logging (opt-in, off by default)
+- **Hooks preset**: none / basic / enterprise / documentation / ci
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `KSPEC_ENTERPRISE=1` | Flips the "Configure enterprise governance?" prompt default to Yes (orgs set this in dev container / shell init) |
+| `KIRO_API_KEY` | Required for headless mode — used by the `--ci` GitHub Actions workflow |
 
 ### File Locking
 
