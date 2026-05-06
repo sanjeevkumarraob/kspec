@@ -18,8 +18,17 @@ const LEGACY_KSPEC_DIR = '.kspec';
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
 const KIRO_MCP_CONFIG_WORKSPACE_SETTINGS = path.join(KIRO_DIR, 'settings', 'mcp.json');
 const KIRO_MCP_CONFIG_WORKSPACE_ROOT = path.join(KIRO_DIR, 'mcp.json');
-const KIRO_MCP_CONFIG_USER = path.join(os.homedir(), '.kiro', 'settings', 'mcp.json');
-const KIRO_MCP_CONFIG_LEGACY = path.join(os.homedir(), '.kiro', 'mcp.json');
+// User-level paths are resolved at call time so tests (and any process that
+// rewrites HOME) see the current value of os.homedir() rather than a value
+// frozen at module load.
+function getMcpLookupPaths() {
+  return [
+    KIRO_MCP_CONFIG_WORKSPACE_SETTINGS,
+    KIRO_MCP_CONFIG_WORKSPACE_ROOT,
+    path.join(os.homedir(), '.kiro', 'settings', 'mcp.json'),
+    path.join(os.homedir(), '.kiro', 'mcp.json')
+  ];
+}
 
 // Default config
 const defaultConfig = {
@@ -128,12 +137,7 @@ async function checkForUpdates() {
 // MCP Integration Detection
 function getMcpConfig() {
   // Check in order: workspace settings, workspace root, user, legacy
-  const configPaths = [
-    KIRO_MCP_CONFIG_WORKSPACE_SETTINGS,
-    KIRO_MCP_CONFIG_WORKSPACE_ROOT,
-    KIRO_MCP_CONFIG_USER,
-    KIRO_MCP_CONFIG_LEGACY
-  ];
+  const configPaths = getMcpLookupPaths();
 
   for (const configPath of configPaths) {
     try {
@@ -175,12 +179,7 @@ function getAtlassianMcpName() {
 // aggregated, since getMcpConfig() returns only the first match for
 // backward-compat reasons.
 function getAllMcpNames() {
-  const lookupPaths = [
-    KIRO_MCP_CONFIG_WORKSPACE_SETTINGS,
-    KIRO_MCP_CONFIG_WORKSPACE_ROOT,
-    KIRO_MCP_CONFIG_USER,
-    KIRO_MCP_CONFIG_LEGACY
-  ];
+  const lookupPaths = getMcpLookupPaths();
   const names = new Set();
   for (const configPath of lookupPaths) {
     try {
@@ -3664,19 +3663,29 @@ const commands = {
     // Check for Jira integration
     let jiraConfig = { project: null, enabled: false };
     const hasMcp = hasAtlassianMcp();
+    const envJiraProject = (process.env.KSPEC_JIRA_PROJECT || '').trim();
 
     if (hasMcp) {
       console.log('\n✅ Atlassian MCP detected!');
-      const setupJira = await confirm('Configure Jira integration?');
+      if (autoAccept) {
+        if (envJiraProject) {
+          jiraConfig = { project: envJiraProject.toUpperCase(), enabled: true };
+          console.log(`  Jira project set to: ${jiraConfig.project} (from KSPEC_JIRA_PROJECT)`);
+        } else {
+          console.log('  Skipping Jira setup in non-interactive mode (set KSPEC_JIRA_PROJECT to enable).');
+        }
+      } else {
+        const setupJira = await confirm('Configure Jira integration?');
 
-      if (setupJira) {
-        const projectKey = await prompt('Default Jira project key (e.g., SECOPS, PROJ): ');
-        if (projectKey && projectKey.trim()) {
-          jiraConfig = {
-            project: projectKey.trim().toUpperCase(),
-            enabled: true
-          };
-          console.log(`  Jira project set to: ${jiraConfig.project}`);
+        if (setupJira) {
+          const projectKey = await prompt('Default Jira project key (e.g., SECOPS, PROJ): ');
+          if (projectKey && projectKey.trim()) {
+            jiraConfig = {
+              project: projectKey.trim().toUpperCase(),
+              enabled: true
+            };
+            console.log(`  Jira project set to: ${jiraConfig.project}`);
+          }
         }
       }
     } else {

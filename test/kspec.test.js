@@ -2334,16 +2334,29 @@ z`;
   describe('all-MCP injection (Option A)', () => {
     let getAgentTemplates, getAllMcpNames;
     const ORIGINAL_CWD = process.cwd();
+    const ORIGINAL_HOME = process.env.HOME;
+    const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
     const MCP_TEST_DIR = path.join(__dirname, 'mcp-injection-workspace');
+    const MCP_TEST_HOME = path.join(__dirname, 'mcp-injection-home');
 
     before(() => {
       ({ getAgentTemplates, getAllMcpNames } = require('../src/index.js'));
       fs.mkdirSync(MCP_TEST_DIR, { recursive: true });
+      // Isolate HOME so user-level ~/.kiro/settings/mcp.json on the
+      // contributor's machine doesn't leak into these assertions.
+      fs.mkdirSync(MCP_TEST_HOME, { recursive: true });
+      process.env.HOME = MCP_TEST_HOME;
+      process.env.USERPROFILE = MCP_TEST_HOME;
     });
 
     after(() => {
       process.chdir(ORIGINAL_CWD);
       fs.rmSync(MCP_TEST_DIR, { recursive: true, force: true });
+      fs.rmSync(MCP_TEST_HOME, { recursive: true, force: true });
+      if (ORIGINAL_HOME === undefined) delete process.env.HOME;
+      else process.env.HOME = ORIGINAL_HOME;
+      if (ORIGINAL_USERPROFILE === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = ORIGINAL_USERPROFILE;
     });
 
     it('returns empty array when no MCP servers configured', () => {
