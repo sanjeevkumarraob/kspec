@@ -18,8 +18,17 @@ const LEGACY_KSPEC_DIR = '.kspec';
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
 const KIRO_MCP_CONFIG_WORKSPACE_SETTINGS = path.join(KIRO_DIR, 'settings', 'mcp.json');
 const KIRO_MCP_CONFIG_WORKSPACE_ROOT = path.join(KIRO_DIR, 'mcp.json');
-const KIRO_MCP_CONFIG_USER = path.join(os.homedir(), '.kiro', 'settings', 'mcp.json');
-const KIRO_MCP_CONFIG_LEGACY = path.join(os.homedir(), '.kiro', 'mcp.json');
+// User-level paths are resolved at call time so tests (and any process that
+// rewrites HOME) see the current value of os.homedir() rather than a value
+// frozen at module load.
+function getMcpLookupPaths() {
+  return [
+    KIRO_MCP_CONFIG_WORKSPACE_SETTINGS,
+    KIRO_MCP_CONFIG_WORKSPACE_ROOT,
+    path.join(os.homedir(), '.kiro', 'settings', 'mcp.json'),
+    path.join(os.homedir(), '.kiro', 'mcp.json')
+  ];
+}
 
 // Default config
 const defaultConfig = {
@@ -128,12 +137,7 @@ async function checkForUpdates() {
 // MCP Integration Detection
 function getMcpConfig() {
   // Check in order: workspace settings, workspace root, user, legacy
-  const configPaths = [
-    KIRO_MCP_CONFIG_WORKSPACE_SETTINGS,
-    KIRO_MCP_CONFIG_WORKSPACE_ROOT,
-    KIRO_MCP_CONFIG_USER,
-    KIRO_MCP_CONFIG_LEGACY
-  ];
+  const configPaths = getMcpLookupPaths();
 
   for (const configPath of configPaths) {
     try {
@@ -166,6 +170,27 @@ function getAtlassianMcpName() {
     name.toLowerCase().includes('atlassian') ||
     name.toLowerCase().includes('jira')
   );
+}
+
+// Return every MCP server name configured in ANY of the lookup paths,
+// merged and deduplicated. Used by getAgentTemplates() to grant kspec
+// agents access to all configured MCP servers — workspace-plus-user
+// setups (workspace mcp.json + global ~/.kiro/...) need both files
+// aggregated, since getMcpConfig() returns only the first match for
+// backward-compat reasons.
+function getAllMcpNames() {
+  const lookupPaths = getMcpLookupPaths();
+  const names = new Set();
+  for (const configPath of lookupPaths) {
+    try {
+      if (!fs.existsSync(configPath)) continue;
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (cfg && cfg.mcpServers) {
+        for (const name of Object.keys(cfg.mcpServers)) names.add(name);
+      }
+    } catch {}
+  }
+  return [...names];
 }
 
 // File locking for concurrent access protection
@@ -464,13 +489,19 @@ async function prompt(question, choices) {
   });
 }
 
-async function confirm(question) {
-  const answer = await prompt(`${question} (Y/n): `);
-  if (!answer) return true; // Empty = yes (default)
+async function confirm(question, defaultValue = true) {
+  const suffix = defaultValue ? '(Y/n)' : '(y/N)';
+  const answer = await prompt(`${question} ${suffix}: `);
+  if (!answer) return defaultValue; // Empty = use the default
   const lower = answer.toLowerCase().trim();
-  // Accept: y, yes, true, 1, or any non-"n"/"no"/"false"/"0" response
-  if (lower === 'n' || lower === 'no' || lower === 'false' || lower === '0') return false;
-  return true; // Default to yes for any other input (including "copilot", "sure", etc.)
+  if (defaultValue) {
+    // Default-yes: only explicit no answers flip to false
+    if (lower === 'n' || lower === 'no' || lower === 'false' || lower === '0') return false;
+    return true;
+  }
+  // Default-no: only explicit yes answers flip to true
+  if (lower === 'y' || lower === 'yes' || lower === 'true' || lower === '1') return true;
+  return false;
 }
 
 function resetToDefaultAgent(cli) {
@@ -482,12 +513,56 @@ function resetToDefaultAgent(cli) {
   }
 }
 
-function chat(message, agent) {
+// Build the kiro-cli argv for a chat invocation. Pure helper so we can
+// unit-test that headless/passthrough flags survive the kspec → kiro-cli
+// hop. `passthroughArgs` is appended ahead of the message so kiro-cli
+// parses them as flags, not as part of the prompt body.
+function buildChatArgs(message, agent, passthroughArgs = []) {
+  const base = agent ? ['chat', '--agent', agent] : ['chat'];
+  return [...base, ...passthroughArgs, message];
+}
+
+// Split `kspec review` argv into (a) flags kspec consumes itself and
+// (b) flags forwarded to kiro-cli (e.g. --no-interactive,
+// --trust-tools=...) so headless mode in CI actually reaches Kiro.
+// Pure helper so we can test classification without spawning kiro-cli.
+//
+// Heuristics for unknown forwarded flags (without a flag schema):
+// - `--flag=value` is self-contained → forwarded as one token.
+// - `--no-foo` is treated as boolean → no value consumed.
+// - `--foo` followed by a non-`-`-prefixed token consumes that token as
+//   its value (Unix convention). Targets that follow value-bearing flags
+//   should be passed as `--flag=value` to disambiguate.
+const KSPEC_REVIEW_FLAGS = new Set(['--simple', '--sequential']);
+function classifyReviewArgs(args) {
+  const passthroughArgs = [];
+  const targetArgs = [];
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i];
+    if (!tok.startsWith('--')) {
+      targetArgs.push(tok);
+      continue;
+    }
+    const name = tok.split('=')[0];
+    if (KSPEC_REVIEW_FLAGS.has(name)) continue;
+    passthroughArgs.push(tok);
+    if (tok.includes('=')) continue;          // --flag=value form
+    if (name.startsWith('--no-')) continue;    // boolean flag
+    const next = args[i + 1];
+    if (next !== undefined && !next.startsWith('-')) {
+      passthroughArgs.push(next);
+      i++;
+    }
+  }
+  return { passthroughArgs, targetArgs };
+}
+
+function chat(message, agent, passthroughArgs = []) {
   // Refresh context before each chat to ensure LLM has latest state
   refreshContext();
 
   const cli = requireCli();
-  const args = agent ? ['chat', '--agent', agent, message] : ['chat', message];
+  const args = buildChatArgs(message, agent, passthroughArgs);
   const child = spawn(cli, args, { stdio: 'inherit' });
   return new Promise((resolve, reject) => {
     child.on('error', err => {
@@ -846,14 +921,16 @@ ${hasDesign ? '- Run `kspec verify-design` to review' : '- Run `kspec design` to
 }
 
 // Templates
-// Steering templates with Kiro-native front matter
-// inclusion_mode: always | on_demand | never
-// always = included in every prompt (default)
-// on_demand = agent can request when needed
-// never = reference only, not auto-included
+// Steering templates with Kiro-native front matter.
+// inclusion: always | auto | fileMatch | manual
+//   always    = included in every prompt
+//   auto      = Kiro decides based on context
+//   fileMatch = loaded only when files matching fileMatchPattern are touched
+//   manual    = reference only (user must explicitly request)
+// See: https://kiro.dev/docs/cli/steering/
 const steeringTemplates = {
   'product.md': `---
-inclusion_mode: always
+inclusion: always
 description: Product context and goals
 ---
 # Product Overview
@@ -868,7 +945,7 @@ description: Product context and goals
 [How success is measured]`,
 
   'tech.md': `---
-inclusion_mode: always
+inclusion: always
 description: Technology stack and architecture
 ---
 # Technology Stack
@@ -883,7 +960,7 @@ description: Technology stack and architecture
 [Build tools, package managers, linters]`,
 
   'testing.md': `---
-inclusion_mode: always
+inclusion: always
 description: Testing standards and TDD approach
 ---
 # Testing Standards
@@ -900,7 +977,7 @@ TDD: Red → Green → Refactor
 [Minimum thresholds]`,
 
   'security.md': `---
-inclusion_mode: always
+inclusion: always
 description: Security requirements and practices
 ---
 # Security Guidelines
@@ -919,8 +996,9 @@ description: Security requirements and practices
 - Reference .env.example for required vars`,
 
   'api-standards.md': `---
-inclusion_mode: on_demand
-description: API design conventions (request when building APIs)
+inclusion: fileMatch
+fileMatchPattern: ['**/api/**', '**/routes/**', '**/handlers/**', '**/controllers/**']
+description: API design conventions (auto-loaded when working in API code)
 ---
 # API Standards
 
@@ -939,7 +1017,210 @@ description: API design conventions (request when building APIs)
 \`\`\`
 
 ## Versioning
-[API versioning strategy]`
+[API versioning strategy]`,
+
+  'frontend.md': `---
+inclusion: fileMatch
+fileMatchPattern: ['**/*.tsx', '**/*.jsx', '**/components/**', '**/pages/**', '**/styles/**', '**/*.css', '**/*.scss']
+description: Frontend conventions (auto-loaded when working in UI code)
+---
+# Frontend Standards
+
+## Component Structure
+[Naming, file layout, prop conventions]
+
+## Styling
+[CSS approach: Tailwind / CSS modules / styled-components]
+
+## State Management
+[Local state, global state, server state]
+
+## Accessibility
+- All interactive elements keyboard-accessible
+- Semantic HTML, proper ARIA labels
+- Color contrast meets WCAG AA`,
+
+  'backend.md': `---
+inclusion: fileMatch
+fileMatchPattern: ['**/server/**', '**/services/**', '**/db/**', '**/models/**', '**/migrations/**']
+description: Backend conventions (auto-loaded when working in server code)
+---
+# Backend Standards
+
+## Database
+[Schema migration approach, ORM/query builder]
+
+## Error Handling
+- Never leak internal errors to clients
+- Log structured errors with request ID
+- Use typed error classes
+
+## Performance
+- Add indexes for frequent queries
+- Cache expensive operations
+- Set query timeouts`
+};
+
+// Kiro Agent Skills (CLI 2.1+) — `.kiro/skills/<name>/SKILL.md` files
+// auto-become `/<skill-name>` slash commands inside the default Kiro chat.
+// Skills are lightweight workflow descriptions the default agent can invoke
+// without `/agent swap`. See: https://kiro.dev/docs/cli/skills/
+const SKILLS_DIR = path.join(KIRO_DIR, 'skills');
+
+const skillTemplates = {
+  'kspec-spec/SKILL.md': `---
+name: kspec-spec
+description: Create a kspec specification from a feature description (clarify → spec.md → spec-lite.md)
+---
+# Create a kspec specification
+
+Use this skill when starting any new feature, refactor, or non-trivial bug fix
+that benefits from up-front design.
+
+## When to invoke
+- "Build a feature that does X"
+- "Plan a refactor of Y"
+- "I need to fix Z but it's complex"
+
+## Workflow
+1. Read \`.kiro/CONTEXT.md\` and \`.kiro/steering/\` for project context.
+2. Ask clarifying questions about scope, constraints, success criteria.
+   Don't skip this — ambiguous specs produce wasted code.
+3. Create \`.kiro/specs/YYYY-MM-DD-<slug>/\` with \`spec.md\` (full) and
+   \`spec-lite.md\` (compressed for post-compact recovery).
+4. Update \`.kiro/.current\` and \`.kiro/CONTEXT.md\`.
+5. Point users at the next step using existing entry points: run
+   \`kspec design\` / \`kspec tasks\` from the terminal, or
+   \`/agent swap kspec-design\` / \`/agent swap kspec-tasks\` in chat.
+
+## Related
+- Terminal equivalent: \`kspec spec "Feature description"\`
+- Direct agent: \`/agent swap kspec-spec\`
+- Verify after: \`/kspec-verify\` or \`kspec verify-spec\`
+`,
+
+  'kspec-build/SKILL.md': `---
+name: kspec-build
+description: Execute kspec tasks with strict TDD (red → green → refactor → full suite)
+---
+# Build a kspec spec with strict TDD
+
+Use this skill to implement an existing kspec spec one task at a time, with
+mandatory red-green-refactor discipline.
+
+## When to invoke
+- "Build the next task"
+- "Implement the spec"
+- "Pick up where we left off"
+
+## Strict TDD (do NOT skip steps)
+1. **RED** — Write a failing test that captures the expected behavior.
+2. **VERIFY RED** — Run the test. Confirm it FAILS. Log the failure output.
+   If it passes, the test is wrong — investigate. Do NOT proceed until you
+   have a confirmed failing test.
+3. **GREEN** — Write the MINIMUM code to make the failing test pass.
+4. **VERIFY GREEN** — Run the test. Confirm it passes.
+5. **REFACTOR** — Clean up. Run tests again to confirm no regression.
+6. **FULL SUITE** — Run ALL tests to ensure nothing else broke.
+
+Each red-green-refactor cycle = one commit with descriptive message.
+
+## Related
+- Terminal: \`kspec build\` (or \`kspec build --chunk N\`, \`--all\`, \`--no-tdd\`)
+- Direct agent: \`/agent swap kspec-build\`
+- After build: \`/kspec-verify\` or \`/kspec-review\`
+`,
+
+  'kspec-review/SKILL.md': `---
+name: kspec-review
+description: Multi-CLI parallel code review (kiro-cli + Copilot/Claude/Gemini/Codex/Aider) with synthesis
+---
+# Review code with multiple AI reviewers
+
+Use this skill when finishing a feature or before merging a PR. Runs every
+configured reviewer CLI in parallel, then synthesizes findings.
+
+## When to invoke
+- "Review my changes"
+- "Check this PR"
+- "What did I miss?"
+
+## Workflow
+1. Read \`.kiro/config.json\` for configured reviewers (copilot, gemini,
+   claude, codex, aider). Skip absent CLIs gracefully.
+2. Gather context: spec, steering rules, git diff vs main.
+3. Launch all configured reviewers in parallel with the same context.
+4. Collect findings, deduplicate, classify by severity.
+5. Output a consolidated report with consensus verdict.
+
+## Compliance check
+- Steering rules in \`.kiro/steering/\`
+- Spec acceptance criteria in \`.kiro/specs/<current>/spec.md\`
+- Test coverage threshold from \`testing.md\`
+
+## Related
+- Terminal: \`kspec review\` (or \`--simple\` for kiro-cli only)
+- Direct agent: \`/agent swap kspec-review\`
+- After review: \`/kspec-build\` to fix issues
+`,
+
+  'kspec-verify/SKILL.md': `---
+name: kspec-verify
+description: Verify a spec, design, tasks, or implementation against acceptance criteria
+---
+# Verify kspec artifacts
+
+Use this skill at any phase boundary (spec → design → tasks → implementation)
+to confirm the artifact is complete, consistent, and meets acceptance criteria.
+
+## When to invoke
+- "Is the spec ready for design?"
+- "Did I cover all the tasks?"
+- "Is the implementation done?"
+
+## Workflow
+1. Read \`.kiro/.current\` to get the current spec folder.
+2. Identify the artifact to verify (spec.md / design.md / tasks.md / code).
+3. Check each acceptance criterion is addressed.
+4. Flag gaps, ambiguities, or missing edge cases.
+5. Output a clear pass/fail verdict with specific gap list.
+
+## Related
+- Terminal: \`kspec verify\` (or \`verify-spec\`, \`verify-design\`, \`verify-tasks\`)
+- Direct agent: \`/agent swap kspec-verify\`
+`,
+
+  'kspec-jira/SKILL.md': `---
+name: kspec-jira
+description: Sync kspec spec/tasks to Jira (create issues, sub-tasks, link spec ↔ tickets)
+---
+# Sync kspec to Jira
+
+Use this skill to push spec progress to Jira. Requires the Atlassian MCP
+server to be configured.
+
+## When to invoke
+- "Create a Jira ticket for this spec"
+- "Sync my tasks to Jira sub-tasks"
+- "Update the Jira issue with progress"
+
+## Prerequisites
+- Atlassian MCP configured (\`kiro-cli mcp add --name atlassian\`)
+- Default Jira project in \`.kiro/config.json\` (set during \`kspec init\`)
+
+## Workflow
+1. Read current spec from \`.kiro/.current\`.
+2. Read existing Jira links from \`<spec>/jira-links.json\`.
+3. If creating: post issue with spec summary + acceptance criteria.
+   If updating: patch description with current progress.
+4. For \`/kspec-jira sub-tasks\`: parse \`tasks.md\` and create one sub-task
+   per task.
+5. Save link mappings back to \`jira-links.json\`.
+
+## Related
+- Terminal: \`kspec sync-jira\`, \`kspec jira-pull\`, \`kspec jira-subtasks\`
+- Direct agent: \`/agent swap kspec-jira\`
+`
 };
 
 // Get configured model (with fallback)
@@ -948,13 +1229,173 @@ function getConfiguredModel() {
   return cfg.model || 'claude-sonnet-4.6';
 }
 
+// Least-privilege scoping for agent write access. Each agent gets the
+// minimum path glob it needs. See:
+//   https://kiro.dev/docs/cli/custom-agents/configuration-reference/
+const AGENT_PATH_SCOPES = {
+  // State-only agents — only touch .kiro/
+  'kspec-analyse':  ['.kiro/**'],
+  'kspec-context':  ['.kiro/**'],
+  'kspec-refresh':  ['.kiro/**'],
+  'kspec-jira':     ['.kiro/**'],
+  'kspec-demo':     ['.kiro/**'],
+  'kspec-estimate': ['.kiro/**'],
+  'kspec-revise':   ['.kiro/**'],
+  // Spec-pipeline agents — write specs/tasks under .kiro/, may touch a
+  // few root config files (e.g. AGENTS.md updates)
+  'kspec-spec':     ['.kiro/**', 'AGENTS.md'],
+  'kspec-design':   ['.kiro/**'],
+  'kspec-tasks':    ['.kiro/**'],
+  'kspec-spike':    ['.kiro/**'],
+  // Verifiers — read-mostly, may write reports under .kiro/
+  'kspec-verify':   ['.kiro/**'],
+  'kspec-review':   ['.kiro/**'],
+  // Code-modifying agents — broader source access
+  'kspec-build':    ['.kiro/**', 'src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', 'spec/**', '*.md', '*.json', '*.yml', '*.yaml', '*.ts', '*.tsx', '*.js', '*.jsx', '*.py', '*.go', '*.rs'],
+  'kspec-fix':      ['.kiro/**', 'src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', 'spec/**', '*.md', '*.ts', '*.tsx', '*.js', '*.jsx', '*.py', '*.go', '*.rs'],
+  'kspec-refactor': ['.kiro/**', 'src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', 'spec/**', '*.ts', '*.tsx', '*.js', '*.jsx', '*.py', '*.go', '*.rs']
+};
+
+// Always-denied paths — applies to every agent regardless of allowedPaths.
+// Stops accidental writes to secrets, git internals, dependency dirs.
+const COMMON_DENIED_PATHS = [
+  '.env',
+  '.env.*',
+  '**/.env',
+  '**/.env.*',
+  '**/secrets/**',
+  '**/credentials/**',
+  '**/*.pem',
+  '**/*.key',
+  '.git/**',
+  'node_modules/**',
+  'vendor/**',
+  'dist/**',
+  'build/**'
+];
+
+// Shared shell scope for code-modifying agents (build/fix/refactor):
+// can run tests, install deps locally, and edit-then-commit, but no
+// destructive ops, no global installs, no network fetchers.
+const BUILD_SHELL_SCOPE = {
+  allowedCommands: [
+    'npm *', 'pnpm *', 'yarn *',
+    'pytest', 'pytest *',
+    'go test', 'go test *', 'go build', 'go build *',
+    'cargo test', 'cargo test *', 'cargo build', 'cargo build *',
+    'mvn *', 'gradle *',
+    'git status', 'git diff', 'git diff *', 'git log', 'git log *',
+    'git add *', 'git commit *', 'git checkout *', 'git branch *',
+    'mkdir *', 'touch *',
+    'node *', 'python *', 'python3 *', 'ruby *',
+    'rg *', 'grep *', 'find *', 'ls', 'ls *', 'cat *', 'head *', 'tail *', 'wc *'
+  ],
+  deniedCommands: [
+    'rm -rf *', 'rm -r *',
+    'git push *', 'git reset --hard *', 'git clean -f*', 'git rebase *',
+    'sudo *', 'su *',
+    'curl *', 'wget *',
+    'npm publish*', 'npm install -g*', 'pip install *', 'gem install *',
+    'apt *', 'apt-get *', 'brew *',
+    'chmod 777*', 'chown *'
+  ],
+  autoAllowReadonly: true
+};
+
+// Shell command scopes per agent. `autoAllowReadonly: true` exempts safe
+// ls/cat/git-status style commands. Both `'shell'` and `'bash'` tool
+// declarations get gated by getAgentToolsSettings().
+const AGENT_SHELL_SCOPES = {
+  'kspec-build':    BUILD_SHELL_SCOPE,
+  'kspec-fix':      BUILD_SHELL_SCOPE,
+  'kspec-refactor': BUILD_SHELL_SCOPE,
+  // Verifiers/reviewers: read-only command surface
+  'kspec-verify': {
+    allowedCommands: [
+      'npm test', 'npm test *', 'npm run test*',
+      'pnpm test*', 'yarn test*',
+      'pytest', 'pytest *',
+      'go test', 'go test *',
+      'cargo test', 'cargo test *',
+      'git status', 'git diff', 'git diff *', 'git log', 'git log *',
+      'rg *', 'grep *', 'find *', 'ls', 'ls *', 'cat *'
+    ],
+    deniedCommands: ['rm *', 'git push *', 'git commit *', 'git reset *', 'sudo *', 'curl *', 'wget *'],
+    autoAllowReadonly: true
+  },
+  'kspec-review': {
+    allowedCommands: [
+      'git status', 'git diff', 'git diff *', 'git log', 'git log *',
+      'rg *', 'grep *', 'find *', 'ls', 'ls *', 'cat *', 'head *', 'tail *', 'wc *',
+      'npm test*', 'pytest', 'pytest *', 'go test*', 'cargo test*'
+    ],
+    deniedCommands: ['rm *', 'git push *', 'git commit *', 'git reset *', 'git checkout *', 'sudo *', 'curl *', 'wget *'],
+    autoAllowReadonly: true
+  }
+};
+
+// Subagent delegation graph — which kspec agents may invoke which others.
+// Makes the call graph explicit so admins/security review can audit it.
+// `availableAgents` whitelists callable agents; empty list = terminal agent.
+// See: https://kiro.dev/docs/cli/chat/subagents/
+const AGENT_SUBAGENT_GRAPH = {
+  'kspec-analyse':  ['kspec-spec'],
+  'kspec-spec':     ['kspec-verify', 'kspec-design'],
+  'kspec-design':   ['kspec-verify', 'kspec-tasks'],
+  'kspec-tasks':    ['kspec-verify', 'kspec-build'],
+  'kspec-build':    ['kspec-verify', 'kspec-review', 'kspec-fix'],
+  'kspec-verify':   [],
+  'kspec-review':   ['kspec-fix', 'kspec-build'],
+  'kspec-fix':      ['kspec-verify', 'kspec-review'],
+  'kspec-refactor': ['kspec-verify', 'kspec-review'],
+  'kspec-spike':    ['kspec-spec'],
+  'kspec-revise':   ['kspec-verify', 'kspec-tasks'],
+  'kspec-jira':     [],
+  'kspec-context':  [],
+  'kspec-refresh':  [],
+  'kspec-demo':     [],
+  'kspec-estimate': []
+};
+
+// Build a `toolsSettings` block for one agent. Returns undefined if no
+// scoping applies (e.g. unknown agent). Centralizes the conventions above.
+function getAgentToolsSettings(agentName, agentTools) {
+  const settings = {};
+
+  if (agentTools.includes('write')) {
+    const allowedPaths = AGENT_PATH_SCOPES[agentName] || ['.kiro/**'];
+    settings.write = {
+      allowedPaths,
+      deniedPaths: COMMON_DENIED_PATHS
+    };
+  }
+
+  // Some agents (e.g. kspec-fix, kspec-refactor) declare the `bash` tool
+  // instead of `shell`; gate both so write-capable agents don't escape
+  // least-privilege scoping.
+  const wantsShell = agentTools.includes('shell') || agentTools.includes('bash');
+  if (wantsShell && AGENT_SHELL_SCOPES[agentName]) {
+    settings.shell = AGENT_SHELL_SCOPES[agentName];
+  }
+
+  const subagents = AGENT_SUBAGENT_GRAPH[agentName];
+  if (subagents !== undefined) {
+    settings.subagent = { availableAgents: subagents };
+  }
+
+  return Object.keys(settings).length > 0 ? settings : undefined;
+}
+
 // Agent templates factory (uses configured model)
 function getAgentTemplates() {
   const model = getConfiguredModel();
-  const mcpName = getAtlassianMcpName();
 
-  // Agents that should have Atlassian MCP access when configured
-  const mcpAgents = ['kspec-spec', 'kspec-analyse', 'kspec-review', 'kspec-verify', 'kspec-revise', 'kspec-tasks', 'kspec-build'];
+  // Agents that should have access to every configured MCP server
+  // Agents on the dynamic MCP injection allow-list. kspec-jira is here
+  // (not just hard-coding `@atlassian`) so workspaces using non-default
+  // Atlassian MCP server names like `@jira` still get the configured
+  // server injected into the agent's tools list.
+  const mcpAgents = ['kspec-spec', 'kspec-analyse', 'kspec-review', 'kspec-verify', 'kspec-revise', 'kspec-tasks', 'kspec-build', 'kspec-jira'];
 
   const templates = {
   'kspec-analyse.json': {
@@ -1719,19 +2160,183 @@ PIPELINE:
   }
   };
 
-  // Dynamically inject Atlassian MCP access into agents when configured
-  if (mcpName) {
-    const mcpTool = `@${mcpName}`;
+  // Apply least-privilege toolsSettings to every agent (path scoping for
+  // write, command scoping for shell, explicit subagent delegation graph).
+  // Done before MCP injection so the dynamic MCP additions don't widen
+  // path/command surface.
+  for (const agent of Object.values(templates)) {
+    const settings = getAgentToolsSettings(agent.name, agent.tools);
+    if (settings) agent.toolsSettings = settings;
+  }
+
+  // Dynamically inject every configured MCP server into agents on the
+  // mcpAgents allow-list. Previously only Atlassian/Jira was injected; now
+  // any MCP the user has configured (github, confluence, slack, etc.) is
+  // exposed to the spec/build/review pipeline so agents can pull external
+  // context without manual lookups.
+  const allMcps = getAllMcpNames();
+  if (allMcps.length > 0) {
     for (const [filename, agent] of Object.entries(templates)) {
-      if (mcpAgents.includes(agent.name) && !agent.tools.includes(mcpTool)) {
-        agent.tools = [...agent.tools, mcpTool];
-        agent.allowedTools = [...agent.allowedTools, mcpTool];
-        agent.includeMcpJson = true;
+      if (!mcpAgents.includes(agent.name)) continue;
+      for (const server of allMcps) {
+        const mcpTool = `@${server}`;
+        if (!agent.tools.includes(mcpTool)) {
+          agent.tools = [...agent.tools, mcpTool];
+          agent.allowedTools = [...agent.allowedTools, mcpTool];
+        }
       }
+      agent.includeMcpJson = true;
+
+      // Append a usage hint to the prompt so the agent actually reaches
+      // for these tools. Helper REPLACES any pre-existing section so the
+      // prompt stays in sync when MCPs are renamed or removed.
+      agent.prompt = applyMcpToolsSection(agent.prompt, allMcps);
     }
   }
 
   return templates;
+}
+
+// Inject (or refresh) the MCP-tools usage hint section in an agent
+// prompt. The section is delimited by the `<!-- kspec:mcp-tools -->`
+// marker; everything from the marker to end-of-prompt is replaced. If
+// `mcpServers` is empty, the section is removed entirely. Idempotent.
+const MCP_TOOLS_MARKER = '<!-- kspec:mcp-tools -->';
+function applyMcpToolsSection(prompt, mcpServers) {
+  const idx = prompt.indexOf(MCP_TOOLS_MARKER);
+  const base = (idx === -1 ? prompt : prompt.slice(0, idx)).replace(/\s+$/, '');
+  if (!mcpServers || mcpServers.length === 0) return base;
+  const toolList = mcpServers.map(s => `\`@${s}\``).join(', ');
+  return `${base}
+
+${MCP_TOOLS_MARKER}
+## Available MCP Tools
+You have access to: ${toolList}.
+- Prefer MCP tools over manual lookups when fetching external context (Jira tickets, GitHub issues, Confluence pages, design docs).
+- Cite the source MCP and resource ID in spec/design output so reviewers can trace provenance.
+- If a relevant MCP is not in your tools list but seems needed, surface that as a question rather than guessing.`;
+}
+
+// Convert a kspec agent (JSON shape) to a Kiro IDE chat subagent markdown file
+// Format: YAML frontmatter (name, description, tools, model) + prompt body.
+// See: https://kiro.dev/docs/chat/subagents/
+function agentToMarkdown(agent) {
+  const fm = ['---'];
+  fm.push(`name: ${agent.name}`);
+  if (agent.description) fm.push(`description: ${JSON.stringify(agent.description)}`);
+  if (Array.isArray(agent.tools) && agent.tools.length > 0) {
+    fm.push(`tools: [${agent.tools.map(t => JSON.stringify(t)).join(', ')}]`);
+  }
+  if (agent.model) fm.push(`model: ${agent.model}`);
+  fm.push('---');
+  return `${fm.join('\n')}\n\n${agent.prompt || ''}\n`;
+}
+
+// Parse YAML frontmatter from a markdown file. Returns { frontmatter, body }.
+// Only handles the simple key: value shape we use in steering files.
+function parseFrontmatter(content) {
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: {}, body: content, raw: null };
+  const raw = match[1];
+  const body = match[2];
+  const frontmatter = {};
+  for (const line of raw.split('\n')) {
+    const m = line.match(/^([^:]+):\s*(.*)$/);
+    if (m) frontmatter[m[1].trim()] = m[2].trim();
+  }
+  return { frontmatter, body, raw };
+}
+
+// Extract top-level "## " headings from a markdown body. Case-insensitive,
+// trimmed. Returns a Set of heading strings (without the leading "## ").
+function extractH2Headings(body) {
+  const headings = new Set();
+  for (const line of body.split('\n')) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) headings.add(m[1].trim().toLowerCase());
+  }
+  return headings;
+}
+
+// Split a markdown body into sections keyed by their H2 heading. Preserves
+// any preamble (text before the first H2) under the empty-string key.
+function splitH2Sections(body) {
+  const sections = { '': '' };
+  let current = '';
+  for (const line of body.split('\n')) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) {
+      current = m[1].trim().toLowerCase();
+      sections[current] = line + '\n';
+    } else {
+      sections[current] = (sections[current] || '') + line + '\n';
+    }
+  }
+  return sections;
+}
+
+// Merge a kspec steering template into an existing file without overwriting
+// user content. Adds missing frontmatter keys and appends any H2 sections
+// from the template that the existing file doesn't already have.
+//
+// Operates on `existing.raw` (the raw YAML text) instead of rebuilding
+// frontmatter from parsed scalars, so multiline values like
+// `fileMatchPattern:\n  - '**/api/**'` survive unchanged.
+//
+// Returns { merged, addedSections, fmChanged } or null if no changes needed.
+function mergeSteeringFile(existingContent, templateContent) {
+  const existing = parseFrontmatter(existingContent);
+  const template = parseFrontmatter(templateContent);
+
+  // Build a working copy of the raw YAML. If existing had no frontmatter,
+  // start empty and we'll seed from the template below.
+  let rawFm = existing.raw == null ? '' : existing.raw;
+
+  // Migrate legacy `inclusion_mode` (kspec pre-Kiro-1.x) to Kiro's
+  // canonical `inclusion`. on_demand → auto, never → manual.
+  let migrated = false;
+  if (existing.frontmatter.inclusion_mode && !existing.frontmatter.inclusion) {
+    const legacyMap = { always: 'always', on_demand: 'auto', never: 'manual' };
+    const newValue = legacyMap[existing.frontmatter.inclusion_mode] || existing.frontmatter.inclusion_mode;
+    rawFm = rawFm.replace(/^inclusion_mode\s*:.*$/m, `inclusion: ${newValue}`);
+    existing.frontmatter.inclusion = newValue;
+    delete existing.frontmatter.inclusion_mode;
+    migrated = true;
+  }
+
+  // Append template keys that are missing from the existing frontmatter.
+  // We only append (never overwrite) so user values are preserved.
+  let appendedKeys = '';
+  for (const [k, v] of Object.entries(template.frontmatter)) {
+    if (!(k in existing.frontmatter)) {
+      const sep = rawFm && !rawFm.endsWith('\n') ? '\n' : '';
+      appendedKeys += `${sep}${k}: ${v}\n`;
+      existing.frontmatter[k] = v;
+    }
+  }
+  rawFm = (rawFm + appendedKeys).replace(/\s+$/, '');
+
+  const fmChanged = migrated || appendedKeys.length > 0 || existing.raw == null;
+
+  const existingHeadings = extractH2Headings(existing.body);
+  const templateSections = splitH2Sections(template.body);
+
+  const addedSections = [];
+  let appended = '';
+  for (const [heading, sectionText] of Object.entries(templateSections)) {
+    if (heading === '') continue;
+    if (!existingHeadings.has(heading)) {
+      appended += `\n<!-- added by kspec -->\n${sectionText}`;
+      addedSections.push(heading);
+    }
+  }
+
+  if (!fmChanged && addedSections.length === 0) return null;
+
+  const bodyTrimmed = existing.body.replace(/\s+$/, '');
+  const merged = `---\n${rawFm}\n---\n${bodyTrimmed}${appended ? '\n' + appended : ''}`.replace(/\s+$/, '') + '\n';
+
+  return { merged, addedSections, fmChanged };
 }
 
 // Reviewer CLI configurations (availability checked dynamically via checkCommand)
@@ -1900,7 +2505,7 @@ function extractCriticalIssues(critique) {
 }
 
 // Run all configured reviewers in parallel with independent full-context prompts
-async function runParallelReview(target, reviewers) {
+async function runParallelReview(target, reviewers, passthroughArgs = []) {
   const cfg = loadConfig();
   const folder = getCurrentSpec();
   const sessionFile = createReviewSession('parallel-review', target);
@@ -1923,8 +2528,17 @@ async function runParallelReview(target, reviewers) {
   }
 
   let diffContent = '';
+  // Honor an explicit target like `origin/main...HEAD` (set by the CI
+  // workflow for full PR coverage) instead of always reviewing HEAD~1.
+  // A target is treated as a git range/ref if it has no whitespace and
+  // contains git-range syntax (`..`/`...`, `^`, `~`, or is literal `HEAD`).
+  const targetIsGitRange = typeof target === 'string'
+    && target.length > 0
+    && !/\s/.test(target)
+    && /\.{2,3}|\^|~|^HEAD$/.test(target);
+  const diffCmd = targetIsGitRange ? `git diff ${shellEscape(target)}` : 'git diff HEAD~1';
   try {
-    diffContent = execSync('git diff HEAD~1', { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
+    diffContent = execSync(diffCmd, { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
   } catch {
     try {
       diffContent = execSync('git diff', { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
@@ -1980,7 +2594,7 @@ End with a verdict: APPROVE or REQUEST_CHANGES`;
 
 Check compliance with .kiro/steering/
 Evaluate ALL: spec compliance, missing implementations, quality, tests, security, performance, error handling.
-Output: APPROVE or REQUEST_CHANGES with specific issues marked [CRITICAL], [IMPORTANT], [MINOR], or [?].`, 'kspec-review');
+Output: APPROVE or REQUEST_CHANGES with specific issues marked [CRITICAL], [IMPORTANT], [MINOR], or [?].`, 'kspec-review', passthroughArgs);
     return { reviewer: 'kiro-cli', duration: Date.now() - start, output: getWorkOutput('review', target) || '(output in agent session)' };
   })();
   reviewPromises.push(kiroPromise);
@@ -2042,7 +2656,7 @@ ${synthesisInput}
 
 6. Final verdict: APPROVE or REQUEST_CHANGES
 
-Note: Issues flagged by multiple independent reviewers are more likely to be real problems.`, 'kspec-review');
+Note: Issues flagged by multiple independent reviewers are more likely to be real problems.`, 'kspec-review', passthroughArgs);
 
   // Extract final findings from session
   const allQuestions = findings.flatMap(f => extractOpenQuestions(f.output));
@@ -2366,7 +2980,7 @@ const hooksTemplateBasic = {
     ],
     onSessionStop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
       }
     ]
@@ -2383,7 +2997,7 @@ const hooksTemplateEnterprise = {
     ],
     onSessionStop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
       }
     ],
@@ -2425,7 +3039,7 @@ const hooksTemplateDocumentation = {
     ],
     onSessionStop: [
       {
-        command: 'kspec refresh-context',
+        command: 'kspec context',
         description: 'Update CONTEXT.md on session end'
       },
       {
@@ -2441,6 +3055,242 @@ const hooksTemplateDocumentation = {
     ]
   }
 };
+
+// Upgrade an existing `.gitignore` from the old kspec rules to the
+// current shape. Returns the new content, or `null` if no change.
+// Migrations:
+//  - whole-dir `.kiro/settings/` → per-file `.kiro/settings/*` plus
+//    `!.kiro/settings/hooks.json` so the CI hooks file is shareable.
+//  - ensure `.kiro/audit.log` is ignored.
+// Pure function so existing-init upgrades are testable without fs.
+function upgradeKspecGitignore(existing) {
+  let upgraded = existing;
+  if (/^\.kiro\/settings\/$/m.test(upgraded)) {
+    upgraded = upgraded.replace(
+      /^\.kiro\/settings\/$/m,
+      '.kiro/settings/*\n!.kiro/settings/hooks.json'
+    );
+  }
+  if (!/^\.kiro\/audit\.log$/m.test(upgraded)) {
+    if (/^!\.kiro\/settings\/hooks\.json$/m.test(upgraded)) {
+      upgraded = upgraded.replace(
+        /^!\.kiro\/settings\/hooks\.json$/m,
+        '!.kiro/settings/hooks.json\n.kiro/audit.log'
+      );
+    } else if (/^\.kiro\/settings\/\*$/m.test(upgraded)) {
+      upgraded = upgraded.replace(
+        /^\.kiro\/settings\/\*$/m,
+        '.kiro/settings/*\n!.kiro/settings/hooks.json\n.kiro/audit.log'
+      );
+    } else {
+      upgraded = upgraded.replace(/\n*$/, '') + '\n.kiro/audit.log\n';
+    }
+  }
+  return upgraded === existing ? null : upgraded;
+}
+
+// .gitignore block written by `kspec init`. Per-file rules under
+// `.kiro/settings/*` so we can opt-out specific shareable files
+// (hooks.json) from the directory-wide ignore. Audit log is local-only.
+const KSPEC_GITIGNORE_BLOCK = `
+# kspec local state (don't commit - personal working state)
+.kiro/.current
+.kiro/CONTEXT.md
+.kiro/settings/*
+!.kiro/settings/hooks.json
+.kiro/audit.log
+
+# DO commit these for team collaboration:
+# .kiro/settings/hooks.json - shared CI / team hooks (auto-included)
+# .kiro/config.json - project preferences
+# .kiro/specs/ - specifications, tasks, memory
+# .kiro/steering/ - product, tech, testing guidelines
+# .kiro/agents/ - agent configurations
+# .kiro/skills/ - Kiro Agent Skills (slash commands)
+# .kiro/mcp.json.template - MCP template (no secrets)
+`;
+
+// CI-friendly hook preset — designed for headless / GitHub-Actions
+// runs. Uses preToolUse / postToolUse to log + gate, plus
+// onSpecComplete to post Jira progress automatically.
+const hooksTemplateCi = {
+  hooks: {
+    preToolUse: [
+      {
+        tool: 'shell',
+        command: 'echo "[$(date -u +%FT%TZ)] tool=$KIRO_TOOL cmd=$KIRO_COMMAND" >> .kiro/audit.log',
+        description: 'Log every shell invocation for CI audit trail'
+      },
+      {
+        tool: 'shell',
+        // Catch destructive verbs at start-of-command, after a chain
+        // separator (`;`, `&&`, `||`, `|`), or after whitespace inside
+        // a command list. The `[^\s]*[/\\\\]?` prefix lets us match
+        // path-qualified binaries (`/bin/rm`, `\\rm`) that would
+        // otherwise bypass a literal-only check. Whitespace within the
+        // verb (`rm  -rf`, `rm\\t-rf`) is collapsed via `\\s+`.
+        pattern: '(?:^|[;&|]\\s*|\\s+)(?:[^\\s]*[/\\\\])?(rm\\s+-rf?|git\\s+push|sudo|curl\\s+http|wget\\s+http)',
+        block: true,
+        description: 'Hard-block destructive/network commands in CI (incl. chained, path-prefixed, and whitespace variants)'
+      }
+    ],
+    postToolUse: [
+      {
+        tool: 'write',
+        command: 'echo "[$(date -u +%FT%TZ)] write path=$KIRO_FILE" >> .kiro/audit.log',
+        description: 'Log every file write'
+      }
+    ],
+    onSpecComplete: [
+      {
+        command: 'kspec verify',
+        description: 'Verify spec/design/tasks consistency before publishing'
+      }
+      // Jira progress sync is opt-in: the enterprise preset adds
+      // `kspec sync-jira --progress` here, but the CI preset must work
+      // for non-Jira projects too (sync-jira dies without Atlassian
+      // MCP configured). Users can copy that hook over manually.
+    ],
+    onSessionStop: [
+      {
+        command: 'kspec context',
+        description: 'Refresh CONTEXT.md so the next CI run has fresh state'
+      }
+    ]
+  }
+};
+
+// Enterprise governance steering doc — auto-loaded so agents are aware
+// of org-level constraints (model registry, MCP allow-list, prompt
+// logging, IdP). Values get filled in during `kspec init --enterprise`.
+function getEnterpriseGovernanceTemplate(opts = {}) {
+  const mcpReg = opts.mcpRegistryUrl || '[admin-hosted JSON URL]';
+  const modelReg = opts.modelRegistryUrl || '[admin-hosted JSON URL]';
+  const idp = opts.idp || '[Okta / Entra ID / IAM Identity Center]';
+  // Default to ENABLED so the doc is correct when opts is empty (no init
+  // was run yet). Only opting out via promptLogging:false flips the text.
+  const promptLoggingEnabled = opts.promptLogging !== false;
+  const promptLoggingSection = promptLoggingEnabled
+    ? `This workspace runs with prompt logging ENABLED for SOC2 / regulatory
+auditability. All prompts and conversations are recorded by Kiro.
+
+- Do NOT include secrets, PII, customer data, or production credentials
+  in prompts.
+- Use placeholders or test fixtures for sensitive examples.
+- Reference \`secrets/\` files by path, never paste contents.`
+    : `Per workspace configuration, prompt logging is DISABLED. Prompts and
+conversations are NOT recorded by Kiro for this workspace.
+
+- Sensitive-data hygiene still applies — treat prompts as if they could
+  be retained downstream (model providers, integrations, screenshots).
+- Do NOT include secrets, PII, customer data, or production credentials
+  in prompts.
+- Reference \`secrets/\` files by path, never paste contents.`;
+  return `---
+inclusion: always
+description: Enterprise governance — admin-controlled MCP registry, model registry, prompt logging, IdP
+---
+# Enterprise Governance
+
+## MCP Registry (admin-controlled)
+Approved MCP servers are listed at: ${mcpReg}
+
+Kiro fetches this allow-list every 24h and terminates any MCP server
+not on the list. Do NOT manually add MCP servers without approval —
+they will be auto-revoked.
+
+To request a new MCP server: contact your Kiro admin.
+
+## Model Registry (admin-controlled)
+Approved models are listed at: ${modelReg}
+
+Agent \`model:\` fields must reference an approved model ID. Off-policy
+models will be silently rewritten to the org default.
+
+## Prompt Logging
+${promptLoggingSection}
+
+## Identity Provider
+Authentication uses ${idp}.
+
+- Sign in via the corporate IdP — never use personal accounts for
+  enterprise workspaces.
+- Token refresh and revocation are handled by the IdP. Sessions expire
+  per org policy.
+
+## What this means for agents
+- Cite governance constraints in spec output when relevant (e.g. "this
+  feature requires a new MCP — admin approval needed").
+- Surface model/MCP gaps as questions, never silently substitute.
+- Treat \`audit.log\` and \`.kiro/sessions/\` as evidence — do not delete.
+
+## See also
+- https://kiro.dev/docs/cli/enterprise/governance/mcp/
+- https://kiro.dev/docs/cli/enterprise/governance/model/
+- https://kiro.dev/docs/cli/enterprise/monitor-and-track/prompt-logging/
+`;
+}
+
+// GitHub Actions starter for headless kspec review on every PR.
+// Uses kiro-cli --no-interactive with KIRO_API_KEY (org secret) and
+// --trust-tools scoping per Kiro CLI 2.0+ headless mode.
+// See: https://kiro.dev/docs/cli/headless/
+const githubActionsKspecReview = `name: kspec review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  kspec-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install kiro-cli
+        run: |
+          curl -fsSL https://kiro.dev/install.sh | sh
+          echo "$HOME/.kiro/bin" >> $GITHUB_PATH
+
+      - name: Install kspec
+        run: npm install -g kspec
+
+      - name: Run kspec review (headless)
+        env:
+          KIRO_API_KEY: \${{ secrets.KIRO_API_KEY }}
+        run: |
+          # Review the full PR diff against the base branch — without an
+          # explicit target, kspec falls back to \`git diff HEAD~1\`,
+          # which only catches the last commit on multi-commit PRs.
+          kspec review "origin/\${{ github.base_ref }}...HEAD" --simple \\
+            --trust-tools=read,shell \\
+            --no-interactive \\
+            > review-output.md
+
+      - name: Post review as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('review-output.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '## kspec review\\n\\n' + body
+            });
+`;
 
 function validateContract(folder) {
   const specFile = path.join(folder, 'spec.md');
@@ -2658,49 +3508,140 @@ async function migrateV1toV2() {
 
 // Commands
 const commands = {
-  async init() {
+  async init(args = []) {
+    const enterpriseFlag = args.includes('--enterprise');
+    const ciMode = args.includes('--ci');
+    const yesFlag = args.includes('--yes') || args.includes('-y');
+
+    // KSPEC_ENTERPRISE=1 (or =true) flips the default of the opt-in
+    // prompt to Yes — orgs can set this in their dev container / shell
+    // init so devs land in enterprise mode by default but can still
+    // opt out per-project.
+    const envEnterprise = process.env.KSPEC_ENTERPRISE === '1'
+      || process.env.KSPEC_ENTERPRISE === 'true';
+
+    // `--ci`, `--enterprise`, and `--yes` are non-interactive flags:
+    // accept safe defaults for every subsequent prompt rather than
+    // hanging on stdin in CI/headless environments. Override individual
+    // defaults via env vars (KSPEC_MODEL, KSPEC_TEST_COMMAND).
+    const autoAccept = ciMode || enterpriseFlag || yesFlag;
+
     console.log('\n🚀 Welcome to kspec!\n');
-    
-    const dateFormat = await prompt('Date format for spec folders:', [
+    if (ciMode) console.log('🤖 CI mode: will scaffold GitHub Actions workflow + CI hooks preset.\n');
+    if (autoAccept) console.log('⏩ Non-interactive mode: using safe defaults for prompts.\n');
+
+    // Hybrid enterprise opt-in: --enterprise flag forces Yes (for CI
+    // / non-interactive use); otherwise ask, defaulting based on
+    // KSPEC_ENTERPRISE env var.
+    let enterpriseMode = enterpriseFlag;
+    if (!enterpriseFlag && !autoAccept) {
+      enterpriseMode = await confirm(
+        'Configure enterprise governance? (MCP/model registries, prompt logging, IdP)',
+        envEnterprise
+      );
+    } else if (!enterpriseFlag && autoAccept) {
+      enterpriseMode = envEnterprise;
+    }
+    if (enterpriseMode) console.log('🏢 Enterprise mode enabled — will configure governance + audit settings.\n');
+
+    const dateFormat = autoAccept ? 'YYYY-MM-DD' : await prompt('Date format for spec folders:', [
       { label: 'YYYY-MM-DD (2026-01-22) - sorts chronologically', value: 'YYYY-MM-DD' },
       { label: 'DD-MM-YYYY (22-01-2026)', value: 'DD-MM-YYYY' },
       { label: 'MM-DD-YYYY (01-22-2026)', value: 'MM-DD-YYYY' }
     ]);
 
-    const autoExecute = await prompt('Command execution during build:', [
+    // CI defaults to 'auto' so the build loop can actually execute; users
+    // who want manual gating shouldn't be running with --ci anyway.
+    const autoExecute = autoAccept ? 'auto' : await prompt('Command execution during build:', [
       { label: 'Ask for permission (recommended)', value: 'ask' },
       { label: 'Auto-execute (faster)', value: 'auto' },
       { label: 'Dry-run only (show, don\'t run)', value: 'dry' }
     ]);
 
-    const testCommand = await prompt('Test command (e.g., npm test, pytest) — leave empty to skip: ');
+    const testCommand = autoAccept
+      ? (process.env.KSPEC_TEST_COMMAND || '')
+      : await prompt('Test command (e.g., npm test, pytest) — leave empty to skip: ');
 
-    const modelChoice = await prompt('AI model for agents:', [
-      { label: 'claude-sonnet-4.6 (recommended)', value: 'claude-sonnet-4.6' },
-      { label: 'claude-opus-4.6 (most capable)', value: 'claude-opus-4.6' },
-      { label: 'claude-haiku-4.5 (fastest)', value: 'claude-haiku-4.5' },
-      { label: 'Custom (enter manually)', value: 'custom' }
-    ]);
+    const modelChoice = autoAccept
+      ? (process.env.KSPEC_MODEL || 'claude-sonnet-4.6')
+      : await prompt('AI model for agents:', [
+        { label: 'claude-sonnet-4.6 (recommended)', value: 'claude-sonnet-4.6' },
+        { label: 'claude-opus-4.6 (most capable)', value: 'claude-opus-4.6' },
+        { label: 'claude-haiku-4.5 (fastest)', value: 'claude-haiku-4.5' },
+        { label: 'Custom (enter manually)', value: 'custom' }
+      ]);
 
     let model = modelChoice;
     if (modelChoice === 'custom') {
-      model = await prompt('Enter custom model ID: ');
+      model = autoAccept
+        ? 'claude-sonnet-4.6'
+        : await prompt('Enter custom model ID: ');
       if (!model.trim()) model = 'claude-sonnet-4.6';
     }
 
-    const createSteering = await confirm('Create steering doc templates?');
+    const createSteering = autoAccept ? true : await confirm('Create steering doc templates?');
 
-    const createAgentsMd = await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
+    const createAgentsMd = autoAccept ? true : await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
 
-    const hooksChoice = await prompt('Configure Kiro hooks?', [
-      { label: 'None (skip hooks)', value: 'none' },
-      { label: 'Basic (format on save, context on stop)', value: 'basic' },
-      { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
-      { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' }
-    ]);
+    // CI doesn't use the IDE chat — default to false even with --yes.
+    const createIdeAgents = autoAccept ? false : await confirm(
+      'Also create Kiro IDE chat subagents (.md format)? Choose if you use Kiro chat in addition to CLI.',
+      false
+    );
 
-    // Multi-CLI review configuration
-    const configureReviewers = await confirm('Configure multi-CLI reviewers? (Copilot, Gemini, Claude, Codex)');
+    const createSkills = autoAccept ? true : await confirm(
+      'Create Kiro Agent Skills? (CLI 2.1+ — kspec workflows become /slash-commands in default chat)'
+    );
+
+    // Hook preset selection: --ci forces 'ci'; in autoAccept mode pick
+    // the safest default (basic) so users aren't surprised by a CI-only
+    // hook running in dev. Override via the explicit --ci flag.
+    const hooksChoice = ciMode
+      ? 'ci'
+      : (autoAccept ? 'basic' : await prompt('Configure Kiro hooks?', [
+          { label: 'None (skip hooks)', value: 'none' },
+          { label: 'Basic (format on save, context on stop)', value: 'basic' },
+          { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
+          { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' },
+          { label: 'CI (preToolUse audit + block destructive, onSpecComplete verify)', value: 'ci' }
+        ]));
+
+    // Enterprise governance prompts (gathered up-front so we can include
+    // them in the steering doc and config). In non-interactive mode,
+    // values come from env vars; missing values fall through to template
+    // placeholders so users can fill them in later.
+    let enterpriseConfig = null;
+    if (enterpriseMode) {
+      console.log('\n🏢 Enterprise governance setup:');
+      const mcpRegistryUrl = autoAccept
+        ? (process.env.KSPEC_MCP_REGISTRY_URL || '')
+        : await prompt('MCP registry URL (admin-hosted JSON allow-list, leave blank to skip): ');
+      const modelRegistryUrl = autoAccept
+        ? (process.env.KSPEC_MODEL_REGISTRY_URL || '')
+        : await prompt('Model registry URL (approved model list, leave blank to skip): ');
+      const idp = autoAccept
+        ? (process.env.KSPEC_IDP || 'Other')
+        : await prompt('Identity provider:', [
+            { label: 'Okta', value: 'Okta' },
+            { label: 'Microsoft Entra ID', value: 'Microsoft Entra ID' },
+            { label: 'AWS IAM Identity Center', value: 'AWS IAM Identity Center' },
+            { label: 'Other / not configured', value: 'Other' }
+          ]);
+      const promptLogging = autoAccept
+        ? (process.env.KSPEC_PROMPT_LOGGING !== 'false')
+        : await confirm('Enable prompt logging steering doc? (records that prompts are logged for audit)');
+      enterpriseConfig = {
+        mcpRegistryUrl: mcpRegistryUrl?.trim() || null,
+        modelRegistryUrl: modelRegistryUrl?.trim() || null,
+        idp,
+        promptLogging
+      };
+    }
+
+    // Multi-CLI review configuration. Skipped entirely in non-interactive
+    // mode since reviewers require external CLIs that may not be present
+    // in CI; users can run `kspec sync-agents` later to wire them up.
+    const configureReviewers = autoAccept ? false : await confirm('Configure multi-CLI reviewers? (Copilot, Gemini, Claude, Codex)');
     let reviewerClis = [];
 
     if (configureReviewers) {
@@ -2722,19 +3663,29 @@ const commands = {
     // Check for Jira integration
     let jiraConfig = { project: null, enabled: false };
     const hasMcp = hasAtlassianMcp();
+    const envJiraProject = (process.env.KSPEC_JIRA_PROJECT || '').trim();
 
     if (hasMcp) {
       console.log('\n✅ Atlassian MCP detected!');
-      const setupJira = await confirm('Configure Jira integration?');
+      if (autoAccept) {
+        if (envJiraProject) {
+          jiraConfig = { project: envJiraProject.toUpperCase(), enabled: true };
+          console.log(`  Jira project set to: ${jiraConfig.project} (from KSPEC_JIRA_PROJECT)`);
+        } else {
+          console.log('  Skipping Jira setup in non-interactive mode (set KSPEC_JIRA_PROJECT to enable).');
+        }
+      } else {
+        const setupJira = await confirm('Configure Jira integration?');
 
-      if (setupJira) {
-        const projectKey = await prompt('Default Jira project key (e.g., SECOPS, PROJ): ');
-        if (projectKey && projectKey.trim()) {
-          jiraConfig = {
-            project: projectKey.trim().toUpperCase(),
-            enabled: true
-          };
-          console.log(`  Jira project set to: ${jiraConfig.project}`);
+        if (setupJira) {
+          const projectKey = await prompt('Default Jira project key (e.g., SECOPS, PROJ): ');
+          if (projectKey && projectKey.trim()) {
+            jiraConfig = {
+              project: projectKey.trim().toUpperCase(),
+              enabled: true
+            };
+            console.log(`  Jira project set to: ${jiraConfig.project}`);
+          }
         }
       }
     } else {
@@ -2751,6 +3702,9 @@ const commands = {
       testCommand: testCommand.trim() || null,
       model: model.trim() || 'claude-sonnet-4.6',
       jira: jiraConfig,
+      ideAgents: createIdeAgents,
+      skills: createSkills,
+      enterprise: enterpriseConfig,
       reviewers: reviewerClis.length > 0 ? reviewerClis : null
     };
     saveConfig(cfg);
@@ -2768,7 +3722,50 @@ const commands = {
         if (!fs.existsSync(p)) {
           fs.writeFileSync(p, content);
           log(`Created ${p}`);
+        } else {
+          // File exists (likely from base Kiro IDE init). Merge missing
+          // sections without overwriting user content. Files outside our
+          // template list are left untouched.
+          try {
+            const existing = fs.readFileSync(p, 'utf8');
+            const result = mergeSteeringFile(existing, content);
+            if (result) {
+              fs.writeFileSync(p, result.merged);
+              const parts = [];
+              if (result.fmChanged) parts.push('frontmatter');
+              if (result.addedSections.length > 0) parts.push(`sections: ${result.addedSections.join(', ')}`);
+              log(`Merged ${p} (${parts.join('; ')})`);
+            } else {
+              log(`Skipped ${p} (already complete)`);
+            }
+          } catch (e) {
+            log(`Skipped ${p} (merge failed: ${e.message})`);
+          }
         }
+      }
+    }
+
+    // Enterprise governance steering doc — only written under
+    // --enterprise, but independent of createSteering: the doc is
+    // marked `inclusion: always` so agents always need it when
+    // enterprise mode is on, regardless of whether the user opted in
+    // to the generic steering templates.
+    if (enterpriseConfig) {
+      ensureDir(STEERING_DIR);
+      const govPath = path.join(STEERING_DIR, 'enterprise-governance.md');
+      const govContent = getEnterpriseGovernanceTemplate(enterpriseConfig);
+      if (!fs.existsSync(govPath)) {
+        fs.writeFileSync(govPath, govContent);
+        log(`Created ${govPath}`);
+      } else {
+        try {
+          const existing = fs.readFileSync(govPath, 'utf8');
+          const result = mergeSteeringFile(existing, govContent);
+          if (result) {
+            fs.writeFileSync(govPath, result.merged);
+            log(`Merged ${govPath}`);
+          }
+        } catch {}
       }
     }
 
@@ -2795,6 +3792,9 @@ const commands = {
         case 'documentation':
           hooksContent = hooksTemplateDocumentation;
           break;
+        case 'ci':
+          hooksContent = hooksTemplateCi;
+          break;
         default:
           hooksContent = hooksTemplateBasic;
       }
@@ -2810,8 +3810,9 @@ const commands = {
         fs.writeFileSync(p, JSON.stringify(content, null, 2));
         log(`Created ${p}`);
       } else {
-        // Update tools, allowedTools, and includeMcpJson to reflect current MCP config
-        // while preserving any custom prompt modifications
+        // Update tools, allowedTools, includeMcpJson, and toolsSettings to
+        // reflect current MCP config + scoping rules, while preserving any
+        // custom prompt modifications.
         try {
           const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
           let updated = false;
@@ -2824,11 +3825,93 @@ const commands = {
             existing.includeMcpJson = true;
             updated = true;
           }
+          if (content.toolsSettings && JSON.stringify(existing.toolsSettings) !== JSON.stringify(content.toolsSettings)) {
+            existing.toolsSettings = content.toolsSettings;
+            updated = true;
+          }
+          // Refresh the MCP-tools prompt section in-place so a re-init
+          // after MCP rename/removal doesn't leave stale `@server`
+          // instructions behind. Mirrors the sync-agents logic.
+          if (content.prompt.includes(MCP_TOOLS_MARKER)) {
+            const refreshed = applyMcpToolsSection(existing.prompt, getAllMcpNames());
+            if (refreshed !== existing.prompt) {
+              existing.prompt = refreshed;
+              updated = true;
+            }
+          } else if (existing.prompt.includes(MCP_TOOLS_MARKER)) {
+            // Template no longer wants the section (agent off allow-list).
+            const stripped = applyMcpToolsSection(existing.prompt, []);
+            if (stripped !== existing.prompt) {
+              existing.prompt = stripped;
+              updated = true;
+            }
+          }
           if (updated) {
             fs.writeFileSync(p, JSON.stringify(existing, null, 2));
             log(`Updated ${p} (MCP tools)`);
           }
         } catch {}
+      }
+    }
+
+    // Optionally also write Kiro IDE chat subagents (.md with YAML frontmatter).
+    // CLI agents (.json) already exist above; this adds matching .md siblings
+    // so the Kiro IDE chat window can pick them up.
+    // See: https://kiro.dev/docs/chat/subagents/
+    if (createIdeAgents) {
+      for (const [file, content] of Object.entries(getAgentTemplates())) {
+        const mdName = file.replace(/\.json$/, '.md');
+        const mdPath = path.join(AGENTS_DIR, mdName);
+        if (!fs.existsSync(mdPath)) {
+          fs.writeFileSync(mdPath, agentToMarkdown(content));
+          log(`Created ${mdPath}`);
+        } else {
+          // File exists — refresh tools/model in frontmatter to reflect
+          // current MCP config + configured model, but never touch the
+          // user-edited body.
+          try {
+            const existing = fs.readFileSync(mdPath, 'utf8');
+            const parsed = parseFrontmatter(existing);
+            const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
+            const desiredModel = content.model;
+            let mdChanged = false;
+            const changedParts = [];
+            if (parsed.frontmatter.tools !== desiredTools) {
+              parsed.frontmatter.tools = desiredTools;
+              mdChanged = true;
+              changedParts.push('MCP tools');
+            }
+            // Model can drift when the user re-runs `kspec init` after
+            // changing the configured model in .kiro/config.json.
+            if (desiredModel && parsed.frontmatter.model !== desiredModel) {
+              parsed.frontmatter.model = desiredModel;
+              mdChanged = true;
+              changedParts.push('model');
+            }
+            if (mdChanged) {
+              const fmLines = ['---'];
+              for (const [k, v] of Object.entries(parsed.frontmatter)) fmLines.push(`${k}: ${v}`);
+              fmLines.push('---');
+              fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${parsed.body}`);
+              log(`Updated ${mdPath} (${changedParts.join(', ')})`);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // Optionally scaffold Kiro Agent Skills (.kiro/skills/<name>/SKILL.md).
+    // CLI 2.1+ surfaces these as /<skill-name> slash commands in the default
+    // chat agent. See: https://kiro.dev/docs/cli/skills/
+    if (createSkills) {
+      ensureDir(SKILLS_DIR);
+      for (const [relPath, content] of Object.entries(skillTemplates)) {
+        const fullPath = path.join(SKILLS_DIR, relPath);
+        ensureDir(path.dirname(fullPath));
+        if (!fs.existsSync(fullPath)) {
+          fs.writeFileSync(fullPath, content);
+          log(`Created ${fullPath}`);
+        }
       }
     }
 
@@ -2849,26 +3932,41 @@ const commands = {
       log(`Created ${mcpTemplatePath} (commit this, OAuth handles auth)`);
     }
 
-    // Update .gitignore for kspec (append if exists, create if not)
-    const kspecGitignore = `
-# kspec local state (don't commit - personal working state)
-.kiro/.current
-.kiro/CONTEXT.md
-.kiro/settings/
+    // Scaffold GitHub Actions workflow when --ci is passed. Drops a
+    // sample headless review workflow at .github/workflows/kspec-review.yml
+    // that runs on every PR using KIRO_API_KEY (org secret) and
+    // --trust-tools scoping. See: https://kiro.dev/docs/cli/headless/
+    if (ciMode) {
+      const workflowsDir = path.join('.github', 'workflows');
+      ensureDir(workflowsDir);
+      const workflowPath = path.join(workflowsDir, 'kspec-review.yml');
+      if (!fs.existsSync(workflowPath)) {
+        fs.writeFileSync(workflowPath, githubActionsKspecReview);
+        log(`Created ${workflowPath}`);
+        log('  ↳ Add KIRO_API_KEY as a repo secret to enable.');
+      } else {
+        log(`Skipped ${workflowPath} (already exists — review for updates manually)`);
+      }
+    }
 
-# DO commit these for team collaboration:
-# .kiro/config.json - project preferences
-# .kiro/specs/ - specifications, tasks, memory
-# .kiro/steering/ - product, tech, testing guidelines
-# .kiro/agents/ - agent configurations
-# .kiro/mcp.json.template - MCP template (no secrets)
-`;
+    // Update .gitignore for kspec (append on first init, migrate on
+    // re-init from older versions, create if missing).
+    const kspecGitignore = KSPEC_GITIGNORE_BLOCK;
     const gitignorePath = '.gitignore';
     if (fs.existsSync(gitignorePath)) {
       const existing = fs.readFileSync(gitignorePath, 'utf8');
       if (!existing.includes('.kiro/.current')) {
         fs.appendFileSync(gitignorePath, kspecGitignore);
         log('Updated .gitignore with kspec entries');
+      } else {
+        // Already-initialized project. Migrate the kspec block from the
+        // old whole-dir rule and add audit.log if missing — necessary
+        // for the new shareable CI hooks file.
+        const upgraded = upgradeKspecGitignore(existing);
+        if (upgraded) {
+          fs.writeFileSync(gitignorePath, upgraded);
+          log('Migrated .gitignore to new kspec rules (settings/*, audit.log)');
+        }
       }
     } else {
       fs.writeFileSync(gitignorePath, kspecGitignore.trim() + '\n');
@@ -2880,15 +3978,33 @@ const commands = {
 
     console.log('\n✅ kspec initialized!\n');
     console.log('Created:');
-    if (createSteering) console.log('  - .kiro/steering/ (with front matter inclusion modes)');
+    if (createSteering) console.log('  - .kiro/steering/ (inclusion: always|auto|fileMatch|manual)');
     if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
     if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
-    console.log('  - .kiro/agents/ (kspec agents)');
+    console.log(`  - .kiro/agents/ (kspec agents${createIdeAgents ? ', JSON + IDE markdown' : ', JSON for CLI'})`);
+    if (createSkills) console.log('  - .kiro/skills/ (slash commands: /kspec-spec, /kspec-build, /kspec-review, ...)');
+    if (enterpriseConfig) console.log('  - .kiro/steering/enterprise-governance.md (MCP/model registries, prompt logging, IdP)');
+    if (ciMode) console.log('  - .github/workflows/kspec-review.yml (headless review on every PR)');
     console.log('  - .kiro/CONTEXT.md (agent context file)');
 
     if (reviewerClis.length > 0) {
       console.log(`\n📋 Multi-CLI Reviewers: ${reviewerClis.join(', ')}`);
       console.log('   Use: kspec review (auto-invokes configured reviewers)');
+    }
+
+    if (ciMode) {
+      console.log('\n🤖 CI setup complete. Next steps:');
+      console.log('   1. Add KIRO_API_KEY as a GitHub Actions repo secret.');
+      console.log('   2. Commit .github/workflows/kspec-review.yml.');
+      console.log('   3. Open a PR — kspec review will post automatically.');
+    }
+
+    if (enterpriseConfig) {
+      console.log('\n🏢 Enterprise governance configured:');
+      if (enterpriseConfig.mcpRegistryUrl) console.log(`   - MCP registry: ${enterpriseConfig.mcpRegistryUrl}`);
+      if (enterpriseConfig.modelRegistryUrl) console.log(`   - Model registry: ${enterpriseConfig.modelRegistryUrl}`);
+      console.log(`   - IdP: ${enterpriseConfig.idp}`);
+      if (enterpriseConfig.promptLogging) console.log('   - Prompt logging: documented in enterprise-governance.md');
     }
 
     console.log('\nAvailable powers (browse powers/ directory):');
@@ -3612,8 +4728,8 @@ After writing, show me what you wrote.`, 'kspec-spec');
   async review(args) {
     const skipLoop = args.includes('--simple');
     const useSequential = args.includes('--sequential');
-    const filteredArgs = args.filter(a => !a.startsWith('--'));
-    const target = filteredArgs.join(' ') || 'recent changes (git diff HEAD~1)';
+    const { passthroughArgs, targetArgs } = classifyReviewArgs(args);
+    const target = targetArgs.join(' ') || 'recent changes (git diff HEAD~1)';
 
     const cfg = loadConfig();
     const reviewers = cfg.reviewers || [];
@@ -3628,7 +4744,7 @@ After writing, show me what you wrote.`, 'kspec-spec');
 
 Check compliance with .kiro/steering/
 Evaluate quality, tests, security.
-Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review');
+Output: APPROVE or REQUEST_CHANGES with specifics.`, 'kspec-review', passthroughArgs);
       return;
     }
 
@@ -3658,8 +4774,10 @@ Provide detailed findings.`;
       return;
     }
 
-    // Default: Parallel independent reviews — each reviewer gets full unbiased context
-    const result = await runParallelReview(target, reviewers);
+    // Default: Parallel independent reviews — each reviewer gets full unbiased context.
+    // Forwarded headless flags reach the kiro-cli reviewer leg so CI runs
+    // don't hang once external reviewers are configured.
+    const result = await runParallelReview(target, reviewers, passthroughArgs);
 
     if (result.approved) {
       console.log('\n✅ Review complete! All reviewers agree — changes approved.\n');
@@ -3803,6 +4921,142 @@ Switch: /agent swap or use keyboard shortcuts
 Powers: contract, document, tdd, code-review, code-intelligence
   Browse: powers/ directory in kspec repo
 `);
+  },
+
+  async 'sync-agents'() {
+    // Re-runs the agent template merge logic from init() without touching
+    // steering, hooks, gitignore, or config. Use this after adding/removing
+    // an MCP server (e.g. `kiro-cli mcp add --name github`) to grant the
+    // new server's tools to all kspec agents.
+    if (!fs.existsSync(AGENTS_DIR)) {
+      die('No .kiro/agents/ directory. Run `kspec init` first.');
+    }
+
+    const allMcps = getAllMcpNames();
+    if (allMcps.length === 0) {
+      console.log('\nℹ️  No MCP servers configured. Nothing to inject.');
+      console.log('   Configure MCP via: kiro-cli mcp add --name <server>');
+      console.log('   Lookup paths checked:');
+      console.log('     - .kiro/settings/mcp.json');
+      console.log('     - .kiro/mcp.json');
+      console.log('     - ~/.kiro/settings/mcp.json');
+      console.log('     - ~/.kiro/mcp.json\n');
+    } else {
+      console.log(`\n🔌 Detected MCP servers: ${allMcps.map(s => `@${s}`).join(', ')}\n`);
+    }
+
+    let jsonUpdated = 0, mdUpdated = 0;
+    const cfg = loadConfig();
+
+    for (const [file, content] of Object.entries(getAgentTemplates())) {
+      const p = path.join(AGENTS_DIR, file);
+
+      // JSON: update tools/allowedTools/includeMcpJson, preserve custom
+      // prompt (only append MCP usage hint if our marker is missing).
+      if (fs.existsSync(p)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
+          let updated = false;
+          if (JSON.stringify(existing.tools) !== JSON.stringify(content.tools)) {
+            existing.tools = content.tools;
+            existing.allowedTools = content.allowedTools;
+            updated = true;
+          }
+          if (content.includeMcpJson && !existing.includeMcpJson) {
+            existing.includeMcpJson = true;
+            updated = true;
+          }
+          if (content.toolsSettings && JSON.stringify(existing.toolsSettings) !== JSON.stringify(content.toolsSettings)) {
+            existing.toolsSettings = content.toolsSettings;
+            updated = true;
+          }
+          // Prompt: refresh the MCP-tools section so removed/renamed MCPs
+          // don't leave stale `@github` / `@slack` references behind. The
+          // helper replaces any pre-existing section in-place.
+          if (content.prompt.includes(MCP_TOOLS_MARKER)) {
+            const refreshed = applyMcpToolsSection(existing.prompt, allMcps);
+            if (refreshed !== existing.prompt) {
+              existing.prompt = refreshed;
+              updated = true;
+            }
+          } else if (existing.prompt.includes(MCP_TOOLS_MARKER)) {
+            // Agent is no longer on the MCP allow-list — strip the section.
+            const stripped = applyMcpToolsSection(existing.prompt, []);
+            if (stripped !== existing.prompt) {
+              existing.prompt = stripped;
+              updated = true;
+            }
+          }
+          if (updated) {
+            fs.writeFileSync(p, JSON.stringify(existing, null, 2));
+            log(`Updated ${p}`);
+            jsonUpdated++;
+          }
+        } catch (e) {
+          log(`Skipped ${p} (parse failed: ${e.message})`);
+        }
+      }
+
+      // IDE markdown: update frontmatter tools line AND refresh the
+      // MCP-tools body section so renamed/removed MCPs don't leave
+      // stale `@server` guidance behind.
+      if (cfg.ideAgents) {
+        const mdPath = path.join(AGENTS_DIR, file.replace(/\.json$/, '.md'));
+        if (fs.existsSync(mdPath)) {
+          try {
+            const existing = fs.readFileSync(mdPath, 'utf8');
+            const parsed = parseFrontmatter(existing);
+            const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
+            const desiredModel = content.model;
+            let mdUpdatedThisFile = false;
+            if (parsed.frontmatter.tools !== desiredTools) {
+              parsed.frontmatter.tools = desiredTools;
+              mdUpdatedThisFile = true;
+            }
+            // Same model-drift fix as the init re-init path: keep the
+            // IDE markdown agent's model line in sync with the
+            // configured model.
+            if (desiredModel && parsed.frontmatter.model !== desiredModel) {
+              parsed.frontmatter.model = desiredModel;
+              mdUpdatedThisFile = true;
+            }
+            let newBody = parsed.body;
+            // Mirror the JSON-prompt logic: refresh the section for
+            // allow-list agents, strip it for agents no longer on the list.
+            if (content.prompt.includes(MCP_TOOLS_MARKER)) {
+              const refreshed = applyMcpToolsSection(newBody, allMcps);
+              if (refreshed !== newBody.replace(/\s+$/, '')) {
+                newBody = refreshed;
+                mdUpdatedThisFile = true;
+              }
+            } else if (newBody.includes(MCP_TOOLS_MARKER)) {
+              const stripped = applyMcpToolsSection(newBody, []);
+              if (stripped !== newBody.replace(/\s+$/, '')) {
+                newBody = stripped;
+                mdUpdatedThisFile = true;
+              }
+            }
+            if (mdUpdatedThisFile) {
+              const fmLines = ['---'];
+              for (const [k, v] of Object.entries(parsed.frontmatter)) fmLines.push(`${k}: ${v}`);
+              fmLines.push('---');
+              fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${newBody}\n`);
+              log(`Updated ${mdPath}`);
+              mdUpdated++;
+            }
+          } catch (e) {
+            log(`Skipped ${mdPath} (parse failed: ${e.message})`);
+          }
+        }
+      }
+    }
+
+    console.log(`\n✅ Synced agents (${jsonUpdated} JSON, ${mdUpdated} markdown updated)`);
+    if (jsonUpdated === 0 && mdUpdated === 0) {
+      console.log('   All agents already in sync with current MCP config.\n');
+    } else {
+      console.log('\nRestart any active kiro-cli sessions to pick up new tools.\n');
+    }
   },
 
   async update() {
@@ -4264,7 +5518,10 @@ Be conservative — when in doubt, keep the entry.`, 'kspec-analyse');
 kspec - Spec-driven development for Kiro CLI
 
 CLI Workflow (outside kiro-cli):
-  kspec init              Interactive setup
+  kspec init              Interactive setup (asks once whether to configure enterprise governance)
+  kspec init --enterprise Skip the prompt — go straight into enterprise governance setup
+  kspec init --ci         Setup with GitHub Actions workflow + CI hooks preset
+                          Tip: set KSPEC_ENTERPRISE=1 in your shell to default the prompt to Yes
   kspec analyse           Analyse codebase, update steering
   kspec spec "Feature"    Create specification (asks clarifying questions first)
   kspec verify-spec       Interactively review and shape spec
@@ -4344,6 +5601,7 @@ Other:
   kspec list              List all specs
   kspec status            Current status
   kspec agents            List agents
+  kspec sync-agents       Refresh agent JSON/markdown after adding new MCP servers
   kspec update            Check for updates
   kspec help              Show this help
 
@@ -4396,4 +5654,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, getConfiguredModel };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
