@@ -2669,12 +2669,43 @@ z`;
       // Comma-separated keys (matching CLI behavior)
       assert.match(spec, /PROJ-123,PROJ-456/, 'mentions comma-separated keys');
       // Must instruct the agent to act on Jira input BEFORE generic Qs
-      assert.match(spec, /Detect Jira input FIRST/, 'has explicit "Jira first" step');
+      assert.match(spec, /Detect Jira input FIRST/i, 'has explicit "Jira first" step');
       // Must instruct using the Atlassian MCP
       assert.match(spec, /Atlassian MCP/, 'mentions Atlassian MCP');
       assert.match(spec, /@atlassian/, 'mentions @atlassian tool');
       // Must mention the fallback when MCP is missing
       assert.match(spec, /kspec spec --jira/, 'mentions kspec spec --jira fallback');
+    });
+
+    it('kspec-spec skill has hard-rule preamble forbidding "what do you want to spec?" fallback', () => {
+      const spec = skillTemplates['kspec-spec/SKILL.md'];
+      // Must have an explicit "NEVER ask for clarification when input is present" rule
+      assert.match(spec, /NEVER respond with.*feature description|NEVER.*what.*to spec/i,
+        'must forbid the generic clarification response');
+      // Must instruct that meta-sounding feature titles are valid input
+      assert.match(spec, /sounds meta|"create a spec for"/i,
+        'must explicitly allow meta-phrased feature titles');
+      // Must contain at least one worked example with --jira + quoted title
+      assert.match(spec, /--jira\s+ACME-456|--jira\s+PROJ-\d+.*"/i,
+        'must contain a worked example showing --jira + title');
+      // Must say slash-command args are user intent, not questions
+      assert.match(spec, /always the user's intent|never a question/i,
+        'must clarify slash-command args are intent not requests');
+    });
+
+    it('kspec-spec agent prompt has same hard-rule preamble + Jira detection BEFORE clarify', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates()['kspec-spec.json'];
+      assert.match(agent.prompt, /HARD RULES/i, 'agent prompt has explicit HARD RULES block');
+      assert.match(agent.prompt, /NEVER respond with.*feature description/i,
+        'agent prompt forbids generic clarification');
+      // Jira detection step must precede the DISCUSS/clarify step in the prompt text
+      const detectIdx = agent.prompt.search(/DETECT JIRA INPUT FIRST/i);
+      const discussIdx = agent.prompt.search(/^3\. DISCUSS|DISCUSS — only when/im);
+      assert.ok(detectIdx > 0, 'agent prompt has DETECT JIRA INPUT FIRST step');
+      assert.ok(discussIdx > detectIdx, 'DISCUSS step must come after Jira detection');
+      // ACME-456 (the user's reported failure case) should appear as a worked example
+      assert.match(agent.prompt, /ACME-456/, 'agent prompt has ACME-456 worked example');
     });
 
     it('kspec-spec agent prompt detects --jira flag, URLs, and bare keys', () => {

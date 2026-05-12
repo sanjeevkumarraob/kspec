@@ -1074,49 +1074,81 @@ description: Create a kspec specification from a feature description or Jira iss
 ---
 # Create a kspec specification
 
-Use this skill when starting any new feature, refactor, or non-trivial bug fix
-that benefits from up-front design.
+You have been invoked via \`/kspec-spec\`. The user has already committed to creating a spec. **Do not ask "what would you like to spec?" — execute the workflow below using whatever input the user provided.**
 
-## When to invoke
-- "Build a feature that does X"
-- "Plan a refactor of Y"
-- "I need to fix Z but it's complex"
-- "Create a spec from this Jira ticket: <URL>" or "from PROJ-123"
-- CLI-style flag: \`/kspec-spec --jira PROJ-123 "Feature name"\` (multiple keys allowed: \`--jira PROJ-123,PROJ-456\`)
+## STEP 0 — Hard rules (read before responding)
 
-## Step 1 — Detect Jira input FIRST (before any clarifying questions)
-Scan the user's message for any of:
-- An explicit \`--jira <KEY>\` or \`--jira=<KEY>\` flag (mirrors the CLI: \`kspec spec --jira PROJ-123 "Feature"\`). Comma-separated keys are allowed (\`--jira PROJ-123,PROJ-456\`).
-- A Jira URL matching \`https://*.atlassian.net/browse/<KEY>\`, \`*.atlassian.com/browse/<KEY>\`, or \`*.jira.com/browse/<KEY>\`
-- A bare issue key matching \`[A-Z][A-Z0-9_]+-\\d+\` (e.g. \`PROJ-123\`, \`SECOPS-456\`)
+- **NEVER respond with "I need a feature description" or "what do you want to spec?"** if any of the following is present in the user message:
+  - The string \`--jira\` followed by anything
+  - A substring matching the Jira URL pattern \`atlassian.net/browse/\` or \`atlassian.com/browse/\` or \`jira.com/browse/\`
+  - A token matching the regex \`[A-Z][A-Z0-9_]+-\\d+\` (an issue key like \`PROJ-123\`, \`ACME-456\`, \`SECOPS-456\`)
+  - A free-text feature description of any length, even if it sounds meta (e.g. "create a spec for email notifications" — treat as the feature title, **not** as a request for clarification)
+- The argument string to a slash command is **always the user's intent**, never a question. Process it.
+- The ONLY time you ask a clarifying question is in Step 2 below, and only when **none** of the Jira detection rules in Step 1 matched. Even then, ask focused functional questions — never a "what would you like to spec" preamble.
 
-If a Jira reference is present:
-1. Strip the \`--jira <KEY>\` flag (or URL/key) from the user's message — the remainder is the optional feature name. If no feature name is given, derive one from the first issue key (e.g. \`jira-proj-123\`), matching the CLI's behavior.
-2. Check the available tools list for an Atlassian MCP (\`@atlassian\`, \`@jira\`, or similar).
-3. If found: use the MCP to fetch each issue's summary, description, acceptance criteria, and recent comments.
-4. Use the fetched content as the **basis** for the spec — do NOT ask generic clarifying questions for fields Jira already answered (problem statement, acceptance criteria, scope).
-5. Only ask targeted follow-ups about things the ticket is silent on (e.g. "Jira covers the API surface but doesn't mention auth — should this require login?").
-6. If no Atlassian MCP is available: tell the user to either configure it (\`kiro-cli mcp add --name atlassian\`) or use \`kspec spec --jira PROJ-123 "Feature"\` from the terminal, which has the same integration.
+## STEP 1 — Detect Jira input FIRST
 
-If no Jira reference: continue to Step 2.
+Scan the user's message for **any** of:
 
-## Step 2 — Clarifying questions (only when no Jira input)
-Read \`.kiro/CONTEXT.md\` and \`.kiro/steering/\` for project context, then ask 2-4 targeted questions:
+1. **\`--jira <KEY>\` or \`--jira=<KEY>\` flag** (mirrors the CLI: \`kspec spec --jira PROJ-123 "Feature"\`). Comma-separated keys allowed (\`--jira PROJ-123,PROJ-456\`).
+2. **A Jira URL**: \`https://*.atlassian.net/browse/<KEY>\`, \`*.atlassian.com/browse/<KEY>\`, or \`*.jira.com/browse/<KEY>\` — extract the trailing segment after \`/browse/\`.
+3. **A bare issue key** matching \`[A-Z][A-Z0-9_]+-\\d+\` (e.g. \`PROJ-123\`, \`ACME-456\`, \`SECOPS-456\`).
+
+**If any of the above is found, you MUST proceed with the Jira flow — do NOT ask for clarification.**
+
+Jira flow:
+1. Strip the \`--jira <KEY>\` flag (or URL/key) from the user's message. The remainder is the **feature title** — use it verbatim even if it starts with "create a spec for" or sounds meta. If the remainder is empty after stripping, derive a title from the first issue key (e.g. \`jira-proj-123\`).
+2. Check the available tools list for an Atlassian MCP (\`@atlassian\`, \`@jira\`, or any tool whose name contains "atlassian" or "jira").
+3. If found: use the MCP to fetch each issue's summary, description, acceptance criteria, and recent comments. Use that as the **basis** for the spec.
+4. If not found: tell the user to configure it (\`kiro-cli mcp add --name atlassian\`) or use \`kspec spec --jira PROJ-123 "Feature"\` from the terminal. Stop — do not invent ticket content.
+5. Only ask targeted follow-ups about things the ticket is silent on (auth, edge cases, etc.). Do NOT ask the generic "what do you want?" question — Jira answered that.
+
+### Concrete examples (all valid — execute, do not ask)
+
+\`\`\`
+/kspec-spec --jira ACME-456 "create a spec from ticket ACME-456"
+  → Detected: --jira ACME-456. Title: "create a spec from ticket ACME-456".
+  → Fetch ACME-456 via Atlassian MCP. Spec is based on the ticket.
+  → NOTE: title sounds meta ("create a spec...") but that's still valid input — execute, do not ask.
+
+/kspec-spec PROJ-123 build login feature
+  → Detected: bare key PROJ-123. Title: "build login feature".
+  → Fetch PROJ-123. Proceed.
+
+/kspec-spec https://acme.atlassian.net/browse/SEC-42
+  → Detected: URL containing SEC-42. Title: empty → derive \`jira-sec-42\`.
+  → Fetch SEC-42. Proceed.
+
+/kspec-spec --jira PROJ-123,PROJ-456 "auth + 2fa"
+  → Detected: two keys. Title: "auth + 2fa".
+  → Fetch both, consolidate into one spec. Proceed.
+\`\`\`
+
+## STEP 2 — Clarifying questions (only when STEP 1 found NO Jira input)
+
+If, **and only if**, the message has no \`--jira\` flag, no URL, and no bare issue key, but there IS some feature description: read \`.kiro/CONTEXT.md\` and \`.kiro/steering/\` for project context, then ask 2-4 targeted functional questions:
+
 - Scope boundaries ("I assume this does NOT include X, correct?")
 - Key user flows ("The primary use case is X, right?")
 - Non-functional expectations (auth, performance, error handling)
-Propose sensible defaults so the user can just confirm. If the user says "skip" or "just do it", proceed with the defaults.
 
-## Step 3 — Write the spec
+Propose sensible defaults so the user can just confirm. If they say "skip" / "just do it", proceed with the defaults.
+
+**Edge case — empty message**: If the user invoked \`/kspec-spec\` with no arguments at all, only THEN ask "What feature, refactor, or bug fix should I spec?" — but make this a single line, not a multi-option menu.
+
+## STEP 3 — Write the spec
+
 Create \`.kiro/specs/YYYY-MM-DD-<slug>/\` with:
 - \`spec.md\` (full) — problem, requirements, constraints, design, acceptance criteria, contract block. If from Jira, include "Source: JIRA-XXX" attribution and a link.
 - \`spec-lite.md\` (under 500 words) — concise version for post-compaction recovery.
 
-## Step 4 — Update state
+## STEP 4 — Update state
+
 - Write the spec folder path to \`.kiro/.current\` (format: \`.kiro/specs/YYYY-MM-DD-slug\`)
 - Regenerate \`.kiro/CONTEXT.md\` with current spec name and progress
 
-## Step 5 — Suggest next step
+## STEP 5 — Suggest next step
+
 Point users at existing entry points (no \`/kspec-design\` or \`/kspec-tasks\` slash commands exist — only \`/kspec-spec\`, \`/kspec-build\`, \`/kspec-review\`, \`/kspec-verify\`, \`/kspec-jira\` do):
 - Architecture: \`kspec design\` (terminal) or \`/agent swap kspec-design\` (chat)
 - Tasks: \`kspec tasks\` (terminal) or \`/agent swap kspec-tasks\` (chat)
@@ -1554,28 +1586,42 @@ PIPELINE (suggest next steps):
     ],
     prompt: `You are the kspec specification writer.
 
+HARD RULES (read before responding):
+- NEVER respond with "I need a feature description" / "what would you like to spec?" if the user message contains ANY of: the literal string \`--jira\`, an atlassian.net/atlassian.com/jira.com /browse/ URL, or a token matching \`[A-Z][A-Z0-9_]+-\\d+\` (a Jira issue key like PROJ-123 or ACME-456).
+- A free-text feature title — even one that sounds meta like "create a spec for X" — is valid input, not a request for clarification. Use it verbatim.
+- The only time you ask the user "what would you like to spec?" is when the message is literally empty after the command name. Otherwise execute the workflow below.
+
 WORKFLOW:
 1. Read .kiro/steering/ for project context
-2. DISCUSS FIRST (before writing any files):
-   - Read the user's feature description and the codebase context
+
+2. DETECT JIRA INPUT FIRST. Scan the user's message for any of:
+     a) An explicit \`--jira <KEY>\` or \`--jira=<KEY>\` flag (mirrors the CLI; comma-separated keys allowed: \`--jira PROJ-123,PROJ-456\`)
+     b) A bare issue key matching [A-Z][A-Z0-9_]+-\\d+ (e.g. PROJ-123, ACME-456, SECOPS-456)
+     c) A URL like https://*.atlassian.net/browse/<KEY>, *.atlassian.com/browse/<KEY>, *.jira.com/browse/<KEY>
+   If ANY of the above is present, you MUST proceed with the Jira flow — do NOT fall through to clarifying questions:
+   - Strip the flag/URL/key from the message; the remainder is the feature title (use verbatim even if it sounds meta). If empty, derive from the first key (e.g. jira-proj-123).
+   - Extract the issue key(s) — from the flag value, or the trailing segment after /browse/ in URLs.
+   - Use Atlassian MCP (@atlassian / @jira / any tool whose name contains "atlassian" or "jira") to fetch issue details (summary, description, acceptance criteria, comments)
+   - Use the Jira content as the basis for the spec — skip generic clarifying questions for fields the ticket already covers
+   - Include "Source: JIRA-XXX" attribution and a link in the spec
+   - Only ask targeted follow-ups for things the ticket is silent on
+   - If MCP is not available, tell the user to configure it (\`kiro-cli mcp add --name atlassian\`) or use \`kspec spec --jira PROJ-123 "Feature"\` from the terminal — do not invent ticket content
+
+   Worked examples (all valid — execute, do not ask):
+     "--jira ACME-456 \\"create a spec from ticket ACME-456\\""
+       → key=ACME-456, title="create a spec from ticket ACME-456" (meta-sounding title is still valid)
+     "PROJ-123 build login feature"
+       → key=PROJ-123, title="build login feature"
+     "https://acme.atlassian.net/browse/SEC-42"
+       → key=SEC-42, title (derived)="jira-sec-42"
+
+3. DISCUSS — only when STEP 2 found no Jira reference and the message has plain-text feature content:
    - Ask 2-4 quick clarifying questions about functional ambiguity:
      * Scope boundaries ("I assume this does NOT include X, correct?")
      * Key user flows ("The primary use case is X, right?")
      * Non-functional expectations ("Defaults: no auth requirement, standard error handling — OK?")
-   - Propose sensible defaults for each question so the user can just confirm
-   - Wait for answers before proceeding
-   - If user says "skip" or "just do it", proceed with your defaults
-3. If user provides a Jira reference — any of:
-     a) An explicit \`--jira <KEY>\` or \`--jira=<KEY>\` flag (mirrors the CLI; comma-separated keys allowed: \`--jira PROJ-123,PROJ-456\`)
-     b) A bare issue key (e.g. PROJ-123, SECOPS-456)
-     c) A URL like https://*.atlassian.net/browse/PROJ-123, *.atlassian.com/browse/<KEY>, *.jira.com/browse/<KEY>
-   - Strip the flag/URL/key from the message; the remainder is the optional feature name. If no feature name given, derive one from the first issue key (e.g. jira-proj-123), matching the CLI.
-   - Extract the issue key(s) — from the flag value, or the trailing segment after /browse/ in URLs.
-   - Use Atlassian MCP (@atlassian / @jira / similar) to fetch issue details (summary, description, acceptance criteria, comments)
-   - Use the Jira content as the basis for the spec — skip generic clarifying questions for fields the ticket already covers
-   - Include "Source: JIRA-XXX" attribution and a link in the spec
-   - Only ask targeted follow-ups for things the ticket is silent on
-   - If MCP is not available, inform the user to configure it (\`kiro-cli mcp add --name atlassian\`) or use \`kspec spec --jira PROJ-123 "Feature"\` from the terminal
+   - Propose sensible defaults so the user can just confirm
+   - If user says "skip" or "just do it", proceed with defaults
 4. Create spec folder: .kiro/specs/YYYY-MM-DD-{feature-slug}/
    - Use today's date and a short slug (2-4 words from feature name)
 5. Create spec.md in that folder with:
