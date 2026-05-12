@@ -1082,18 +1082,21 @@ that benefits from up-front design.
 - "Plan a refactor of Y"
 - "I need to fix Z but it's complex"
 - "Create a spec from this Jira ticket: <URL>" or "from PROJ-123"
+- CLI-style flag: \`/kspec-spec --jira PROJ-123 "Feature name"\` (multiple keys allowed: \`--jira PROJ-123,PROJ-456\`)
 
 ## Step 1 — Detect Jira input FIRST (before any clarifying questions)
-Scan the user's message for either:
+Scan the user's message for any of:
+- An explicit \`--jira <KEY>\` or \`--jira=<KEY>\` flag (mirrors the CLI: \`kspec spec --jira PROJ-123 "Feature"\`). Comma-separated keys are allowed (\`--jira PROJ-123,PROJ-456\`).
 - A Jira URL matching \`https://*.atlassian.net/browse/<KEY>\`, \`*.atlassian.com/browse/<KEY>\`, or \`*.jira.com/browse/<KEY>\`
 - A bare issue key matching \`[A-Z][A-Z0-9_]+-\\d+\` (e.g. \`PROJ-123\`, \`SECOPS-456\`)
 
 If a Jira reference is present:
-1. Check the available tools list for an Atlassian MCP (\`@atlassian\`, \`@jira\`, or similar).
-2. If found: use the MCP to fetch the issue's summary, description, acceptance criteria, and recent comments.
-3. Use the fetched content as the **basis** for the spec — do NOT ask generic clarifying questions for fields Jira already answered (problem statement, acceptance criteria, scope).
-4. Only ask targeted follow-ups about things the ticket is silent on (e.g. "Jira covers the API surface but doesn't mention auth — should this require login?").
-5. If no Atlassian MCP is available: tell the user to either configure it (\`kiro-cli mcp add --name atlassian\`) or use \`kspec spec --jira PROJ-123 "Feature"\` from the terminal, which has the same integration.
+1. Strip the \`--jira <KEY>\` flag (or URL/key) from the user's message — the remainder is the optional feature name. If no feature name is given, derive one from the first issue key (e.g. \`jira-proj-123\`), matching the CLI's behavior.
+2. Check the available tools list for an Atlassian MCP (\`@atlassian\`, \`@jira\`, or similar).
+3. If found: use the MCP to fetch each issue's summary, description, acceptance criteria, and recent comments.
+4. Use the fetched content as the **basis** for the spec — do NOT ask generic clarifying questions for fields Jira already answered (problem statement, acceptance criteria, scope).
+5. Only ask targeted follow-ups about things the ticket is silent on (e.g. "Jira covers the API surface but doesn't mention auth — should this require login?").
+6. If no Atlassian MCP is available: tell the user to either configure it (\`kiro-cli mcp add --name atlassian\`) or use \`kspec spec --jira PROJ-123 "Feature"\` from the terminal, which has the same integration.
 
 If no Jira reference: continue to Step 2.
 
@@ -1479,8 +1482,12 @@ WORKFLOW:
    - Propose sensible defaults for each question so the user can just confirm
    - Wait for answers before proceeding
    - If user says "skip" or "just do it", proceed with your defaults
-3. If user provides a Jira reference — either a bare issue key (e.g. PROJ-123, SECOPS-456) OR a URL like https://*.atlassian.net/browse/PROJ-123, *.atlassian.com/browse/<KEY>, *.jira.com/browse/<KEY>:
-   - Extract the issue key from the URL (the trailing segment after /browse/)
+3. If user provides a Jira reference — any of:
+     a) An explicit \`--jira <KEY>\` or \`--jira=<KEY>\` flag (mirrors the CLI; comma-separated keys allowed: \`--jira PROJ-123,PROJ-456\`)
+     b) A bare issue key (e.g. PROJ-123, SECOPS-456)
+     c) A URL like https://*.atlassian.net/browse/PROJ-123, *.atlassian.com/browse/<KEY>, *.jira.com/browse/<KEY>
+   - Strip the flag/URL/key from the message; the remainder is the optional feature name. If no feature name given, derive one from the first issue key (e.g. jira-proj-123), matching the CLI.
+   - Extract the issue key(s) — from the flag value, or the trailing segment after /browse/ in URLs.
    - Use Atlassian MCP (@atlassian / @jira / similar) to fetch issue details (summary, description, acceptance criteria, comments)
    - Use the Jira content as the basis for the spec — skip generic clarifying questions for fields the ticket already covers
    - Include "Source: JIRA-XXX" attribution and a link in the spec
