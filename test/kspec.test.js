@@ -2687,6 +2687,35 @@ z`;
       assert.match(agent.prompt, /Extract the issue key/,
         'agent prompt should explain key extraction');
     });
+
+    it('kspec-jira skill recognizes CLI-style flags (--update, --create, --project, --jira)', () => {
+      const jira = skillTemplates['kspec-jira/SKILL.md'];
+      assert.match(jira, /--update/, 'mentions --update flag');
+      assert.match(jira, /--create/, 'mentions --create flag');
+      assert.match(jira, /--project/, 'mentions --project flag');
+      assert.match(jira, /--jira/, 'mentions --jira flag');
+      // Action keywords and URL/key detection
+      assert.match(jira, /atlassian\.net\/browse/, 'mentions Jira URL pattern');
+      assert.match(jira, /\[A-Z\]\[A-Z0-9_\]\+-\\d\+/, 'mentions bare-key regex');
+      assert.match(jira, /subtasks/, 'mentions subtasks action');
+      assert.match(jira, /pull/i, 'mentions pull action');
+      // Atlassian MCP awareness + fallback
+      assert.match(jira, /Atlassian MCP/, 'mentions Atlassian MCP requirement');
+      assert.match(jira, /kspec sync-jira/, 'mentions CLI fallback');
+    });
+
+    it('kspec-jira agent prompt parses flags + URLs + bare keys before dispatching mode', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates()['kspec-jira.json'];
+      assert.match(agent.prompt, /--update/, 'agent recognizes --update');
+      assert.match(agent.prompt, /--create/, 'agent recognizes --create');
+      assert.match(agent.prompt, /--project/, 'agent recognizes --project');
+      assert.match(agent.prompt, /--jira/, 'agent recognizes --jira');
+      assert.match(agent.prompt, /atlassian\.net\/browse/, 'agent recognizes URLs');
+      assert.match(agent.prompt, /PARSE USER INPUT/, 'agent has explicit parse step');
+      assert.match(agent.prompt, /ACTION KEYWORDS/, 'agent has action-keyword routing');
+      assert.match(agent.prompt, /kiro-cli mcp add --name atlassian/, 'agent has MCP-missing fallback');
+    });
   });
 
   describe('toolsSettings (least-privilege scoping)', () => {

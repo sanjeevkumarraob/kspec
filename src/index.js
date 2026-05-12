@@ -1222,34 +1222,84 @@ to confirm the artifact is complete, consistent, and meets acceptance criteria.
 
   'kspec-jira/SKILL.md': `---
 name: kspec-jira
-description: Sync kspec spec/tasks to Jira (create issues, sub-tasks, link spec ↔ tickets)
+description: Sync kspec spec/tasks to Jira (pull issues, push specs, create sub-tasks, link spec ↔ tickets)
 ---
 # Sync kspec to Jira
 
-Use this skill to push spec progress to Jira. Requires the Atlassian MCP
-server to be configured.
+Use this skill for any Jira operation: pulling issues into a spec, pushing
+spec content back to Jira, creating sub-tasks, or pulling latest ticket
+updates. Requires the Atlassian MCP server to be configured.
 
 ## When to invoke
 - "Create a Jira ticket for this spec"
 - "Sync my tasks to Jira sub-tasks"
 - "Update the Jira issue with progress"
+- "Pull latest from Jira" / "Sync from Jira"
+- CLI-style flags also work in chat:
+  - \`/kspec-jira --update PROJ-123\` — update specific issue with current spec
+  - \`/kspec-jira --create\` — force-create a new issue (don't update existing)
+  - \`/kspec-jira --project SECOPS\` — create in a specific project (overrides default)
+  - \`/kspec-jira subtasks PROJ-123\` — create sub-tasks under PROJ-123
+  - \`/kspec-jira pull\` — pull latest from linked issues into a change report
 
 ## Prerequisites
 - Atlassian MCP configured (\`kiro-cli mcp add --name atlassian\`)
 - Default Jira project in \`.kiro/config.json\` (set during \`kspec init\`)
 
-## Workflow
-1. Read current spec from \`.kiro/.current\`.
-2. Read existing Jira links from \`<spec>/jira-links.json\`.
-3. If creating: post issue with spec summary + acceptance criteria.
-   If updating: patch description with current progress.
-4. For \`/kspec-jira sub-tasks\`: parse \`tasks.md\` and create one sub-task
-   per task.
-5. Save link mappings back to \`jira-links.json\`.
+## Step 1 — Detect intent + Jira input
+Parse the user's message for:
+
+**Action keywords** (decides which mode):
+- "create", "push", "sync to" → SYNC TO JIRA mode
+- "pull", "sync from", "fetch updates" → PULL UPDATES mode
+- "subtasks", "sub-tasks", "subtask" → CREATE SUBTASKS mode
+
+**Flags** (CLI parity):
+- \`--update <KEY>\` or \`--update=<KEY>\` → update existing issue with current spec
+- \`--create\` → force-create new issue (skip existing-link check)
+- \`--project <KEY>\` or \`--project=<KEY>\` → override default project
+- \`--jira <KEY>\` or \`--jira=<KEY>\` → operate on these specific issue(s) (comma-separated allowed)
+
+**Jira references** (used for pull / subtasks):
+- URL: \`https://*.atlassian.net/browse/<KEY>\`, \`*.atlassian.com/browse/<KEY>\`, \`*.jira.com/browse/<KEY>\`
+- Bare key: \`[A-Z][A-Z0-9_]+-\\d+\` (e.g. \`PROJ-123\`, multiple comma-separated allowed)
+
+If no Atlassian MCP is available, tell the user to configure it (\`kiro-cli mcp add --name atlassian\`) or use the matching CLI command (\`kspec sync-jira\`, \`kspec jira-pull\`, \`kspec jira-subtasks\`).
+
+## Step 2 — Execute the mode
+
+### SYNC TO JIRA
+1. Read current spec from \`.kiro/.current\` and \`spec.md\`.
+2. Read \`<spec>/jira-links.json\` for existing links.
+3. If \`--create\` or no existing link: post a new "Technical Specification" issue (use \`--project\` if given, else default from config). Add "kspec, technical-specification" labels.
+4. If \`--update <KEY>\` or an existing link is found: patch that issue's description with current spec content. Add a comment summarizing the update.
+5. Save the link(s) back to \`jira-links.json\` and refresh \`.kiro/CONTEXT.md\`.
+
+### PULL UPDATES
+1. Use issue keys from \`jira-links.json\` (or the explicit keys passed in).
+2. Fetch latest state of each via the Atlassian MCP.
+3. Diff against current \`spec.md\` and generate a **CHANGE REPORT** showing new/modified acceptance criteria, description changes, new comments, status changes.
+4. **NEVER auto-update spec.md** — show the report and wait for user confirmation.
+5. On approval, update \`spec.md\` and regenerate \`spec-lite.md\`.
+
+### CREATE SUBTASKS
+1. Read \`tasks.md\` from current spec.
+2. Determine parent issue: use the key passed in (if any), else the first entry in \`jira-links.json\`.
+3. Create one Jira sub-task per task. Include task details and acceptance criteria.
+4. Save the new sub-task keys to \`jira-links.json\`.
+
+## Step 3 — Always
+- Include "Source: JIRA-XXX" attribution in spec.md for pulled content
+- Update \`.kiro/CONTEXT.md\` with the latest Jira link summary
+- Report what was created/updated to the user
 
 ## Related
-- Terminal: \`kspec sync-jira\`, \`kspec jira-pull\`, \`kspec jira-subtasks\`
+- Terminal equivalents (same behaviour):
+  - \`kspec sync-jira\` / \`--create\` / \`--update KEY\` / \`--project KEY\`
+  - \`kspec jira-pull\`
+  - \`kspec jira-subtasks\` / \`kspec jira-subtasks PROJ-123\`
 - Direct agent: \`/agent swap kspec-jira\`
+- Pull a Jira ticket INTO a fresh spec instead: \`/kspec-spec --jira PROJ-123 "Feature"\`
 `
 };
 
@@ -1800,19 +1850,38 @@ PIPELINE (suggest next steps):
     prompt: `You are the kspec Jira integration agent.
 
 PREREQUISITE: This agent requires Atlassian MCP to be configured.
-If MCP calls fail, inform the user to configure Atlassian MCP first.
+If MCP calls fail, inform the user to configure Atlassian MCP first
+(\`kiro-cli mcp add --name atlassian\`).
+
+PARSE USER INPUT (before deciding mode):
+
+ACTION KEYWORDS (decide mode):
+- "create", "push", "sync to" → SYNC TO JIRA mode
+- "pull", "sync from", "fetch updates" → PULL UPDATES mode
+- "subtasks", "sub-tasks", "subtask" → CREATE SUBTASKS mode
+- bare issue key with no action keyword → PULL FROM JIRA mode (default)
+
+CLI-STYLE FLAGS (recognise these in the user's message, same syntax as the terminal):
+- \`--update <KEY>\` / \`--update=<KEY>\` → update that specific issue with current spec (SYNC mode)
+- \`--create\` → force-create a new issue, skip existing-link check (SYNC mode)
+- \`--project <KEY>\` / \`--project=<KEY>\` → override default Jira project for create
+- \`--jira <KEY>\` / \`--jira=<KEY>\` → operate on these specific issue(s); comma-separated allowed (PROJ-123,PROJ-456)
+
+JIRA REFERENCES (any of these forms — extract the key):
+- URL: \`https://*.atlassian.net/browse/<KEY>\`, \`*.atlassian.com/browse/<KEY>\`, \`*.jira.com/browse/<KEY>\` — extract the trailing segment after /browse/
+- Bare key: matches \`[A-Z][A-Z0-9_]+-\\d+\` (e.g. PROJ-123, SECOPS-456); multiple comma-separated keys allowed
 
 CAPABILITIES:
 
-1. PULL FROM JIRA (when user provides issue keys):
-   - Use MCP to fetch Jira issue details
+1. PULL FROM JIRA (user provides issue key(s) via flag / URL / bare key):
+   - Use MCP to fetch Jira issue details for each key
    - Extract: summary, description, acceptance criteria, comments
    - For multiple issues, consolidate into unified requirements
    - Create spec.md with proper attribution to source issues
    - Include Jira links in spec for traceability
 
-2. PULL UPDATES (when user asks to pull latest or sync from Jira):
-   - Read jira-links.json for linked issue keys
+2. PULL UPDATES (user says "pull latest" / "sync from Jira"):
+   - Read jira-links.json for linked issue keys (or use explicit keys passed in)
    - Use MCP to fetch latest state of each linked issue
    - Compare against current spec.md content
    - Generate a CHANGE REPORT showing:
@@ -1824,31 +1893,34 @@ CAPABILITIES:
    - NEVER auto-update spec.md — always get user confirmation first
    - After user approves changes, update spec.md and regenerate spec-lite.md
 
-3. SYNC TO JIRA (when user asks to sync/push):
-   - Create new "Technical Specification" issue in Jira
-   - Or update existing issue with spec content
-   - Link to source stories
+3. SYNC TO JIRA (user says "sync" / "push" / "create" / passes --create / --update / --project):
+   - If \`--update <KEY>\` given OR jira-links.json has an entry: update that specific issue's description with current spec content, add a comment summarising the change
+   - If \`--create\` given OR no existing link found: post a new "Technical Specification" issue (use \`--project\` if given, else default from .kiro/config.json)
+   - Link to source stories where applicable
    - Add comment requesting BA review
-   - Set appropriate labels (kspec, technical-spec)
+   - Set appropriate labels (kspec, technical-specification)
 
-4. CREATE SUBTASKS (when user asks after tasks.md exists):
+4. CREATE SUBTASKS (user says "subtasks" / "sub-tasks"; optionally with a parent key):
    - Read tasks.md from current spec
-   - Create Jira sub-tasks for each task
+   - Determine parent issue: use the key passed in, else the first entry in jira-links.json
+   - Create one Jira sub-task per task
    - Link to parent spec issue
    - Include task details and acceptance criteria
 
 WORKFLOW:
 1. Read .kiro/CONTEXT.md for current spec state
-2. Identify what user wants (pull/sync/subtasks/pull-updates)
-3. Use Atlassian MCP for Jira operations
-4. Update jira-links.json with issue keys
-5. Update .kiro/CONTEXT.md to include Jira issue links from jira-links.json
-6. Report what was created/updated
+2. PARSE USER INPUT per the rules above — extract flags, URLs, and bare keys
+3. Identify the mode (pull / sync / subtasks / pull-updates)
+4. Use Atlassian MCP for Jira operations
+5. Update jira-links.json with issue keys
+6. Update .kiro/CONTEXT.md to include Jira issue links from jira-links.json
+7. Report what was created/updated
 
 IMPORTANT:
 - Always include Jira issue links in spec.md
 - Add "Source: JIRA-XXX" attribution for pulled requirements
 - NEVER auto-update spec.md on pull-updates — present changes and confirm first
+- If Atlassian MCP is not in your tools list, tell the user to configure it (\`kiro-cli mcp add --name atlassian\`) or use the matching CLI command (\`kspec sync-jira\` / \`kspec jira-pull\` / \`kspec jira-subtasks\`)
 
 PIPELINE (suggest next steps):
 - After pull: \`/agent swap kspec-spec\` or \`kspec spec\`
