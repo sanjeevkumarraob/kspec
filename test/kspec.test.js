@@ -2659,6 +2659,102 @@ z`;
           `${filePath}: name field should match directory ${dir}`);
       }
     });
+
+    it('kspec-spec skill detects Jira input (flag + URLs + bare keys) before generic Qs', () => {
+      const spec = skillTemplates['kspec-spec/SKILL.md'];
+      // Must reference all three Jira input forms
+      assert.match(spec, /--jira/, 'mentions --jira CLI-style flag');
+      assert.match(spec, /atlassian\.net\/browse/, 'mentions atlassian.net/browse URL');
+      assert.match(spec, /\[A-Z\]\[A-Z0-9_\]\+-\\d\+/, 'mentions bare-key regex pattern');
+      // Comma-separated keys (matching CLI behavior)
+      assert.match(spec, /PROJ-123,PROJ-456/, 'mentions comma-separated keys');
+      // Must instruct the agent to act on Jira input BEFORE generic Qs
+      assert.match(spec, /Detect Jira input FIRST/, 'has explicit "Jira first" step');
+      // Must instruct using the Atlassian MCP
+      assert.match(spec, /Atlassian MCP/, 'mentions Atlassian MCP');
+      assert.match(spec, /@atlassian/, 'mentions @atlassian tool');
+      // Must mention the fallback when MCP is missing
+      assert.match(spec, /kspec spec --jira/, 'mentions kspec spec --jira fallback');
+    });
+
+    it('kspec-spec agent prompt detects --jira flag, URLs, and bare keys', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates()['kspec-spec.json'];
+      assert.match(agent.prompt, /--jira/,
+        'agent prompt should accept --jira CLI-style flag');
+      assert.match(agent.prompt, /atlassian\.net\/browse/,
+        'agent prompt should detect Jira URLs, not just bare keys');
+      assert.match(agent.prompt, /Extract the issue key/,
+        'agent prompt should explain key extraction');
+    });
+
+    it('kspec-jira skill recognizes CLI-style flags (--update, --create, --project, --jira)', () => {
+      const jira = skillTemplates['kspec-jira/SKILL.md'];
+      assert.match(jira, /--update/, 'mentions --update flag');
+      assert.match(jira, /--create/, 'mentions --create flag');
+      assert.match(jira, /--project/, 'mentions --project flag');
+      assert.match(jira, /--jira/, 'mentions --jira flag');
+      // Action keywords and URL/key detection
+      assert.match(jira, /atlassian\.net\/browse/, 'mentions Jira URL pattern');
+      assert.match(jira, /\[A-Z\]\[A-Z0-9_\]\+-\\d\+/, 'mentions bare-key regex');
+      assert.match(jira, /subtasks/, 'mentions subtasks action');
+      assert.match(jira, /pull/i, 'mentions pull action');
+      // Atlassian MCP awareness + fallback
+      assert.match(jira, /Atlassian MCP/, 'mentions Atlassian MCP requirement');
+      assert.match(jira, /kspec sync-jira/, 'mentions CLI fallback');
+    });
+
+    it('kspec-jira agent prompt parses flags + URLs + bare keys before dispatching mode', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates()['kspec-jira.json'];
+      assert.match(agent.prompt, /--update/, 'agent recognizes --update');
+      assert.match(agent.prompt, /--create/, 'agent recognizes --create');
+      assert.match(agent.prompt, /--project/, 'agent recognizes --project');
+      assert.match(agent.prompt, /--jira/, 'agent recognizes --jira');
+      assert.match(agent.prompt, /atlassian\.net\/browse/, 'agent recognizes URLs');
+      assert.match(agent.prompt, /PARSE USER INPUT/, 'agent has explicit parse step');
+      assert.match(agent.prompt, /ACTION KEYWORDS/, 'agent has action-keyword routing');
+      assert.match(agent.prompt, /kiro-cli mcp add --name atlassian/, 'agent has MCP-missing fallback');
+    });
+
+    it('kspec-jira skill documents --tags/--labels flag with parsing rules + merge behavior', () => {
+      const jira = skillTemplates['kspec-jira/SKILL.md'];
+      // Both flag aliases
+      assert.match(jira, /--tags/, 'mentions --tags');
+      assert.match(jira, /--labels/, 'mentions --labels alias');
+      // Example with colons (user's specific request)
+      assert.match(jira, /driver:engineering/, 'shows colon-separated example like driver:engineering');
+      // Parsing rules
+      assert.match(jira, /Split on comma/i, 'documents comma-split parsing');
+      assert.match(jira, /trim whitespace/i, 'documents whitespace trimming');
+      assert.match(jira, /No spaces inside a label|disallows? spaces|rejects? spaces/i,
+        'warns about Jira disallowing spaces in labels');
+      // Merge behavior
+      assert.match(jira, /UPDATE/, 'documents update merge behavior');
+      assert.match(jira, /never clobber|UNION/i, 'states labels are merged not replaced on update');
+      assert.match(jira, /SUBTASKS.*inherit|inherit.*labels/is,
+        'documents subtask label inheritance');
+      // Config default
+      assert.match(jira, /defaultTags/, 'mentions config.jira.defaultTags');
+    });
+
+    it('kspec-jira agent prompt parses --tags and merges with defaults + existing labels', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates()['kspec-jira.json'];
+      assert.match(agent.prompt, /--tags/, 'agent recognizes --tags');
+      assert.match(agent.prompt, /--labels/, 'agent recognizes --labels alias');
+      assert.match(agent.prompt, /LABELS/, 'agent has explicit LABELS section');
+      // Parsing rules
+      assert.match(agent.prompt, /Split the flag value on comma|comma.*trim/is,
+        'agent splits/trims comma values');
+      assert.match(agent.prompt, /SPACES inside|disallows? spaces/i,
+        'agent warns on spaces inside labels');
+      // Merge semantics
+      assert.match(agent.prompt, /defaultTags/, 'agent reads config.jira.defaultTags');
+      assert.match(agent.prompt, /UNION/, 'agent UNIONs labels (no clobbering)');
+      assert.match(agent.prompt, /inherits? these|inherits? the PARENT/i,
+        'subtasks inherit parent labels');
+    });
   });
 
   describe('toolsSettings (least-privilege scoping)', () => {
