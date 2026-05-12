@@ -1239,6 +1239,7 @@ updates. Requires the Atlassian MCP server to be configured.
   - \`/kspec-jira --update PROJ-123\` — update specific issue with current spec
   - \`/kspec-jira --create\` — force-create a new issue (don't update existing)
   - \`/kspec-jira --project SECOPS\` — create in a specific project (overrides default)
+  - \`/kspec-jira --tags "driver:engineering,type:spike"\` — attach labels (see Tags below)
   - \`/kspec-jira subtasks PROJ-123\` — create sub-tasks under PROJ-123
   - \`/kspec-jira pull\` — pull latest from linked issues into a change report
 
@@ -1259,6 +1260,7 @@ Parse the user's message for:
 - \`--create\` → force-create new issue (skip existing-link check)
 - \`--project <KEY>\` or \`--project=<KEY>\` → override default project
 - \`--jira <KEY>\` or \`--jira=<KEY>\` → operate on these specific issue(s) (comma-separated allowed)
+- \`--tags "<csv>"\` or \`--labels "<csv>"\` → attach labels to created/updated issues (see Tags below)
 
 **Jira references** (used for pull / subtasks):
 - URL: \`https://*.atlassian.net/browse/<KEY>\`, \`*.atlassian.com/browse/<KEY>\`, \`*.jira.com/browse/<KEY>\`
@@ -1266,14 +1268,43 @@ Parse the user's message for:
 
 If no Atlassian MCP is available, tell the user to configure it (\`kiro-cli mcp add --name atlassian\`) or use the matching CLI command (\`kspec sync-jira\`, \`kspec jira-pull\`, \`kspec jira-subtasks\`).
 
+## Tags / Labels
+
+Attach arbitrary labels to created or updated Jira issues. Useful for R&D
+categorisation, team ownership, feature type, quarter, etc.
+
+**Syntax** (both forms equivalent — \`--labels\` is Jira's actual term):
+\`\`\`
+/kspec-jira --create --tags "driver:engineering,type:spike,team:platform"
+/kspec-jira --update PROJ-123 --labels "q1-2026,priority:p2"
+\`\`\`
+
+**Parsing rules**:
+- Split on comma; trim whitespace around each value.
+- Each tag is a free-form string. Colons, dashes, dots, slashes are allowed (\`driver:engineering\`, \`q1-2026\`, \`area/auth\`).
+- Drop empty values.
+- **No spaces inside a label** — Jira rejects them. If the user passes \`type: spike\` (with space), normalise to \`type:spike\` and warn.
+
+**Behaviour**:
+- **CREATE / SYNC**: merge \`--tags\` with the default kspec labels (\`kspec\`, \`technical-specification\`) AND any configured \`config.jira.defaultTags\` from \`.kiro/config.json\`. De-duplicate.
+- **UPDATE**: fetch the issue's current labels first, then UNION with \`--tags\`. Never clobber user-added labels.
+- **SUBTASKS**: each sub-task inherits the parent issue's labels by default, plus any \`--tags\` passed.
+
+**Config default** (org-level): set in \`.kiro/config.json\`:
+\`\`\`json
+{ "jira": { "defaultTags": ["rd", "kspec-managed"] } }
+\`\`\`
+These apply to every issue kspec creates. \`--tags\` adds to (not replaces) these defaults.
+
 ## Step 2 — Execute the mode
 
 ### SYNC TO JIRA
 1. Read current spec from \`.kiro/.current\` and \`spec.md\`.
 2. Read \`<spec>/jira-links.json\` for existing links.
-3. If \`--create\` or no existing link: post a new "Technical Specification" issue (use \`--project\` if given, else default from config). Add "kspec, technical-specification" labels.
-4. If \`--update <KEY>\` or an existing link is found: patch that issue's description with current spec content. Add a comment summarizing the update.
-5. Save the link(s) back to \`jira-links.json\` and refresh \`.kiro/CONTEXT.md\`.
+3. Build the label set: \`config.jira.defaultTags\` ∪ \`["kspec", "technical-specification"]\` ∪ \`--tags\` (de-duplicated).
+4. If \`--create\` or no existing link: post a new "Technical Specification" issue (use \`--project\` if given, else default from config) with the label set from step 3.
+5. If \`--update <KEY>\` or an existing link is found: patch that issue's description with current spec content. UNION the issue's existing labels with the label set from step 3 (never clobber user labels). Add a comment summarising the update.
+6. Save the link(s) back to \`jira-links.json\` and refresh \`.kiro/CONTEXT.md\`.
 
 ### PULL UPDATES
 1. Use issue keys from \`jira-links.json\` (or the explicit keys passed in).
@@ -1285,8 +1316,10 @@ If no Atlassian MCP is available, tell the user to configure it (\`kiro-cli mcp 
 ### CREATE SUBTASKS
 1. Read \`tasks.md\` from current spec.
 2. Determine parent issue: use the key passed in (if any), else the first entry in \`jira-links.json\`.
-3. Create one Jira sub-task per task. Include task details and acceptance criteria.
-4. Save the new sub-task keys to \`jira-links.json\`.
+3. Fetch the parent's labels — sub-tasks inherit these by default.
+4. Build the label set per task: parent's labels ∪ \`config.jira.defaultTags\` ∪ \`--tags\` (de-duplicated).
+5. Create one Jira sub-task per task, with the label set from step 4. Include task details and acceptance criteria.
+6. Save the new sub-task keys to \`jira-links.json\`.
 
 ## Step 3 — Always
 - Include "Source: JIRA-XXX" attribution in spec.md for pulled content
@@ -1866,16 +1899,25 @@ CLI-STYLE FLAGS (recognise these in the user's message, same syntax as the termi
 - \`--create\` → force-create a new issue, skip existing-link check (SYNC mode)
 - \`--project <KEY>\` / \`--project=<KEY>\` → override default Jira project for create
 - \`--jira <KEY>\` / \`--jira=<KEY>\` → operate on these specific issue(s); comma-separated allowed (PROJ-123,PROJ-456)
+- \`--tags "<csv>"\` / \`--labels "<csv>"\` → attach labels to created/updated issues (see LABELS below)
 
 JIRA REFERENCES (any of these forms — extract the key):
 - URL: \`https://*.atlassian.net/browse/<KEY>\`, \`*.atlassian.com/browse/<KEY>\`, \`*.jira.com/browse/<KEY>\` — extract the trailing segment after /browse/
 - Bare key: matches \`[A-Z][A-Z0-9_]+-\\d+\` (e.g. PROJ-123, SECOPS-456); multiple comma-separated keys allowed
 
+LABELS (\`--tags\` / \`--labels\`):
+- Free-form strings; colons, dashes, dots, slashes allowed (e.g. driver:engineering, q1-2026, area/auth)
+- Split the flag value on comma; trim whitespace around each value; drop empty entries
+- Jira disallows SPACES inside labels — if user writes \`type: spike\`, normalise to \`type:spike\` and warn once
+- Compute the FINAL label set as: \`config.jira.defaultTags\` (read from .kiro/config.json if present) ∪ kspec defaults (\`kspec\`, \`technical-specification\`) ∪ \`--tags\` values, de-duplicated
+- On UPDATE: also UNION with the issue's CURRENT labels (fetch first) so user-added labels are never clobbered
+- On SUBTASKS: each sub-task inherits the PARENT issue's labels first, then UNION the rest
+
 CAPABILITIES:
 
 1. PULL FROM JIRA (user provides issue key(s) via flag / URL / bare key):
    - Use MCP to fetch Jira issue details for each key
-   - Extract: summary, description, acceptance criteria, comments
+   - Extract: summary, description, acceptance criteria, comments, labels
    - For multiple issues, consolidate into unified requirements
    - Create spec.md with proper attribution to source issues
    - Include Jira links in spec for traceability
@@ -1894,16 +1936,18 @@ CAPABILITIES:
    - After user approves changes, update spec.md and regenerate spec-lite.md
 
 3. SYNC TO JIRA (user says "sync" / "push" / "create" / passes --create / --update / --project):
-   - If \`--update <KEY>\` given OR jira-links.json has an entry: update that specific issue's description with current spec content, add a comment summarising the change
-   - If \`--create\` given OR no existing link found: post a new "Technical Specification" issue (use \`--project\` if given, else default from .kiro/config.json)
+   - Compute label set per the LABELS rules above
+   - If \`--update <KEY>\` given OR jira-links.json has an entry: update that specific issue's description with current spec content. UNION the issue's CURRENT labels with the computed label set before patching (never clobber). Add a comment summarising the change.
+   - If \`--create\` given OR no existing link found: post a new "Technical Specification" issue (use \`--project\` if given, else default from .kiro/config.json) with the computed labels.
    - Link to source stories where applicable
    - Add comment requesting BA review
-   - Set appropriate labels (kspec, technical-specification)
 
 4. CREATE SUBTASKS (user says "subtasks" / "sub-tasks"; optionally with a parent key):
    - Read tasks.md from current spec
    - Determine parent issue: use the key passed in, else the first entry in jira-links.json
-   - Create one Jira sub-task per task
+   - Fetch the parent issue's labels — each sub-task inherits these
+   - Compute the final per-sub-task label set per the LABELS rules
+   - Create one Jira sub-task per task with the inherited+computed labels
    - Link to parent spec issue
    - Include task details and acceptance criteria
 

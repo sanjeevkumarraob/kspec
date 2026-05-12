@@ -2716,6 +2716,45 @@ z`;
       assert.match(agent.prompt, /ACTION KEYWORDS/, 'agent has action-keyword routing');
       assert.match(agent.prompt, /kiro-cli mcp add --name atlassian/, 'agent has MCP-missing fallback');
     });
+
+    it('kspec-jira skill documents --tags/--labels flag with parsing rules + merge behavior', () => {
+      const jira = skillTemplates['kspec-jira/SKILL.md'];
+      // Both flag aliases
+      assert.match(jira, /--tags/, 'mentions --tags');
+      assert.match(jira, /--labels/, 'mentions --labels alias');
+      // Example with colons (user's specific request)
+      assert.match(jira, /driver:engineering/, 'shows colon-separated example like driver:engineering');
+      // Parsing rules
+      assert.match(jira, /Split on comma/i, 'documents comma-split parsing');
+      assert.match(jira, /trim whitespace/i, 'documents whitespace trimming');
+      assert.match(jira, /No spaces inside a label|disallows? spaces|rejects? spaces/i,
+        'warns about Jira disallowing spaces in labels');
+      // Merge behavior
+      assert.match(jira, /UPDATE/, 'documents update merge behavior');
+      assert.match(jira, /never clobber|UNION/i, 'states labels are merged not replaced on update');
+      assert.match(jira, /SUBTASKS.*inherit|inherit.*labels/is,
+        'documents subtask label inheritance');
+      // Config default
+      assert.match(jira, /defaultTags/, 'mentions config.jira.defaultTags');
+    });
+
+    it('kspec-jira agent prompt parses --tags and merges with defaults + existing labels', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates()['kspec-jira.json'];
+      assert.match(agent.prompt, /--tags/, 'agent recognizes --tags');
+      assert.match(agent.prompt, /--labels/, 'agent recognizes --labels alias');
+      assert.match(agent.prompt, /LABELS/, 'agent has explicit LABELS section');
+      // Parsing rules
+      assert.match(agent.prompt, /Split the flag value on comma|comma.*trim/is,
+        'agent splits/trims comma values');
+      assert.match(agent.prompt, /SPACES inside|disallows? spaces/i,
+        'agent warns on spaces inside labels');
+      // Merge semantics
+      assert.match(agent.prompt, /defaultTags/, 'agent reads config.jira.defaultTags');
+      assert.match(agent.prompt, /UNION/, 'agent UNIONs labels (no clobbering)');
+      assert.match(agent.prompt, /inherits? these|inherits? the PARENT/i,
+        'subtasks inherit parent labels');
+    });
   });
 
   describe('toolsSettings (least-privilege scoping)', () => {
