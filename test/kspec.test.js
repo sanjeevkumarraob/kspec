@@ -2659,6 +2659,29 @@ z`;
           `${filePath}: name field should match directory ${dir}`);
       }
     });
+
+    it('kspec-spec skill detects Jira input (URLs + bare keys) before generic Qs', () => {
+      const spec = skillTemplates['kspec-spec/SKILL.md'];
+      // Must reference Jira URL patterns the user actually pastes
+      assert.match(spec, /atlassian\.net\/browse/, 'mentions atlassian.net/browse URL');
+      assert.match(spec, /\[A-Z\]\[A-Z0-9_\]\+-\\d\+/, 'mentions bare-key regex pattern');
+      // Must instruct the agent to act on Jira input BEFORE generic Qs
+      assert.match(spec, /Detect Jira input FIRST/, 'has explicit "Jira first" step');
+      // Must instruct using the Atlassian MCP
+      assert.match(spec, /Atlassian MCP/, 'mentions Atlassian MCP');
+      assert.match(spec, /@atlassian/, 'mentions @atlassian tool');
+      // Must mention the fallback when MCP is missing
+      assert.match(spec, /kspec spec --jira/, 'mentions kspec spec --jira fallback');
+    });
+
+    it('kspec-spec agent prompt also detects Jira URLs (not just bare keys)', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates()['kspec-spec.json'];
+      assert.match(agent.prompt, /atlassian\.net\/browse/,
+        'agent prompt should detect Jira URLs, not just bare keys');
+      assert.match(agent.prompt, /Extract the issue key from the URL/,
+        'agent prompt should explain URL extraction');
+    });
   });
 
   describe('toolsSettings (least-privilege scoping)', () => {

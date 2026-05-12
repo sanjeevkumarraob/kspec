@@ -1070,7 +1070,7 @@ const SKILLS_DIR = path.join(KIRO_DIR, 'skills');
 const skillTemplates = {
   'kspec-spec/SKILL.md': `---
 name: kspec-spec
-description: Create a kspec specification from a feature description (clarify → spec.md → spec-lite.md)
+description: Create a kspec specification from a feature description or Jira issue (clarify → spec.md → spec-lite.md)
 ---
 # Create a kspec specification
 
@@ -1081,22 +1081,49 @@ that benefits from up-front design.
 - "Build a feature that does X"
 - "Plan a refactor of Y"
 - "I need to fix Z but it's complex"
+- "Create a spec from this Jira ticket: <URL>" or "from PROJ-123"
 
-## Workflow
-1. Read \`.kiro/CONTEXT.md\` and \`.kiro/steering/\` for project context.
-2. Ask clarifying questions about scope, constraints, success criteria.
-   Don't skip this — ambiguous specs produce wasted code.
-3. Create \`.kiro/specs/YYYY-MM-DD-<slug>/\` with \`spec.md\` (full) and
-   \`spec-lite.md\` (compressed for post-compact recovery).
-4. Update \`.kiro/.current\` and \`.kiro/CONTEXT.md\`.
-5. Point users at the next step using existing entry points: run
-   \`kspec design\` / \`kspec tasks\` from the terminal, or
-   \`/agent swap kspec-design\` / \`/agent swap kspec-tasks\` in chat.
+## Step 1 — Detect Jira input FIRST (before any clarifying questions)
+Scan the user's message for either:
+- A Jira URL matching \`https://*.atlassian.net/browse/<KEY>\`, \`*.atlassian.com/browse/<KEY>\`, or \`*.jira.com/browse/<KEY>\`
+- A bare issue key matching \`[A-Z][A-Z0-9_]+-\\d+\` (e.g. \`PROJ-123\`, \`SECOPS-456\`)
+
+If a Jira reference is present:
+1. Check the available tools list for an Atlassian MCP (\`@atlassian\`, \`@jira\`, or similar).
+2. If found: use the MCP to fetch the issue's summary, description, acceptance criteria, and recent comments.
+3. Use the fetched content as the **basis** for the spec — do NOT ask generic clarifying questions for fields Jira already answered (problem statement, acceptance criteria, scope).
+4. Only ask targeted follow-ups about things the ticket is silent on (e.g. "Jira covers the API surface but doesn't mention auth — should this require login?").
+5. If no Atlassian MCP is available: tell the user to either configure it (\`kiro-cli mcp add --name atlassian\`) or use \`kspec spec --jira PROJ-123 "Feature"\` from the terminal, which has the same integration.
+
+If no Jira reference: continue to Step 2.
+
+## Step 2 — Clarifying questions (only when no Jira input)
+Read \`.kiro/CONTEXT.md\` and \`.kiro/steering/\` for project context, then ask 2-4 targeted questions:
+- Scope boundaries ("I assume this does NOT include X, correct?")
+- Key user flows ("The primary use case is X, right?")
+- Non-functional expectations (auth, performance, error handling)
+Propose sensible defaults so the user can just confirm. If the user says "skip" or "just do it", proceed with the defaults.
+
+## Step 3 — Write the spec
+Create \`.kiro/specs/YYYY-MM-DD-<slug>/\` with:
+- \`spec.md\` (full) — problem, requirements, constraints, design, acceptance criteria, contract block. If from Jira, include "Source: JIRA-XXX" attribution and a link.
+- \`spec-lite.md\` (under 500 words) — concise version for post-compaction recovery.
+
+## Step 4 — Update state
+- Write the spec folder path to \`.kiro/.current\` (format: \`.kiro/specs/YYYY-MM-DD-slug\`)
+- Regenerate \`.kiro/CONTEXT.md\` with current spec name and progress
+
+## Step 5 — Suggest next step
+Point users at existing entry points (no \`/kspec-design\` or \`/kspec-tasks\` slash commands exist — only \`/kspec-spec\`, \`/kspec-build\`, \`/kspec-review\`, \`/kspec-verify\`, \`/kspec-jira\` do):
+- Architecture: \`kspec design\` (terminal) or \`/agent swap kspec-design\` (chat)
+- Tasks: \`kspec tasks\` (terminal) or \`/agent swap kspec-tasks\` (chat)
+- Then \`/kspec-build\` for strict TDD execution.
 
 ## Related
-- Terminal equivalent: \`kspec spec "Feature description"\`
+- Terminal: \`kspec spec "Feature"\` or \`kspec spec --jira PROJ-123 "Feature"\`
 - Direct agent: \`/agent swap kspec-spec\`
-- Verify after: \`/kspec-verify\` or \`kspec verify-spec\`
+- Verify: \`/kspec-verify\` or \`kspec verify-spec\`
+- Bidirectional Jira sync (push spec back to Jira): \`/kspec-jira\` or \`kspec sync-jira\`
 `,
 
   'kspec-build/SKILL.md': `---
@@ -1452,11 +1479,13 @@ WORKFLOW:
    - Propose sensible defaults for each question so the user can just confirm
    - Wait for answers before proceeding
    - If user says "skip" or "just do it", proceed with your defaults
-3. If user provides a Jira issue key (e.g., PROJ-123):
-   - Use Atlassian MCP to fetch issue details (summary, description, acceptance criteria, comments)
-   - Use the Jira content as the basis for the spec
-   - Include "Source: JIRA-XXX" attribution in the spec
-   - If MCP is not available, inform the user to configure it or use \`kspec spec --jira\`
+3. If user provides a Jira reference — either a bare issue key (e.g. PROJ-123, SECOPS-456) OR a URL like https://*.atlassian.net/browse/PROJ-123, *.atlassian.com/browse/<KEY>, *.jira.com/browse/<KEY>:
+   - Extract the issue key from the URL (the trailing segment after /browse/)
+   - Use Atlassian MCP (@atlassian / @jira / similar) to fetch issue details (summary, description, acceptance criteria, comments)
+   - Use the Jira content as the basis for the spec — skip generic clarifying questions for fields the ticket already covers
+   - Include "Source: JIRA-XXX" attribution and a link in the spec
+   - Only ask targeted follow-ups for things the ticket is silent on
+   - If MCP is not available, inform the user to configure it (\`kiro-cli mcp add --name atlassian\`) or use \`kspec spec --jira PROJ-123 "Feature"\` from the terminal
 4. Create spec folder: .kiro/specs/YYYY-MM-DD-{feature-slug}/
    - Use today's date and a short slug (2-4 words from feature name)
 5. Create spec.md in that folder with:
@@ -5051,11 +5080,31 @@ Powers: contract, document, tdd, code-review, code-intelligence
       }
     }
 
-    console.log(`\n✅ Synced agents (${jsonUpdated} JSON, ${mdUpdated} markdown updated)`);
-    if (jsonUpdated === 0 && mdUpdated === 0) {
-      console.log('   All agents already in sync with current MCP config.\n');
+    // Refresh kspec-shipped Agent Skills (.kiro/skills/<name>/SKILL.md).
+    // These are kspec-authoritative workflow templates — kept in sync with
+    // the latest version so users get bug-fixes (e.g. Jira-URL detection
+    // in kspec-spec). Users who want custom workflows should create skills
+    // under DIFFERENT names; we never touch those.
+    let skillsUpdated = 0;
+    if (cfg.skills && fs.existsSync(SKILLS_DIR)) {
+      for (const [relPath, content] of Object.entries(skillTemplates)) {
+        const fullPath = path.join(SKILLS_DIR, relPath);
+        ensureDir(path.dirname(fullPath));
+        const existing = fs.existsSync(fullPath) ? fs.readFileSync(fullPath, 'utf8') : null;
+        if (existing !== content) {
+          fs.writeFileSync(fullPath, content);
+          log(`${existing ? 'Updated' : 'Created'} ${fullPath}`);
+          skillsUpdated++;
+        }
+      }
+    }
+
+    const total = jsonUpdated + mdUpdated + skillsUpdated;
+    console.log(`\n✅ Sync complete (${jsonUpdated} agent JSON, ${mdUpdated} agent markdown, ${skillsUpdated} skills updated)`);
+    if (total === 0) {
+      console.log('   Everything already in sync.\n');
     } else {
-      console.log('\nRestart any active kiro-cli sessions to pick up new tools.\n');
+      console.log('\nRestart any active kiro-cli sessions to pick up the changes.\n');
     }
   },
 
@@ -5601,7 +5650,7 @@ Other:
   kspec list              List all specs
   kspec status            Current status
   kspec agents            List agents
-  kspec sync-agents       Refresh agent JSON/markdown after adding new MCP servers
+  kspec sync-agents       Refresh agents + skills to latest kspec templates (use after MCP changes or kspec upgrade)
   kspec update            Check for updates
   kspec help              Show this help
 
