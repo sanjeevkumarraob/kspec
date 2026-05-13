@@ -2660,7 +2660,7 @@ z`;
       }
     });
 
-    it('kspec-spec skill detects Jira input (flag + URLs + bare keys) before generic Qs', () => {
+    it('kspec-spec skill detects Jira input (flag + URLs + bare keys)', () => {
       const spec = skillTemplates['kspec-spec/SKILL.md'];
       // Must reference all three Jira input forms
       assert.match(spec, /--jira/, 'mentions --jira CLI-style flag');
@@ -2668,8 +2668,9 @@ z`;
       assert.match(spec, /\[A-Z\]\[A-Z0-9_\]\+-\\d\+/, 'mentions bare-key regex pattern');
       // Comma-separated keys (matching CLI behavior)
       assert.match(spec, /PROJ-123,PROJ-456/, 'mentions comma-separated keys');
-      // Must instruct the agent to act on Jira input BEFORE generic Qs
-      assert.match(spec, /Detect Jira input FIRST/i, 'has explicit "Jira first" step');
+      // Must tell agent to scan/find input (not just "the user's message" — wider scope)
+      assert.match(spec, /scan everywhere|prior turns|context entries/i,
+        'tells agent to scan beyond just the immediate message');
       // Must instruct using the Atlassian MCP
       assert.match(spec, /Atlassian MCP/, 'mentions Atlassian MCP');
       assert.match(spec, /@atlassian/, 'mentions @atlassian tool');
@@ -2677,20 +2678,20 @@ z`;
       assert.match(spec, /kspec spec --jira/, 'mentions kspec spec --jira fallback');
     });
 
-    it('kspec-spec skill has hard-rule preamble forbidding "what do you want to spec?" fallback', () => {
+    it('kspec-spec skill explicitly forbids the "what would you like to spec?" fallback', () => {
       const spec = skillTemplates['kspec-spec/SKILL.md'];
-      // Must have an explicit "NEVER ask for clarification when input is present" rule
-      assert.match(spec, /NEVER respond with.*feature description|NEVER.*what.*to spec/i,
-        'must forbid the generic clarification response');
-      // Must instruct that meta-sounding feature titles are valid input
-      assert.match(spec, /sounds meta|"create a spec for"/i,
+      // Must explicitly tell the agent not to use the multi-option menu fallback
+      assert.match(spec, /Do not ask "what would you like to spec/i,
+        'must explicitly forbid the multi-option clarification menu');
+      // Must allow meta-phrased feature titles
+      assert.match(spec, /even if it sounds meta|even if it.*meta/i,
         'must explicitly allow meta-phrased feature titles');
-      // Must contain at least one worked example with --jira + quoted title
-      assert.match(spec, /--jira\s+ACME-456|--jira\s+PROJ-\d+.*"/i,
+      // Must contain a worked example with --jira + quoted title
+      assert.match(spec, /--jira\s+ACME-456/,
         'must contain a worked example showing --jira + title');
-      // Must say slash-command args are user intent, not questions
-      assert.match(spec, /always the user's intent|never a question/i,
-        'must clarify slash-command args are intent not requests');
+      // Must NOT contain the old multi-option fallback question
+      assert.doesNotMatch(spec, /What feature, refactor, or bug fix should I spec\?/,
+        'must not contain the failing fallback question');
     });
 
     it('kspec-spec agent prompt has same hard-rule preamble + Jira detection BEFORE clarify', () => {
