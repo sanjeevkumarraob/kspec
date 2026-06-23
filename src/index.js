@@ -18,6 +18,12 @@ const LEGACY_KSPEC_DIR = '.kspec';
 const UPDATE_CHECK_FILE = path.join(os.homedir(), '.kspec-update-check');
 const KIRO_MCP_CONFIG_WORKSPACE_SETTINGS = path.join(KIRO_DIR, 'settings', 'mcp.json');
 const KIRO_MCP_CONFIG_WORKSPACE_ROOT = path.join(KIRO_DIR, 'mcp.json');
+const CONTEXT_MAX_BYTES = 8 * 1024;
+const V3_MIN_VERSION = '2.8.0';
+
+function getKiroHome() {
+  return process.env.KIRO_HOME || path.join(os.homedir(), '.kiro');
+}
 // User-level paths are resolved at call time so tests (and any process that
 // rewrites HOME) see the current value of os.homedir() rather than a value
 // frozen at module load.
@@ -25,8 +31,8 @@ function getMcpLookupPaths() {
   return [
     KIRO_MCP_CONFIG_WORKSPACE_SETTINGS,
     KIRO_MCP_CONFIG_WORKSPACE_ROOT,
-    path.join(os.homedir(), '.kiro', 'settings', 'mcp.json'),
-    path.join(os.homedir(), '.kiro', 'mcp.json')
+    path.join(getKiroHome(), 'settings', 'mcp.json'),
+    path.join(getKiroHome(), 'mcp.json')
   ];
 }
 
@@ -36,7 +42,8 @@ const defaultConfig = {
   autoExecute: 'ask',
   initialized: false,
   testCommand: null,
-  model: 'claude-sonnet-4.6',
+  model: null,
+  kiroEngine: 'v2',
   strictTdd: true,
   jira: {
     project: null,
@@ -78,6 +85,7 @@ function saveConfig(cfg) {
 
 const config = loadConfig();
 const pkg = require('../package.json');
+const runtimeOptions = { engine: null, effort: null };
 
 // Update check (non-blocking, cached for 24h)
 function shouldCheckUpdate() {
@@ -105,6 +113,18 @@ function compareVersions(v1, v2) {
     if ((parts1[i] || 0) > (parts2[i] || 0)) return 1;
   }
   return 0;
+}
+
+function normalizeEngine(value) {
+  const engine = String(value || '').toLowerCase();
+  if (!['v2', 'v3'].includes(engine)) die(`Invalid Kiro engine "${value}". Use v2 or v3.`);
+  return engine;
+}
+
+function getKiroEngine(cliOverride) {
+  return normalizeEngine(
+    cliOverride || process.env.KSPEC_KIRO_ENGINE || loadConfig().kiroEngine || 'v2'
+  );
 }
 
 async function checkForUpdates() {
@@ -414,6 +434,25 @@ function detectCli() {
   return null;
 }
 
+function getKiroCliVersion() {
+  try {
+    const output = execSync('kiro-cli --version', { encoding: 'utf8', timeout: 5000 });
+    const match = output.match(/(\d+\.\d+\.\d+)/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function assertEngineSupported(engine, cli = detectCli()) {
+  if (engine !== 'v3') return;
+  if (cli !== 'kiro-cli') die('Kiro V3 requires kiro-cli; the legacy q CLI only supports V2.');
+  const version = getKiroCliVersion();
+  if (!version || compareVersions(version, V3_MIN_VERSION) < 0) {
+    die(`Kiro V3 requires kiro-cli ${V3_MIN_VERSION} or newer (found ${version || 'unknown'}).`);
+  }
+}
+
 function requireCli() {
   const cli = detectCli();
   if (!cli) die("Neither 'kiro-cli' nor 'q' found. Install Kiro CLI first.");
@@ -504,21 +543,19 @@ async function confirm(question, defaultValue = true) {
   return false;
 }
 
-function resetToDefaultAgent(cli) {
-  try {
-    const child = spawn(cli, ['agent', 'swap', 'kiro_default'], { stdio: 'ignore' });
-    child.on('error', () => {}); // Best-effort — silently ignore errors
-  } catch {
-    // Best-effort — silently ignore if spawn fails
-  }
-}
+// Kept as a no-op export for callers of older kspec internals. Agent swapping
+// is an in-chat slash command; there is no `kiro-cli agent swap` subcommand.
+function resetToDefaultAgent() {}
 
 // Build the kiro-cli argv for a chat invocation. Pure helper so we can
 // unit-test that headless/passthrough flags survive the kspec → kiro-cli
 // hop. `passthroughArgs` is appended ahead of the message so kiro-cli
 // parses them as flags, not as part of the prompt body.
-function buildChatArgs(message, agent, passthroughArgs = []) {
+function buildChatArgs(message, agent, passthroughArgs = [], options = {}) {
   const base = agent ? ['chat', '--agent', agent] : ['chat'];
+  if (options.engine === 'v3') base.splice(1, 0, '--v3');
+  if (options.mode) base.push('--mode', options.mode);
+  if (options.effort) base.push('--effort', options.effort);
   return [...base, ...passthroughArgs, message];
 }
 
@@ -557,12 +594,18 @@ function classifyReviewArgs(args) {
   return { passthroughArgs, targetArgs };
 }
 
-function chat(message, agent, passthroughArgs = []) {
+function chat(message, agent, passthroughArgs = [], options = {}) {
   // Refresh context before each chat to ensure LLM has latest state
   refreshContext();
 
   const cli = requireCli();
-  const args = buildChatArgs(message, agent, passthroughArgs);
+  const engine = getKiroEngine(options.engine || runtimeOptions.engine);
+  assertEngineSupported(engine, cli);
+  const args = buildChatArgs(message, agent, passthroughArgs, {
+    engine,
+    mode: options.mode,
+    effort: options.effort || runtimeOptions.effort
+  });
   const child = spawn(cli, args, { stdio: 'inherit' });
   return new Promise((resolve, reject) => {
     child.on('error', err => {
@@ -570,7 +613,6 @@ function chat(message, agent, passthroughArgs = []) {
       reject(err);
     });
     child.on('close', code => {
-      resetToDefaultAgent(cli);
       refreshContext();
       resolve(code);
     });
@@ -579,6 +621,18 @@ function chat(message, agent, passthroughArgs = []) {
 
 // Spec management
 function getSpecsDir() { return SPECS_DIR; }
+
+function getRequirementsArtifact(folder) {
+  const nativePath = path.join(folder, 'requirements.md');
+  if (fs.existsSync(nativePath)) return { path: nativePath, format: 'v3', filename: 'requirements.md' };
+  const legacyPath = path.join(folder, 'spec.md');
+  if (fs.existsSync(legacyPath)) return { path: legacyPath, format: 'legacy', filename: 'spec.md' };
+  return null;
+}
+
+function getRequirementsPath(folder) {
+  return getRequirementsArtifact(folder)?.path || path.join(folder, getKiroEngine() === 'v3' ? 'requirements.md' : 'spec.md');
+}
 
 function getCurrentSpec() {
   const file = CURRENT_FILE;
@@ -592,6 +646,25 @@ function getCurrentSpec() {
     if (fs.existsSync(fullPath)) return fullPath;
   }
   return null;
+}
+
+function getSpecDirectories() {
+  if (!fs.existsSync(SPECS_DIR)) return [];
+  return fs.readdirSync(SPECS_DIR)
+    .map(name => path.join(SPECS_DIR, name))
+    .filter(folder => {
+      try { return fs.statSync(folder).isDirectory(); } catch { return false; }
+    })
+    .sort();
+}
+
+function resolveActiveSpec() {
+  const current = getCurrentSpec();
+  if (current) return current;
+  const specs = getSpecDirectories();
+  if (specs.length !== 1) return null;
+  setCurrentSpec(specs[0]);
+  return specs[0];
 }
 
 function setCurrentSpec(folder) {
@@ -637,8 +710,8 @@ function getTaskStats(folder) {
   try {
     const content = fs.readFileSync(tasksFile, 'utf8');
     // Match both [x] and [X] consistently for total and done counts
-    const total = (content.match(/^-\s*\[[ xX]\]/gm) || []).length;
-    const done = (content.match(/^-\s*\[[xX]\]/gm) || []).length;
+    const total = (content.match(/^\s*-\s*\[[ xX]\]/gm) || []).length;
+    const done = (content.match(/^\s*-\s*\[[xX]\]/gm) || []).length;
     return { total, done, remaining: total - done };
   } catch {
     return null; // File unreadable (permissions, locked, etc.)
@@ -684,8 +757,8 @@ function getCurrentTask(folder) {
     const content = fs.readFileSync(tasksFile, 'utf8');
     const lines = content.split('\n');
     for (const line of lines) {
-      if (/^-\s*\[ \]/.test(line)) {
-        return line.replace(/^-\s*\[ \]\s*/, '').trim();
+      if (/^\s*-\s*\[ \]/.test(line)) {
+        return line.replace(/^\s*-\s*\[ \]\s*/, '').trim();
       }
     }
     return null;
@@ -696,11 +769,11 @@ function getCurrentTask(folder) {
 
 // Check if spec.md has been modified after spec-lite.md
 function isSpecStale(folder) {
-  const specFile = path.join(folder, 'spec.md');
+  const specFile = getRequirementsArtifact(folder)?.path;
   const specLiteFile = path.join(folder, 'spec-lite.md');
 
   try {
-    if (!fs.existsSync(specFile)) return false;
+    if (!specFile || !fs.existsSync(specFile)) return false;
     if (!fs.existsSync(specLiteFile)) return true; // No spec-lite means stale
 
     const specMtime = fs.statSync(specFile).mtime;
@@ -716,8 +789,10 @@ function isSpecStale(folder) {
 // For AI-generated summary, use `kspec refresh` or kspec-refresh agent
 function truncateSpecLite(folder) {
   if (!isSpecStale(folder)) return;
-  log('spec.md changed — truncating spec-lite.md...');
-  const specContent = fs.readFileSync(path.join(folder, 'spec.md'), 'utf8');
+  const artifact = getRequirementsArtifact(folder);
+  if (!artifact) return;
+  log(`${artifact.filename} changed — truncating spec-lite.md...`);
+  const specContent = fs.readFileSync(artifact.path, 'utf8');
   const contractIdx = specContent.indexOf('## Contract');
   const content = contractIdx > 0 ? specContent.slice(0, contractIdx).trim() : specContent;
   const lite = content.length > 2000
@@ -752,171 +827,146 @@ async function checkStaleness(folder) {
   return proceed;
 }
 
+function truncateUtf8(value, maxBytes, marker = '\n\n... (truncated)') {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  const markerBytes = Buffer.byteLength(marker, 'utf8');
+  let output = value;
+  while (output && Buffer.byteLength(output, 'utf8') + markerBytes > maxBytes) {
+    output = output.slice(0, Math.max(0, output.length - 128));
+  }
+  return output.trimEnd() + marker;
+}
+
+function writeContextAtomic(content) {
+  ensureDir(KIRO_DIR);
+  const tmp = `${CONTEXT_FILE}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, content, { flag: 'wx' });
+    fs.renameSync(tmp, CONTEXT_FILE);
+  } finally {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+function getCurrentChunk(folder) {
+  const tasksFile = path.join(folder, 'tasks.md');
+  if (!fs.existsSync(tasksFile)) return null;
+  let chunk = null;
+  for (const line of fs.readFileSync(tasksFile, 'utf8').split('\n')) {
+    const header = line.match(/^##\s+Chunk\s+\d+:?\s*(.*)$/i);
+    if (header) chunk = line.replace(/^##\s+/, '').trim();
+    if (/^\s*-\s*\[ \]/.test(line)) return chunk;
+  }
+  return null;
+}
+
 function refreshContext() {
-  const contextFile = CONTEXT_FILE;
-  const current = getCurrentSpec();
-
+  const current = resolveActiveSpec();
   if (!current) {
-    // No current spec - create minimal context
-    const content = `# kspec Context
-
-No active spec. Run: \`kspec spec "Feature Name"\`
-`;
-    ensureDir(KIRO_DIR);
-    fs.writeFileSync(contextFile, content);
+    const content = '# kspec Context\n\nNo active spec. Run: `kspec use <name>` or `kspec spec "Feature Name"`\n';
+    writeContextAtomic(content);
     return content;
   }
 
-  const specName = path.basename(current);
+  const artifact = getRequirementsArtifact(current);
   const stats = getTaskStats(current);
   const currentTask = getCurrentTask(current);
+  const currentChunk = getCurrentChunk(current);
   const stale = isSpecStale(current);
+  const hasDesign = fs.existsSync(path.join(current, 'design.md'));
+  const hasTasks = fs.existsSync(path.join(current, 'tasks.md'));
+  const phase = !artifact ? 'requirements'
+    : !hasTasks ? (hasDesign ? 'tasks' : 'design')
+      : stats && stats.remaining > 0 ? 'build' : 'verify';
 
-  // Read spec-lite if exists, or fall back to spec.md if stale
-  const specLiteFile = path.join(current, 'spec-lite.md');
-  const specFile = path.join(current, 'spec.md');
-  let specLite = '';
-
-  if (stale && fs.existsSync(specFile)) {
-    // Use spec.md directly when stale (truncate if too long)
-    const specContent = fs.readFileSync(specFile, 'utf8');
-    specLite = specContent.length > 3000
-      ? specContent.slice(0, 3000) + '\n\n... (truncated, run `kspec refresh` for full summary)'
-      : specContent;
-  } else if (fs.existsSync(specLiteFile)) {
-    specLite = fs.readFileSync(specLiteFile, 'utf8');
-  }
-
-  // Read memory if exists
-  const memoryFile = path.join(current, 'memory.md');
-  let memory = '';
-  if (fs.existsSync(memoryFile)) {
-    memory = fs.readFileSync(memoryFile, 'utf8');
-  }
-
-  // Read Jira links if exists
-  const jiraLinksFile = path.join(current, 'jira-links.json');
-  let jiraLinks = null;
-  if (fs.existsSync(jiraLinksFile)) {
-    try {
-      jiraLinks = JSON.parse(fs.readFileSync(jiraLinksFile, 'utf8'));
-    } catch {}
-  }
-
-  // Read metadata if exists
-  const metadataFile = path.join(current, 'metadata.json');
   let metadata = null;
-  if (fs.existsSync(metadataFile)) {
-    try { metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8')); } catch {}
-  }
+  try { metadata = JSON.parse(fs.readFileSync(path.join(current, 'metadata.json'), 'utf8')); } catch {}
+  let jiraLinks = null;
+  try { jiraLinks = JSON.parse(fs.readFileSync(path.join(current, 'jira-links.json'), 'utf8')); } catch {}
 
-  // Check milestone membership
   let milestoneName = null;
   if (fs.existsSync(MILESTONES_DIR)) {
-    const msFiles = fs.readdirSync(MILESTONES_DIR).filter(f => f.endsWith('.json'));
-    for (const f of msFiles) {
+    for (const file of fs.readdirSync(MILESTONES_DIR).filter(f => f.endsWith('.json'))) {
       try {
-        const ms = JSON.parse(fs.readFileSync(path.join(MILESTONES_DIR, f), 'utf8'));
-        if (ms.specs && ms.specs.includes(current)) {
-          milestoneName = ms.name;
+        const milestone = JSON.parse(fs.readFileSync(path.join(MILESTONES_DIR, file), 'utf8'));
+        if ((milestone.specs || []).some(spec => path.basename(spec) === path.basename(current))) {
+          milestoneName = milestone.name;
           break;
         }
       } catch {}
     }
   }
 
-  // Build context
-  let content = `# kspec Context
-> Auto-generated. Always read this first after context compression.
+  let content = `# kspec Active Context
+> Derived local snapshot. Requirements and tasks are authoritative.
 
-## Current Spec
-**${specName}**
-Path: \`${current}\`
+## Active Spec
+- Name: ${path.basename(current)}
+- Path: \`${current}\`
+- Format: ${artifact?.format || 'missing'} (${artifact?.filename || 'no requirements artifact'})
+- Phase: ${phase}
+- Type: ${metadata?.type || 'feature'}
+- Milestone: ${milestoneName || 'none'}
+
+## Progress
+- Tasks: ${stats ? `${stats.done}/${stats.total} completed; ${stats.remaining} remaining` : 'not generated'}
+- Current chunk: ${currentChunk || 'none'}
+- Current task: ${currentTask || 'none'}
+- Design: ${hasDesign ? 'present' : 'not created'}
 `;
 
-  if (metadata && metadata.type) {
-    content += `Type: ${metadata.type}
-`;
+  const jiraLines = [];
+  if (jiraLinks?.sourceIssues?.length) jiraLines.push(`- Source issues: ${jiraLinks.sourceIssues.join(', ')}`);
+  if (jiraLinks?.specIssue) jiraLines.push(`- Spec issue: ${jiraLinks.specIssue}`);
+  if (jiraLinks?.subtasks?.length) jiraLines.push(`- Subtasks: ${jiraLinks.subtasks.join(', ')}`);
+  if (jiraLines.length) content += `\n## Jira\n${jiraLines.join('\n')}\n`;
+
+  let summary = '';
+  const litePath = path.join(current, 'spec-lite.md');
+  if (!stale && fs.existsSync(litePath)) summary = fs.readFileSync(litePath, 'utf8');
+  else if (artifact) summary = fs.readFileSync(artifact.path, 'utf8');
+  let memory = '';
+  const memoryPath = path.join(current, 'memory.md');
+  if (fs.existsSync(memoryPath)) {
+    memory = fs.readFileSync(memoryPath, 'utf8');
   }
-  if (milestoneName) {
-    content += `Milestone: ${milestoneName}
-`;
+
+  const next = phase === 'requirements' ? 'Create requirements'
+    : phase === 'design' ? 'Create or verify design'
+      : phase === 'tasks' ? 'Generate implementation tasks'
+        : phase === 'build' ? 'Continue the current task with strict TDD'
+          : 'Verify implementation and complete the spec';
+  let tail = `\n## Next Action\n${next}.\n`;
+  if (stale) tail += '\nRun `kspec refresh` to update spec-lite.md.\n';
+
+  // Identity, paths, progress, and Jira references are never truncation
+  // candidates. Only derived prose sections consume the remaining budget.
+  const fixedBytes = Buffer.byteLength(content + tail, 'utf8');
+  if (fixedBytes > CONTEXT_MAX_BYTES) {
+    throw new Error('Active identifiers and Jira references exceed the 8 KiB context limit. Reduce jira-links.json before refreshing context.');
   }
-
-  if (stale) {
-    content += `
-**NOTE: spec.md was modified. Using spec.md directly for context.**
-Run \`kspec refresh\` to generate optimized spec-lite.md summary.
-
-`;
-  } else {
-    content += '\n';
-  }
-
-  if (stats) {
-    content += `## Progress
-- Tasks: ${stats.done}/${stats.total} completed
-- Remaining: ${stats.remaining}
-`;
-    if (currentTask) {
-      content += `- **Current Task**: ${currentTask}
-`;
+  let remaining = CONTEXT_MAX_BYTES - fixedBytes;
+  if (summary && remaining > 160) {
+    const header = '\n## Requirements Summary\n';
+    const headerBytes = Buffer.byteLength(header, 'utf8');
+    const budget = Math.min(3500, Math.max(0, Math.floor(remaining * 0.7) - headerBytes - 1));
+    if (budget > 80) {
+      const section = `${header}${truncateUtf8(summary, budget, '\n\n... (summary truncated; read the requirements artifact)')}\n`;
+      content += section;
+      remaining -= Buffer.byteLength(section, 'utf8');
     }
-    content += '\n';
   }
-
-  if (specLite) {
-    content += `## Requirements Summary
-${specLite}
-
-`;
+  if (memory && remaining > 160) {
+    const header = '\n## Recent Decisions and Learnings\n';
+    const headerBytes = Buffer.byteLength(header, 'utf8');
+    const budget = Math.min(1400, Math.max(0, remaining - headerBytes - 1));
+    if (budget > 80) content += `${header}${truncateUtf8(memory, budget, '\n\n... (decisions truncated; read memory.md)')}\n`;
   }
-
-  if (memory) {
-    content += `## Decisions & Learnings
-${memory}
-
-`;
+  content += tail;
+  if (Buffer.byteLength(content, 'utf8') > CONTEXT_MAX_BYTES) {
+    throw new Error('Generated context exceeded the 8 KiB limit.');
   }
-
-  if (jiraLinks) {
-    content += `## Jira Links
-`;
-    if (jiraLinks.sourceIssues && jiraLinks.sourceIssues.length > 0) {
-      content += `- Source Issues: ${jiraLinks.sourceIssues.join(', ')}
-`;
-    }
-    if (jiraLinks.specIssue) {
-      content += `- Spec Issue: ${jiraLinks.specIssue}
-`;
-    }
-    if (jiraLinks.subtasks && jiraLinks.subtasks.length > 0) {
-      content += `- Subtasks: ${jiraLinks.subtasks.join(', ')}
-`;
-    }
-    content += '\n';
-  }
-
-  // Design status
-  const designFile = path.join(current, 'design.md');
-  const hasDesign = fs.existsSync(designFile);
-  content += `## Design
-- Status: ${hasDesign ? 'present' : 'not yet created'}
-${hasDesign ? '- Run `kspec verify-design` to review' : '- Run `kspec design` to create (optional)'}
-
-`;
-
-  content += `## Quick Commands
-- \`kspec design\` - Create technical design (optional)
-- \`kspec tasks\` - Generate implementation tasks
-- \`kspec build\` - Continue building tasks
-- \`kspec verify\` - Verify implementation
-- \`kspec status\` - Show current status
-- \`kspec context\` - Refresh this file
-`;
-
-  ensureDir(KIRO_DIR);
-  fs.writeFileSync(contextFile, content);
+  writeContextAtomic(content);
   return content;
 }
 
@@ -1067,6 +1117,18 @@ description: Backend conventions (auto-loaded when working in server code)
 // without `/agent swap`. See: https://kiro.dev/docs/cli/skills/
 const SKILLS_DIR = path.join(KIRO_DIR, 'skills');
 
+const SKILL_CONTEXT_PROTOCOL = `## Active context protocol (required)
+
+Before doing stateful work:
+1. Read \`.kiro/.current\` and verify it points to an existing spec directory.
+2. If it is missing and exactly one spec exists, run \`kspec use <name>\`. If several exist, ask the user to choose; never guess.
+3. Run \`kspec context --stdout\`, then read \`.kiro/CONTEXT.md\`.
+4. Read the active source artifacts: \`requirements.md\` (V3) or \`spec.md\` (legacy), plus \`design.md\` and \`tasks.md\` when present.
+5. Source artifacts are authoritative when they conflict with CONTEXT.md.
+
+After changing requirements, design, tasks, Jira links, memory, or metadata, run \`kspec context --stdout\` again. Never compose CONTEXT.md yourself. If shell access is unavailable, stop and tell the user to run \`kspec context --stdout\`; do not continue with stale context.
+`;
+
 const skillTemplates = {
   'kspec-spec/SKILL.md': `---
 name: kspec-spec
@@ -1075,6 +1137,10 @@ description: Create a kspec specification from a feature description or Jira iss
 # kspec-spec — create a specification
 
 You were invoked via \`/kspec-spec\`. **Do not ask "what would you like to spec?"** — execute the workflow below.
+
+${SKILL_CONTEXT_PROTOCOL}
+
+For a brand-new spec, the missing-current rule is deferred until after you create the spec directory. Write its path to \`.kiro/.current\`, then run \`kspec context --stdout\`.
 
 ## Step 1 — Find the user's input (scan everywhere)
 
@@ -1099,10 +1165,11 @@ Use the description as the feature title and proceed. You may ask 1-2 targeted f
 ## Step 4 — Write files
 
 Create \`.kiro/specs/YYYY-MM-DD-<slug>/\` with:
-- \`spec.md\` — problem, requirements, constraints, design sketch, acceptance criteria, contract block. If from Jira, include \`Source: <JIRA-KEY>\` attribution and a link.
+- Read \`.kiro/config.json\`. For \`kiroEngine: v3\`, create \`requirements.md\`; otherwise create legacy \`spec.md\`. Include the problem, requirements, constraints, design sketch, acceptance criteria, and Jira \`Source: <JIRA-KEY>\` attribution where relevant.
+- For V3, put any structured output contract in \`contract.json\`; legacy specs may retain an embedded \`## Contract\` block.
 - \`spec-lite.md\` — under 500 words, compressed for post-compaction recovery.
 
-Then write the folder path to \`.kiro/.current\` and refresh \`.kiro/CONTEXT.md\`.
+Then write the folder path to \`.kiro/.current\` and run \`kspec context --stdout\`.
 
 ## Step 5 — Suggest next step
 
@@ -1138,6 +1205,10 @@ description: Execute kspec tasks with strict TDD (red → green → refactor →
 Use this skill to implement an existing kspec spec one task at a time, with
 mandatory red-green-refactor discipline.
 
+${SKILL_CONTEXT_PROTOCOL}
+
+Resolve the active spec from \`.kiro/.current\`, read \`tasks.md\`, and resume the first incomplete task. After marking any task complete, save \`tasks.md\` and refresh context.
+
 ## When to invoke
 - "Build the next task"
 - "Implement the spec"
@@ -1170,6 +1241,10 @@ description: Multi-CLI parallel code review (kiro-cli + Copilot/Claude/Gemini/Co
 Use this skill when finishing a feature or before merging a PR. Runs every
 configured reviewer CLI in parallel, then synthesizes findings.
 
+${SKILL_CONTEXT_PROTOCOL}
+
+Load the active requirements before reviewing. If no spec is active, a generic diff review is allowed only after clearly warning that acceptance-criteria coverage cannot be checked.
+
 ## When to invoke
 - "Review my changes"
 - "Check this PR"
@@ -1185,7 +1260,7 @@ configured reviewer CLI in parallel, then synthesizes findings.
 
 ## Compliance check
 - Steering rules in \`.kiro/steering/\`
-- Spec acceptance criteria in \`.kiro/specs/<current>/spec.md\`
+- Acceptance criteria in the active \`requirements.md\` or legacy \`spec.md\`
 - Test coverage threshold from \`testing.md\`
 
 ## Related
@@ -1203,6 +1278,8 @@ description: Verify a spec, design, tasks, or implementation against acceptance 
 Use this skill at any phase boundary (spec → design → tasks → implementation)
 to confirm the artifact is complete, consistent, and meets acceptance criteria.
 
+${SKILL_CONTEXT_PROTOCOL}
+
 ## When to invoke
 - "Is the spec ready for design?"
 - "Did I cover all the tasks?"
@@ -1210,7 +1287,7 @@ to confirm the artifact is complete, consistent, and meets acceptance criteria.
 
 ## Workflow
 1. Read \`.kiro/.current\` to get the current spec folder.
-2. Identify the artifact to verify (spec.md / design.md / tasks.md / code).
+2. Identify the active artifact to verify (\`requirements.md\` or legacy \`spec.md\`, \`design.md\`, \`tasks.md\`, or code).
 3. Check each acceptance criterion is addressed.
 4. Flag gaps, ambiguities, or missing edge cases.
 5. Output a clear pass/fail verdict with specific gap list.
@@ -1229,6 +1306,8 @@ description: Sync kspec spec/tasks to Jira (pull issues, push specs, create sub-
 Use this skill for any Jira operation: pulling issues into a spec, pushing
 spec content back to Jira, creating sub-tasks, or pulling latest ticket
 updates. Requires the Atlassian MCP server to be configured.
+
+${SKILL_CONTEXT_PROTOCOL}
 
 ## When to invoke
 - "Create a Jira ticket for this spec"
@@ -1299,19 +1378,19 @@ These apply to every issue kspec creates. \`--tags\` adds to (not replaces) thes
 ## Step 2 — Execute the mode
 
 ### SYNC TO JIRA
-1. Read current spec from \`.kiro/.current\` and \`spec.md\`.
+1. Read the active spec from \`.kiro/.current\`, preferring \`requirements.md\` and falling back to legacy \`spec.md\`.
 2. Read \`<spec>/jira-links.json\` for existing links.
 3. Build the label set: \`config.jira.defaultTags\` ∪ \`["kspec", "technical-specification"]\` ∪ \`--tags\` (de-duplicated).
 4. If \`--create\` or no existing link: post a new "Technical Specification" issue (use \`--project\` if given, else default from config) with the label set from step 3.
 5. If \`--update <KEY>\` or an existing link is found: patch that issue's description with current spec content. UNION the issue's existing labels with the label set from step 3 (never clobber user labels). Add a comment summarising the update.
-6. Save the link(s) back to \`jira-links.json\` and refresh \`.kiro/CONTEXT.md\`.
+6. Save the link(s) back to \`jira-links.json\` and run \`kspec context --stdout\`.
 
 ### PULL UPDATES
 1. Use issue keys from \`jira-links.json\` (or the explicit keys passed in).
 2. Fetch latest state of each via the Atlassian MCP.
-3. Diff against current \`spec.md\` and generate a **CHANGE REPORT** showing new/modified acceptance criteria, description changes, new comments, status changes.
-4. **NEVER auto-update spec.md** — show the report and wait for user confirmation.
-5. On approval, update \`spec.md\` and regenerate \`spec-lite.md\`.
+3. Diff against the active requirements artifact and generate a **CHANGE REPORT** showing new/modified acceptance criteria, description changes, new comments, status changes.
+4. **NEVER auto-update requirements** — show the report and wait for user confirmation.
+5. On approval, update the active requirements artifact and regenerate \`spec-lite.md\`.
 
 ### CREATE SUBTASKS
 1. Read \`tasks.md\` from current spec.
@@ -1322,8 +1401,8 @@ These apply to every issue kspec creates. \`--tags\` adds to (not replaces) thes
 6. Save the new sub-task keys to \`jira-links.json\`.
 
 ## Step 3 — Always
-- Include "Source: JIRA-XXX" attribution in spec.md for pulled content
-- Update \`.kiro/CONTEXT.md\` with the latest Jira link summary
+- Include "Source: JIRA-XXX" attribution in the active requirements artifact for pulled content
+- Run \`kspec context --stdout\` after changing Jira links or requirements
 - Report what was created/updated to the user
 
 ## Related
@@ -1339,7 +1418,7 @@ These apply to every issue kspec creates. \`--tags\` adds to (not replaces) thes
 // Get configured model (with fallback)
 function getConfiguredModel() {
   const cfg = loadConfig();
-  return cfg.model || 'claude-sonnet-4.6';
+  return cfg.model || null;
 }
 
 // Least-privilege scoping for agent write access. Each agent gets the
@@ -1419,6 +1498,11 @@ const BUILD_SHELL_SCOPE = {
 // ls/cat/git-status style commands. Both `'shell'` and `'bash'` tool
 // declarations get gated by getAgentToolsSettings().
 const AGENT_SHELL_SCOPES = {
+  'kspec-context': {
+    allowedCommands: ['kspec context', 'kspec context *'],
+    deniedCommands: [],
+    autoAllowReadonly: false
+  },
   'kspec-build':    BUILD_SHELL_SCOPE,
   'kspec-fix':      BUILD_SHELL_SCOPE,
   'kspec-refactor': BUILD_SHELL_SCOPE,
@@ -1487,8 +1571,12 @@ function getAgentToolsSettings(agentName, agentTools) {
   // instead of `shell`; gate both so write-capable agents don't escape
   // least-privilege scoping.
   const wantsShell = agentTools.includes('shell') || agentTools.includes('bash');
-  if (wantsShell && AGENT_SHELL_SCOPES[agentName]) {
-    settings.shell = AGENT_SHELL_SCOPES[agentName];
+  if (wantsShell) {
+    settings.shell = AGENT_SHELL_SCOPES[agentName] || {
+      allowedCommands: ['kspec context', 'kspec context *'],
+      deniedCommands: [],
+      autoAllowReadonly: false
+    };
   }
 
   const subagents = AGENT_SUBAGENT_GRAPH[agentName];
@@ -1499,8 +1587,57 @@ function getAgentToolsSettings(agentName, agentTools) {
   return Object.keys(settings).length > 0 ? settings : undefined;
 }
 
+function getV3Permissions(agentName) {
+  const permissions = [
+    { capability: 'fs_read', effect: 'deny', match: COMMON_DENIED_PATHS },
+    { capability: 'fs_read', effect: 'allow', match: ['./**'] }
+  ];
+  const writePaths = AGENT_PATH_SCOPES[agentName];
+  if (writePaths) {
+    permissions.push(
+      { capability: 'fs_write', effect: 'deny', match: COMMON_DENIED_PATHS },
+      { capability: 'fs_write', effect: 'allow', match: writePaths }
+    );
+  }
+  const shell = AGENT_SHELL_SCOPES[agentName];
+  if (shell) {
+    if (shell.deniedCommands.length) {
+      permissions.push({ capability: 'shell', effect: 'deny', match: shell.deniedCommands });
+    }
+    permissions.push({ capability: 'shell', effect: 'allow', match: shell.allowedCommands });
+  }
+  // Every kspec agent may refresh the derived context snapshot.
+  permissions.push({ capability: 'shell', effect: 'allow', match: ['kspec context *'] });
+  const delegates = AGENT_SUBAGENT_GRAPH[agentName] || [];
+  if (delegates.length) {
+    permissions.push(
+      { capability: 'subagent', effect: 'deny', match: ['*'], exclude: delegates },
+      { capability: 'subagent', effect: 'allow', match: delegates }
+    );
+  }
+  return permissions;
+}
+
+const AGENT_CONTEXT_PROTOCOL = `
+
+ACTIVE CONTEXT PROTOCOL (mandatory):
+1. Read .kiro/.current and verify the selected spec exists.
+2. Run \`kspec context --stdout\`, then read .kiro/CONTEXT.md.
+3. Read requirements.md (V3) or spec.md (legacy), plus design.md/tasks.md as relevant.
+4. Source artifacts override the derived context snapshot.
+5. After changing spec artifacts, Jira links, memory, metadata, or tasks, run \`kspec context --stdout\` again.
+Never compose or directly write .kiro/CONTEXT.md yourself.`;
+
+function getV2AgentHooks() {
+  return {
+    agentSpawn: [{ command: 'kspec context --stdout' }],
+    preToolUse: [{ matcher: 'shell', command: 'kspec hook guard' }],
+    stop: [{ command: 'kspec context --stdout' }]
+  };
+}
+
 // Agent templates factory (uses configured model)
-function getAgentTemplates() {
+function getAgentTemplates(engine = getKiroEngine()) {
   const model = getConfiguredModel();
 
   // Agents that should have access to every configured MCP server
@@ -1520,7 +1657,6 @@ function getAgentTemplates() {
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec analyser.
 
@@ -1550,7 +1686,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec specification writer.
 
@@ -1603,7 +1738,7 @@ WORKFLOW:
    - Concise version for context retention after compression
    - Key requirements only
 7. Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)
-8. Regenerate .kiro/CONTEXT.md with current spec name, path, and progress
+8. Run \`kspec context --stdout\` to regenerate the context snapshot
 
 PIPELINE (suggest next steps):
 - Verify spec: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
@@ -1622,7 +1757,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec task generator.
 
@@ -1647,7 +1781,7 @@ WORKFLOW:
    - Logical ordering within and across chunks
    - Dependencies noted
    - File paths where changes occur
-7. Regenerate .kiro/CONTEXT.md with updated task count from tasks.md
+7. Run \`kspec context --stdout\` after writing tasks.md
 
 Tasks must be atomic and independently verifiable.
 
@@ -1672,7 +1806,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec builder.
 
@@ -1690,12 +1823,12 @@ WORKFLOW:
    g) Mark task complete: change "- [ ]" to "- [x]"
    h) Update tasks.md file
    i) Commit with descriptive message
-   j) After completing tasks, regenerate .kiro/CONTEXT.md with updated progress
+   j) After completing tasks, run \`kspec context --stdout\`
 
 CRITICAL:
 - NEVER write implementation code before confirming test failure
 - Always update tasks.md after completing each task
-- Update .kiro/CONTEXT.md with current task and progress
+- Refresh context only through \`kspec context --stdout\`
 - NEVER delete .kiro folders
 - Use non-interactive flags for commands (--yes, -y)
 - After major changes or /compact: \`/agent swap kspec-context\` to refresh CONTEXT.md
@@ -1727,7 +1860,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec verifier.
 
@@ -1787,7 +1919,6 @@ PIPELINE (suggest next steps based on verification type):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md',
       'file://.kiro/config.json'
     ],
     prompt: `You are the kspec code reviewer.
@@ -1856,7 +1987,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec design architect.
 
@@ -1873,7 +2003,7 @@ WORKFLOW:
    - Technical Decisions
    - Risk Assessment
 5. Write the spec folder path to .kiro/.current (format: .kiro/specs/YYYY-MM-DD-slug)
-6. Regenerate .kiro/CONTEXT.md with design status
+6. Run \`kspec context --stdout\` after writing design.md
 
 PIPELINE (suggest next steps):
 - Verify design: \`/agent swap kspec-verify\` or \`kspec verify-design\`
@@ -1892,7 +2022,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec Jira integration agent.
 
@@ -1971,7 +2100,7 @@ WORKFLOW:
 3. Identify the mode (pull / sync / subtasks / pull-updates)
 4. Use Atlassian MCP for Jira operations
 5. Update jira-links.json with issue keys
-6. Update .kiro/CONTEXT.md to include Jira issue links from jira-links.json
+6. Run \`kspec context --stdout\` after updating jira-links.json
 7. Report what was created/updated
 
 IMPORTANT:
@@ -1997,7 +2126,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec bug fixer.
 
@@ -2045,7 +2173,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec refactoring agent.
 
@@ -2088,7 +2215,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec spike/investigation agent.
 
@@ -2126,7 +2252,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec spec revision agent.
 
@@ -2142,7 +2267,7 @@ WORKFLOW:
    - Add new tasks if needed
    - Note removed requirements
 6. Regenerate spec-lite.md
-7. Update .kiro/CONTEXT.md
+7. Run \`kspec context --stdout\`
 
 IMPORTANT: Show a diff summary of what changed before confirming.
 
@@ -2162,7 +2287,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec demo/walkthrough agent.
 
@@ -2199,7 +2323,6 @@ PIPELINE (suggest next steps):
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec complexity estimator.
 
@@ -2243,50 +2366,13 @@ PIPELINE (suggest next steps):
     name: 'kspec-context',
     description: 'Refresh CONTEXT.md inline',
     model,
-    tools: ['read', 'write'],
-    allowedTools: ['read', 'write'],
+    tools: ['read', 'shell'],
+    allowedTools: ['read'],
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
-    prompt: `You are the kspec context refresher.
-
-Your job is to regenerate .kiro/CONTEXT.md with current state.
-
-WORKFLOW:
-1. Read .kiro/.current to get current spec folder
-2. Read the spec folder contents (spec.md, tasks.md, design.md if exists)
-3. Read .kiro/steering/ for project rules
-4. Generate fresh CONTEXT.md with:
-
-# Current Spec
-[Spec name and summary from spec.md]
-
-## Progress
-[Task completion status from tasks.md: X/Y tasks done]
-[Current task if any]
-
-## Key Files
-[List main implementation files if tasks reference them]
-
-## Steering Rules
-[Summary of active steering rules]
-
-## Next Steps
-[What should happen next based on progress]
-
-5. Write the updated content to .kiro/CONTEXT.md
-
-IMPORTANT:
-- Keep it concise (under 500 lines)
-- Focus on actionable context for other agents
-- Include spec-lite content, not full spec
-- Run this after /compact or major changes
-
-PIPELINE:
-- Continue building: \`/agent swap kspec-build\`
-- Review changes: \`/agent swap kspec-review\``,
+    prompt: `Run \`kspec context --stdout\` immediately and return its output. Do nothing else. Never compose or directly write .kiro/CONTEXT.md yourself.`,
     keyboardShortcut: 'ctrl+shift+c',
     welcomeMessage: 'Refreshing CONTEXT.md...'
   },
@@ -2300,7 +2386,6 @@ PIPELINE:
     resources: [
       'file://.kiro/CONTEXT.md',
       'file://.kiro/steering/**/*.md',
-      'file://.kiro/specs/**/*.md'
     ],
     prompt: `You are the kspec refresh agent.
 
@@ -2325,6 +2410,23 @@ PIPELINE:
     welcomeMessage: 'Generating AI summary of spec...'
   }
   };
+
+  // Keep persistent context deliberately small. Active artifacts are read
+  // on demand using .kiro/.current; historical specs must not be preloaded.
+  for (const agent of Object.values(templates)) {
+    if (!agent.tools.includes('shell') && !agent.tools.includes('bash')) agent.tools.push('shell');
+    // Keep writes and shell commands approval-scoped; listing them in
+    // allowedTools would override toolsSettings in Kiro V2.
+    agent.allowedTools = (agent.allowedTools || []).filter(tool => !['write', 'shell', 'bash'].includes(tool));
+    agent.resources = [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+      'skill://.kiro/skills/**/SKILL.md'
+    ];
+    if (agent.name !== 'kspec-context' && !agent.prompt.includes('ACTIVE CONTEXT PROTOCOL')) {
+      agent.prompt = `${agent.prompt.trimEnd()}${AGENT_CONTEXT_PROTOCOL}`;
+    }
+  }
 
   // Apply least-privilege toolsSettings to every agent (path scoping for
   // write, command scoping for shell, explicit subagent delegation graph).
@@ -2360,7 +2462,44 @@ PIPELINE:
     }
   }
 
-  return templates;
+  if (engine !== 'v3') {
+    for (const agent of Object.values(templates)) {
+      if (!agent.model) delete agent.model;
+      agent.hooks = getV2AgentHooks();
+    }
+    return templates;
+  }
+
+  const v3Templates = {};
+  for (const [filename, source] of Object.entries(templates)) {
+    const agent = { ...source };
+    // V3's native Spec agent owns requirements.md. Keep the shared protocol's
+    // legacy fallback explicit while adapting older role prompts.
+    agent.prompt = agent.prompt
+      .replace(/\bspec\.md\b/g, 'requirements.md')
+      .replace('requirements.md (V3) or requirements.md (legacy)', 'requirements.md (V3) or spec.md (legacy)');
+    const tools = new Set(agent.tools.map(tool => tool === 'bash' ? 'shell' : tool));
+    for (const tool of [...tools]) if (tool.startsWith('@')) tools.delete(tool);
+    if (mcpAgents.includes(agent.name) && allMcps.length) tools.add('@mcp');
+    if ((AGENT_SUBAGENT_GRAPH[agent.name] || []).length) tools.add('subagent');
+    tools.add('shell');
+    agent.tools = [...tools];
+    agent.permissions = getV3Permissions(agent.name);
+    if (mcpAgents.includes(agent.name) && allMcps.length) {
+      agent.permissions.push({
+        capability: 'mcp',
+        effect: 'allow',
+        match: allMcps.map(name => `${name}/*`)
+      });
+    }
+    delete agent.allowedTools;
+    delete agent.toolsSettings;
+    delete agent.includeMcpJson;
+    delete agent.hooks;
+    if (!agent.model) delete agent.model;
+    v3Templates[filename.replace(/\.json$/, '.md')] = agent;
+  }
+  return v3Templates;
 }
 
 // Inject (or refresh) the MCP-tools usage hint section in an agent
@@ -2391,9 +2530,17 @@ function agentToMarkdown(agent) {
   fm.push(`name: ${agent.name}`);
   if (agent.description) fm.push(`description: ${JSON.stringify(agent.description)}`);
   if (Array.isArray(agent.tools) && agent.tools.length > 0) {
-    fm.push(`tools: [${agent.tools.map(t => JSON.stringify(t)).join(', ')}]`);
+    fm.push(`tools: ${JSON.stringify(agent.tools)}`);
   }
   if (agent.model) fm.push(`model: ${agent.model}`);
+  if (Array.isArray(agent.resources) && agent.resources.length > 0) {
+    fm.push(`resources: ${JSON.stringify(agent.resources)}`);
+  }
+  if (Array.isArray(agent.permissions) && agent.permissions.length > 0) {
+    fm.push(`permissions: ${JSON.stringify(agent.permissions)}`);
+  }
+  if (agent.mcpServers) fm.push(`mcpServers: ${JSON.stringify(agent.mcpServers)}`);
+  if (agent.welcomeMessage) fm.push(`welcomeMessage: ${JSON.stringify(agent.welcomeMessage)}`);
   fm.push('---');
   return `${fm.join('\n')}\n\n${agent.prompt || ''}\n`;
 }
@@ -2679,10 +2826,10 @@ async function runParallelReview(target, reviewers, passthroughArgs = []) {
   // Gather full context for each reviewer (spec, steering, diff)
   let specContent = '';
   if (folder) {
-    const specFile = path.join(folder, 'spec.md');
+    const specFile = getRequirementsArtifact(folder)?.path;
     const specLiteFile = path.join(folder, 'spec-lite.md');
     if (fs.existsSync(specLiteFile)) specContent = fs.readFileSync(specLiteFile, 'utf8');
-    else if (fs.existsSync(specFile)) specContent = fs.readFileSync(specFile, 'utf8');
+    else if (specFile && fs.existsSync(specFile)) specContent = fs.readFileSync(specFile, 'utf8');
   }
 
   let steeringContent = '';
@@ -3131,11 +3278,8 @@ When invoking external CLIs (via shell tool), prefer:
 4. Use \`kspec verify\` to validate completion
 `;
 
-// Kiro CLI hooks templates
-// See: https://kiro.dev/docs/cli/hooks/
-// LIMITATION: No hook for /compact command - CONTEXT.md won't auto-refresh on context compaction.
-// Workaround: Agents should run `kspec context` periodically or after major changes.
-// The stop hook updates CONTEXT.md on session end, but not mid-session compaction.
+// Legacy hook template exports retained for compatibility with existing
+// consumers. New V2 agents embed lifecycle hooks; V3 writes hooks/kspec.json.
 const hooksTemplateBasic = {
   hooks: {
     onSave: [
@@ -3234,45 +3378,43 @@ function upgradeKspecGitignore(existing) {
   if (/^\.kiro\/settings\/$/m.test(upgraded)) {
     upgraded = upgraded.replace(
       /^\.kiro\/settings\/$/m,
-      '.kiro/settings/*\n!.kiro/settings/hooks.json'
+      '.kiro/settings/*'
     );
   }
+  upgraded = upgraded.replace(/^!\.kiro\/settings\/hooks\.json\n?/m, '');
   if (!/^\.kiro\/audit\.log$/m.test(upgraded)) {
-    if (/^!\.kiro\/settings\/hooks\.json$/m.test(upgraded)) {
-      upgraded = upgraded.replace(
-        /^!\.kiro\/settings\/hooks\.json$/m,
-        '!.kiro/settings/hooks.json\n.kiro/audit.log'
-      );
-    } else if (/^\.kiro\/settings\/\*$/m.test(upgraded)) {
+    if (/^\.kiro\/settings\/\*$/m.test(upgraded)) {
       upgraded = upgraded.replace(
         /^\.kiro\/settings\/\*$/m,
-        '.kiro/settings/*\n!.kiro/settings/hooks.json\n.kiro/audit.log'
+        '.kiro/settings/*\n.kiro/audit.log'
       );
     } else {
       upgraded = upgraded.replace(/\n*$/, '') + '\n.kiro/audit.log\n';
     }
   }
+  if (!/^\.kiro\/backups\/$/m.test(upgraded)) {
+    upgraded = upgraded.replace(/\n*$/, '') + '\n.kiro/backups/\n';
+  }
   return upgraded === existing ? null : upgraded;
 }
 
-// .gitignore block written by `kspec init`. Per-file rules under
-// `.kiro/settings/*` so we can opt-out specific shareable files
-// (hooks.json) from the directory-wide ignore. Audit log is local-only.
+// .gitignore block written by `kspec init`. V2 hooks are embedded in agent
+// configs and V3 hooks live in the committed .kiro/hooks directory.
 const KSPEC_GITIGNORE_BLOCK = `
 # kspec local state (don't commit - personal working state)
 .kiro/.current
 .kiro/CONTEXT.md
 .kiro/settings/*
-!.kiro/settings/hooks.json
 .kiro/audit.log
+.kiro/backups/
 
 # DO commit these for team collaboration:
-# .kiro/settings/hooks.json - shared CI / team hooks (auto-included)
 # .kiro/config.json - project preferences
 # .kiro/specs/ - specifications, tasks, memory
 # .kiro/steering/ - product, tech, testing guidelines
 # .kiro/agents/ - agent configurations
 # .kiro/skills/ - Kiro Agent Skills (slash commands)
+# .kiro/hooks/kspec.json - Kiro V3 lifecycle hooks
 # .kiro/mcp.json.template - MCP template (no secrets)
 `;
 
@@ -3324,6 +3466,50 @@ const hooksTemplateCi = {
       }
     ]
   }
+};
+
+const v3HooksTemplate = {
+  version: 'v1',
+  hooks: [
+    {
+      name: 'kspec-context-start',
+      trigger: 'SessionStart',
+      action: { type: 'command', command: 'kspec context --stdout' },
+      timeout: 15,
+      enabled: true
+    },
+    {
+      name: 'kspec-active-spec-created',
+      trigger: 'PostFileCreate',
+      matcher: '\\.kiro/specs/[^/]+/(requirements|spec|design|tasks)\\.md$',
+      action: { type: 'command', command: 'kspec hook spec-file-changed' },
+      timeout: 15,
+      enabled: true
+    },
+    {
+      name: 'kspec-active-spec-saved',
+      trigger: 'PostFileSave',
+      matcher: '\\.kiro/specs/[^/]+/(requirements|spec|design|tasks)\\.md$',
+      action: { type: 'command', command: 'kspec hook spec-file-changed' },
+      timeout: 15,
+      enabled: true
+    },
+    {
+      name: 'kspec-task-progress',
+      trigger: 'PostTaskExec',
+      action: { type: 'command', command: 'kspec context --stdout' },
+      timeout: 15,
+      enabled: true
+    },
+    {
+      name: 'kspec-destructive-command-guard',
+      trigger: 'PreToolUse',
+      matcher: 'shell|execute_bash',
+      action: { type: 'command', command: 'kspec hook guard' },
+      timeout: 10,
+      enabled: true
+    }
+  ]
 };
 
 // Enterprise governance steering doc — auto-loaded so agents are aware
@@ -3425,8 +3611,8 @@ jobs:
 
       - name: Install kiro-cli
         run: |
-          curl -fsSL https://kiro.dev/install.sh | sh
-          echo "$HOME/.kiro/bin" >> $GITHUB_PATH
+          curl -fsSL https://cli.kiro.dev/install | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install kspec
         run: npm install -g kspec
@@ -3439,6 +3625,7 @@ jobs:
           # explicit target, kspec falls back to \`git diff HEAD~1\`,
           # which only catches the last commit on multi-commit PRs.
           kspec review "origin/\${{ github.base_ref }}...HEAD" --simple \\
+            --engine v2 \\
             --trust-tools=read,shell \\
             --no-interactive \\
             > review-output.md
@@ -3459,22 +3646,25 @@ jobs:
 `;
 
 function validateContract(folder) {
-  const specFile = path.join(folder, 'spec.md');
-  if (!fs.existsSync(specFile)) return { success: true, checks: [], errors: [] };
-
-  const content = fs.readFileSync(specFile, 'utf8');
-  // Extract JSON block from ## Contract section
-  const match = content.match(/## Contract\s+```json\n([\s\S]*?)\n```/);
-  
-  if (!match) return { success: true, checks: [], errors: [] };
-
   let contract;
-  try {
-    // Strip comments to allow user annotations
-    const jsonStr = match[1].replace(/\/\/.*$/gm, '');
-    contract = JSON.parse(jsonStr);
-  } catch (e) {
-    return { success: false, checks: [], errors: ['Invalid JSON in Contract section'] };
+  const contractFile = path.join(folder, 'contract.json');
+  if (fs.existsSync(contractFile)) {
+    try {
+      contract = JSON.parse(fs.readFileSync(contractFile, 'utf8'));
+    } catch {
+      return { success: false, checks: [], errors: ['Invalid JSON in contract.json'] };
+    }
+  } else {
+    const artifact = getRequirementsArtifact(folder);
+    if (!artifact) return { success: true, checks: [], errors: [] };
+    const content = fs.readFileSync(artifact.path, 'utf8');
+    const match = content.match(/## Contract\s+```json\n([\s\S]*?)\n```/);
+    if (!match) return { success: true, checks: [], errors: [] };
+    try {
+      contract = JSON.parse(match[1].replace(/\/\/.*$/gm, ''));
+    } catch {
+      return { success: false, checks: [], errors: ['Invalid JSON in Contract section'] };
+    }
   }
 
   const errors = [];
@@ -3553,7 +3743,9 @@ async function migrateV1toV2() {
 
   // Inventory what exists in .kspec/
   const items = [];
-  const filesToMigrate = ['config.json', '.current', 'CONTEXT.md', 'memory.md'];
+  const filesToMigrate = ['config.json', '.current', 'memory.md'];
+  const legacyContextFile = path.join(LEGACY_KSPEC_DIR, 'CONTEXT.md');
+  if (fs.existsSync(legacyContextFile)) items.push('CONTEXT.md (will be regenerated)');
   for (const file of filesToMigrate) {
     if (fs.existsSync(path.join(LEGACY_KSPEC_DIR, file))) {
       items.push(file);
@@ -3589,7 +3781,7 @@ async function migrateV1toV2() {
     console.log('  mkdir -p .kiro/specs');
     console.log('  mv .kspec/config.json .kiro/ 2>/dev/null');
     console.log('  mv .kspec/.current .kiro/ 2>/dev/null');
-    console.log('  mv .kspec/CONTEXT.md .kiro/ 2>/dev/null');
+    console.log('  kspec context --stdout');
     console.log('  mv .kspec/memory.md .kiro/ 2>/dev/null');
     console.log('  mv .kspec/specs/* .kiro/specs/ 2>/dev/null');
     console.log('  rm -rf .kspec');
@@ -3650,6 +3842,8 @@ async function migrateV1toV2() {
   }
 
   // Remove empty .kspec/ directory
+  refreshContext();
+  try { if (fs.existsSync(legacyContextFile)) fs.unlinkSync(legacyContextFile); } catch {}
   try {
     const remaining = fs.readdirSync(LEGACY_KSPEC_DIR);
     if (remaining.length === 0 || (remaining.length === 1 && remaining[0] === 'specs')) {
@@ -3672,8 +3866,261 @@ async function migrateV1toV2() {
   console.log('\n✅ Migration complete! All data now in .kiro/\n');
 }
 
+function validateGeneratedAgents(engine, templates = getAgentTemplates(engine)) {
+  const entries = Object.entries(templates);
+  if (!entries.length) throw new Error(`No ${engine} agent templates were generated.`);
+  for (const [file, agent] of entries) {
+    const expectedExtension = engine === 'v3' ? '.md' : '.json';
+    if (!file.endsWith(expectedExtension)) throw new Error(`${engine} agent has the wrong extension: ${file}`);
+    if (!agent.name || !agent.prompt || !Array.isArray(agent.tools)) throw new Error(`Incomplete generated agent: ${file}`);
+    if (!agent.resources?.includes('file://.kiro/CONTEXT.md')) throw new Error(`${file} is missing the context resource.`);
+    if (!agent.resources?.some(resource => resource.startsWith('skill://'))) throw new Error(`${file} is missing Agent Skill resources.`);
+    if (engine === 'v3') {
+      if (!Array.isArray(agent.permissions)) throw new Error(`${file} is missing V3 permissions.`);
+      if (!agentToMarkdown(agent).startsWith('---\n')) throw new Error(`${file} could not be serialized as Markdown.`);
+    } else {
+      if (!agent.toolsSettings || !agent.hooks) throw new Error(`${file} is missing V2 toolsSettings or embedded hooks.`);
+      JSON.parse(JSON.stringify(agent));
+    }
+  }
+  return templates;
+}
+
+function writeGeneratedAgents(engine, templates = validateGeneratedAgents(engine)) {
+  ensureDir(AGENTS_DIR);
+  for (const [file, agent] of Object.entries(templates)) {
+    const target = path.join(AGENTS_DIR, file);
+    fs.writeFileSync(target, file.endsWith('.md') ? agentToMarkdown(agent) : JSON.stringify(agent, null, 2));
+  }
+  if (engine === 'v3') {
+    const hooksDir = path.join(KIRO_DIR, 'hooks');
+    ensureDir(hooksDir);
+    fs.writeFileSync(path.join(hooksDir, 'kspec.json'), JSON.stringify(v3HooksTemplate, null, 2));
+  }
+}
+
+function backupGeneratedEngineFiles() {
+  const candidates = [];
+  if (fs.existsSync(AGENTS_DIR)) {
+    for (const file of fs.readdirSync(AGENTS_DIR)) {
+      if (/^kspec-.*\.(json|md)$/.test(file)) candidates.push(path.join(AGENTS_DIR, file));
+    }
+  }
+  const v3Hook = path.join(KIRO_DIR, 'hooks', 'kspec.json');
+  const legacyHook = path.join(KIRO_DIR, 'settings', 'hooks.json');
+  if (fs.existsSync(v3Hook)) candidates.push(v3Hook);
+  if (fs.existsSync(legacyHook)) candidates.push(legacyHook);
+  if (!candidates.length) return null;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupDir = path.join(KIRO_DIR, 'backups', stamp);
+  ensureDir(backupDir);
+  for (const source of candidates) {
+    const relative = path.relative(KIRO_DIR, source);
+    const target = path.join(backupDir, relative);
+    ensureDir(path.dirname(target));
+    fs.copyFileSync(source, target);
+    fs.unlinkSync(source);
+  }
+  return backupDir;
+}
+
+function readHookEvent() {
+  if (process.stdin.isTTY) return Promise.resolve({});
+  return new Promise(resolve => {
+    let input = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => { input += chunk; });
+    process.stdin.on('end', () => {
+      try { resolve(JSON.parse(input || '{}')); } catch { resolve({}); }
+    });
+  });
+}
+
+function findEventPath(event) {
+  const input = event.tool_input || event;
+  return input.file_path || input.path || input.filePath
+    || input.operations?.find(operation => operation.path)?.path
+    || null;
+}
+
+function findEventCommand(event) {
+  const input = event.tool_input || {};
+  return input.command || input.cmd || input.input || '';
+}
+
+function formatMigrationDiff(before, after, maxChangedLines = 400) {
+  const oldLines = before.split('\n');
+  const newLines = after.split('\n');
+  let prefix = 0;
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix
+    && suffix < newLines.length - prefix
+    && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) suffix++;
+  const contextStart = Math.max(0, prefix - 3);
+  const oldEnd = oldLines.length - suffix;
+  const newEnd = newLines.length - suffix;
+  const output = ['--- spec.md', '+++ requirements.md'];
+  for (const line of oldLines.slice(contextStart, prefix)) output.push(` ${line}`);
+  const removed = oldLines.slice(prefix, oldEnd).map(line => `-${line}`);
+  const added = newLines.slice(prefix, newEnd).map(line => `+${line}`);
+  const changed = [...removed, ...added];
+  if (changed.length <= maxChangedLines) output.push(...changed);
+  else {
+    const half = Math.floor(maxChangedLines / 2);
+    output.push(...changed.slice(0, half));
+    output.push(`... ${changed.length - maxChangedLines} changed lines omitted from preview ...`);
+    output.push(...changed.slice(-half));
+  }
+  if (suffix) {
+    const tail = newLines.slice(newEnd, Math.min(newLines.length, newEnd + 3));
+    for (const line of tail) output.push(` ${line}`);
+  }
+  return output.join('\n');
+}
+
 // Commands
 const commands = {
+  async engine(args = []) {
+    const subcommand = args[0] || 'status';
+    if (subcommand === 'status') {
+      const selected = getKiroEngine();
+      const version = getKiroCliVersion();
+      console.log(`Kiro engine: ${selected}`);
+      console.log(`kiro-cli: ${version || 'not detected'}`);
+      return;
+    }
+    if (subcommand !== 'set' || !['v2', 'v3'].includes(args[1])) {
+      die('Usage: kspec engine [status|set <v2|v3> [--dry-run]]');
+    }
+    const target = args[1];
+    assertEngineSupported(target);
+    const dryRun = args.includes('--dry-run');
+    let templates;
+    try { templates = validateGeneratedAgents(target); } catch (error) { die(error.message); }
+    const files = Object.keys(templates);
+    console.log(`\nEngine migration: ${getKiroEngine()} → ${target}`);
+    console.log(`Generated agents: ${files.length} (${target === 'v3' ? 'Markdown + standalone hooks' : 'JSON + embedded hooks'})`);
+    if (dryRun) {
+      console.log('Dry run only; no files changed.');
+      return;
+    }
+    const backup = backupGeneratedEngineFiles();
+    writeGeneratedAgents(target, templates);
+    const cfg = { ...loadConfig(), kiroEngine: target };
+    saveConfig(cfg);
+    Object.assign(config, cfg);
+    console.log(`Engine set to ${target}.${backup ? ` Backup: ${backup}` : ''}`);
+  },
+
+  use(args = []) {
+    const name = args.join(' ').trim();
+    if (!name) die('Usage: kspec use <spec>');
+    const folder = findSpec(name);
+    if (!folder) die(`Spec "${name}" not found. Run \`kspec list\` to see available specs.`);
+    setCurrentSpec(folder);
+    refreshContext();
+    console.log(`Active spec: ${path.basename(folder)}`);
+  },
+
+  async 'migrate-spec'(args = []) {
+    const dryRun = args.includes('--dry-run');
+    const yes = args.includes('--yes') || args.includes('-y');
+    const name = args.filter(arg => !['--dry-run', '--yes', '-y'].includes(arg)).join(' ');
+    const folder = getOrSelectSpec(name);
+    const legacy = path.join(folder, 'spec.md');
+    const native = path.join(folder, 'requirements.md');
+    const temporary = path.join(folder, 'requirements.migrating.md');
+    const backup = path.join(folder, 'spec.legacy.md');
+    if (fs.existsSync(native)) {
+      console.log(`${native} already exists; no migration needed.`);
+      return;
+    }
+    if (!fs.existsSync(legacy)) die(`No legacy spec.md found in ${folder}.`);
+    if (fs.existsSync(backup)) die(`Backup already exists: ${backup}`);
+
+    const source = fs.readFileSync(legacy, 'utf8');
+    const jiraKeys = [...new Set(source.match(/[A-Z][A-Z0-9_]+-\d+/g) || [])];
+    const requirementIds = [...new Set(source.match(/\b(?:REQ|FR|NFR|AC)[-_]?\d+\b/gi) || [])];
+    const contractMatch = source.match(/## Contract\s+```json\n([\s\S]*?)\n```/);
+    console.log(`Migrate ${legacy} → ${native}`);
+    console.log(`Jira references: ${jiraKeys.length}; embedded contract: ${contractMatch ? 'yes' : 'no'}`);
+    if (dryRun) {
+      console.log('Dry run only; no files changed.');
+      return;
+    }
+    assertEngineSupported('v3');
+    await chat(`Convert the legacy kspec at ${legacy} into Kiro V3 requirements.
+
+Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, constraint, requirement ID, and Jira source reference. Use clear structured Markdown suitable for Kiro's Spec agent. Do not include the legacy ## Contract JSON section; kspec migrates it separately. Do not modify or delete ${legacy}.`, null, [], { engine: 'v3', mode: 'spec' });
+    if (!fs.existsSync(temporary) || fs.statSync(temporary).size === 0) {
+      die(`Migration did not produce ${temporary}; the legacy spec is unchanged.`);
+    }
+    const converted = fs.readFileSync(temporary, 'utf8');
+    const missingJira = jiraKeys.filter(key => !converted.includes(key));
+    if (missingJira.length) {
+      fs.unlinkSync(temporary);
+      die(`Migration dropped Jira references: ${missingJira.join(', ')}. Legacy spec unchanged.`);
+    }
+    const missingRequirementIds = requirementIds.filter(id => !converted.includes(id));
+    if (missingRequirementIds.length) {
+      fs.unlinkSync(temporary);
+      die(`Migration dropped requirement IDs: ${missingRequirementIds.join(', ')}. Legacy spec unchanged.`);
+    }
+    if (!/acceptance|requirement/i.test(converted)) {
+      fs.unlinkSync(temporary);
+      die('Migrated requirements failed validation. Legacy spec unchanged.');
+    }
+    console.log(`\nMigration diff:\n${formatMigrationDiff(source, converted)}\n`);
+    if (!yes && !await confirm('Finalize migration and preserve spec.md as spec.legacy.md?')) {
+      fs.unlinkSync(temporary);
+      console.log('Migration cancelled; legacy spec unchanged.');
+      return;
+    }
+    if (contractMatch) {
+      try {
+        const contract = JSON.parse(contractMatch[1].replace(/\/\/.*$/gm, ''));
+        fs.writeFileSync(path.join(folder, 'contract.json'), JSON.stringify(contract, null, 2));
+      } catch {
+        fs.unlinkSync(temporary);
+        die('Embedded Contract JSON is invalid; migration cancelled.');
+      }
+    }
+    fs.renameSync(legacy, backup);
+    fs.renameSync(temporary, native);
+    setCurrentSpec(folder);
+    refreshContext();
+    console.log(`Migrated to ${native}; legacy backup: ${backup}`);
+  },
+
+  async hook(args = []) {
+    const action = args[0];
+    const event = await readHookEvent();
+    if (action === 'spec-file-changed') {
+      const eventPath = findEventPath(event);
+      if (eventPath) {
+        const normalized = eventPath.replace(/\\/g, '/');
+        const match = normalized.match(/(?:^|\/)\.kiro\/specs\/([^/]+)\/(?:requirements|spec|design|tasks)\.md$/);
+        if (match) setCurrentSpec(path.join(SPECS_DIR, match[1]));
+      }
+      refreshContext();
+      return;
+    }
+    if (action === 'guard') {
+      const command = findEventCommand(event);
+      const destructive = /(?:^|[;&|]\s*)(?:[^\s]*[\\/])?(?:rm\s+-r(?:f)?|git\s+push|git\s+reset\s+--hard|sudo|curl\s+https?:|wget\s+https?:)/i;
+      if (destructive.test(command)) {
+        console.error(`Blocked destructive command: ${command}`);
+        process.exitCode = 2;
+      }
+      return;
+    }
+    die('Unknown internal hook action.');
+  },
+
   async init(args = []) {
     const enterpriseFlag = args.includes('--enterprise');
     const ciMode = args.includes('--ci');
@@ -3691,6 +4138,8 @@ const commands = {
     // hanging on stdin in CI/headless environments. Override individual
     // defaults via env vars (KSPEC_MODEL, KSPEC_TEST_COMMAND).
     const autoAccept = ciMode || enterpriseFlag || yesFlag;
+    const selectedEngine = getKiroEngine(runtimeOptions.engine);
+    assertEngineSupported(selectedEngine);
 
     console.log('\n🚀 Welcome to kspec!\n');
     if (ciMode) console.log('🤖 CI mode: will scaffold GitHub Actions workflow + CI hooks preset.\n');
@@ -3729,20 +4178,18 @@ const commands = {
       : await prompt('Test command (e.g., npm test, pytest) — leave empty to skip: ');
 
     const modelChoice = autoAccept
-      ? (process.env.KSPEC_MODEL || 'claude-sonnet-4.6')
+      ? (process.env.KSPEC_MODEL || 'inherit')
       : await prompt('AI model for agents:', [
-        { label: 'claude-sonnet-4.6 (recommended)', value: 'claude-sonnet-4.6' },
-        { label: 'claude-opus-4.6 (most capable)', value: 'claude-opus-4.6' },
-        { label: 'claude-haiku-4.5 (fastest)', value: 'claude-haiku-4.5' },
+        { label: 'Inherit Kiro preference (recommended)', value: 'inherit' },
         { label: 'Custom (enter manually)', value: 'custom' }
       ]);
 
-    let model = modelChoice;
+    let model = modelChoice === 'inherit' ? null : modelChoice;
     if (modelChoice === 'custom') {
       model = autoAccept
-        ? 'claude-sonnet-4.6'
+        ? null
         : await prompt('Enter custom model ID: ');
-      if (!model.trim()) model = 'claude-sonnet-4.6';
+      if (!model?.trim()) model = null;
     }
 
     const createSteering = autoAccept ? true : await confirm('Create steering doc templates?');
@@ -3750,27 +4197,18 @@ const commands = {
     const createAgentsMd = autoAccept ? true : await confirm('Create AGENTS.md? (auto-included guardrails for Kiro)');
 
     // CI doesn't use the IDE chat — default to false even with --yes.
-    const createIdeAgents = autoAccept ? false : await confirm(
+    const createIdeAgents = selectedEngine === 'v3' ? false : (autoAccept ? false : await confirm(
       'Also create Kiro IDE chat subagents (.md format)? Choose if you use Kiro chat in addition to CLI.',
       false
-    );
+    ));
 
     const createSkills = autoAccept ? true : await confirm(
       'Create Kiro Agent Skills? (CLI 2.1+ — kspec workflows become /slash-commands in default chat)'
     );
 
-    // Hook preset selection: --ci forces 'ci'; in autoAccept mode pick
-    // the safest default (basic) so users aren't surprised by a CI-only
-    // hook running in dev. Override via the explicit --ci flag.
-    const hooksChoice = ciMode
-      ? 'ci'
-      : (autoAccept ? 'basic' : await prompt('Configure Kiro hooks?', [
-          { label: 'None (skip hooks)', value: 'none' },
-          { label: 'Basic (format on save, context on stop)', value: 'basic' },
-          { label: 'Enterprise (+ security blocks, audit log, auto-test)', value: 'enterprise' },
-          { label: 'Documentation (+ README updates, Jira progress)', value: 'documentation' },
-          { label: 'CI (preToolUse audit + block destructive, onSpecComplete verify)', value: 'ci' }
-        ]));
+    // Both engines always receive context lifecycle and shell safety hooks.
+    // Retain the preset label for compatibility and CI reporting.
+    const hooksChoice = ciMode ? 'ci' : 'basic';
 
     // Enterprise governance prompts (gathered up-front so we can include
     // them in the steering doc and config). In non-interactive mode,
@@ -3866,15 +4304,23 @@ const commands = {
       autoExecute,
       initialized: true,
       testCommand: testCommand.trim() || null,
-      model: model.trim() || 'claude-sonnet-4.6',
+      model: model?.trim() || null,
+      kiroEngine: selectedEngine,
       jira: jiraConfig,
       ideAgents: createIdeAgents,
       skills: createSkills,
       enterprise: enterpriseConfig,
+      hooksPreset: hooksChoice,
       reviewers: reviewerClis.length > 0 ? reviewerClis : null
     };
+    try { validateGeneratedAgents(selectedEngine); } catch (error) { die(error.message); }
+    const previousConfig = loadConfig();
+    const switchingEngine = previousConfig.initialized
+      && normalizeEngine(previousConfig.kiroEngine || 'v2') !== selectedEngine;
+    const engineBackup = switchingEngine ? backupGeneratedEngineFiles() : null;
     saveConfig(cfg);
     Object.assign(config, cfg);
+    if (engineBackup) log(`Backed up previous engine files to ${engineBackup}`);
 
     // Create directories
     ensureDir(SPECS_DIR);
@@ -3944,37 +4390,35 @@ const commands = {
       }
     }
 
-    // Create Kiro hooks
-    if (hooksChoice !== 'none') {
-      const settingsDir = path.join(KIRO_DIR, 'settings');
-      ensureDir(settingsDir);
-      const hooksPath = path.join(settingsDir, 'hooks.json');
-
-      let hooksContent;
-      switch (hooksChoice) {
-        case 'enterprise':
-          hooksContent = hooksTemplateEnterprise;
-          break;
-        case 'documentation':
-          hooksContent = hooksTemplateDocumentation;
-          break;
-        case 'ci':
-          hooksContent = hooksTemplateCi;
-          break;
-        default:
-          hooksContent = hooksTemplateBasic;
-      }
-
-      fs.writeFileSync(hooksPath, JSON.stringify(hooksContent, null, 2));
-      log(`Created ${hooksPath} (${hooksChoice} hooks)`);
+    // Create engine-native Kiro hooks.
+    if (selectedEngine === 'v3') {
+      const hooksDir = path.join(KIRO_DIR, 'hooks');
+      ensureDir(hooksDir);
+      const hooksPath = path.join(hooksDir, 'kspec.json');
+      fs.writeFileSync(hooksPath, JSON.stringify(v3HooksTemplate, null, 2));
+      log(`Created ${hooksPath} (V3 hooks)`);
+    } else if (hooksChoice !== 'none') {
+      log(`Configured ${hooksChoice} hooks inside V2 agent profiles`);
     }
 
     // Create or update agents
-    for (const [file, content] of Object.entries(getAgentTemplates())) {
+    for (const [file, content] of Object.entries(getAgentTemplates(selectedEngine))) {
       const p = path.join(AGENTS_DIR, file);
       if (!fs.existsSync(p)) {
-        fs.writeFileSync(p, JSON.stringify(content, null, 2));
+        fs.writeFileSync(p, file.endsWith('.md') ? agentToMarkdown(content) : JSON.stringify(content, null, 2));
         log(`Created ${p}`);
+      } else if (file.endsWith('.md')) {
+        try {
+          const existing = parseFrontmatter(fs.readFileSync(p, 'utf8'));
+          const desired = parseFrontmatter(agentToMarkdown(content));
+          let body = content.name === 'kspec-context' ? `${content.prompt}\n` : existing.body;
+          if (content.name !== 'kspec-context' && !body.includes('ACTIVE CONTEXT PROTOCOL')) body = `${body.trimEnd()}${AGENT_CONTEXT_PROTOCOL}\n`;
+          const lines = ['---', ...Object.entries(desired.frontmatter).map(([key, value]) => `${key}: ${value}`), '---'];
+          fs.writeFileSync(p, `${lines.join('\n')}\n${body}`);
+          log(`Updated ${p} (V3 frontmatter; preserved body)`);
+        } catch (error) {
+          die(`Could not update ${p}: ${error.message}`);
+        }
       } else {
         // Update tools, allowedTools, includeMcpJson, and toolsSettings to
         // reflect current MCP config + scoping rules, while preserving any
@@ -3982,17 +4426,28 @@ const commands = {
         try {
           const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
           let updated = false;
-          if (JSON.stringify(existing.tools) !== JSON.stringify(content.tools)) {
-            existing.tools = content.tools;
-            existing.allowedTools = content.allowedTools;
+          for (const key of ['tools', 'allowedTools', 'resources', 'toolsSettings', 'hooks']) {
+            if (JSON.stringify(existing[key]) !== JSON.stringify(content[key])) {
+              existing[key] = content[key];
+              updated = true;
+            }
+          }
+          if (content.name === 'kspec-context' && existing.prompt !== content.prompt) {
+            existing.prompt = content.prompt;
+            updated = true;
+          } else if (content.name !== 'kspec-context' && !existing.prompt.includes('ACTIVE CONTEXT PROTOCOL')) {
+            existing.prompt = `${existing.prompt.trimEnd()}${AGENT_CONTEXT_PROTOCOL}`;
             updated = true;
           }
           if (content.includeMcpJson && !existing.includeMcpJson) {
             existing.includeMcpJson = true;
             updated = true;
           }
-          if (content.toolsSettings && JSON.stringify(existing.toolsSettings) !== JSON.stringify(content.toolsSettings)) {
-            existing.toolsSettings = content.toolsSettings;
+          if (content.model && existing.model !== content.model) {
+            existing.model = content.model;
+            updated = true;
+          } else if (!content.model && existing.model) {
+            delete existing.model;
             updated = true;
           }
           // Refresh the MCP-tools prompt section in-place so a re-init
@@ -4024,8 +4479,8 @@ const commands = {
     // CLI agents (.json) already exist above; this adds matching .md siblings
     // so the Kiro IDE chat window can pick them up.
     // See: https://kiro.dev/docs/chat/subagents/
-    if (createIdeAgents) {
-      for (const [file, content] of Object.entries(getAgentTemplates())) {
+    if (createIdeAgents && selectedEngine === 'v2') {
+      for (const [file, content] of Object.entries(getAgentTemplates('v2'))) {
         const mdName = file.replace(/\.json$/, '.md');
         const mdPath = path.join(AGENTS_DIR, mdName);
         if (!fs.existsSync(mdPath)) {
@@ -4146,8 +4601,9 @@ const commands = {
     console.log('Created:');
     if (createSteering) console.log('  - .kiro/steering/ (inclusion: always|auto|fileMatch|manual)');
     if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
-    if (hooksChoice !== 'none') console.log(`  - .kiro/settings/hooks.json (${hooksChoice} hooks)`);
-    console.log(`  - .kiro/agents/ (kspec agents${createIdeAgents ? ', JSON + IDE markdown' : ', JSON for CLI'})`);
+    if (selectedEngine === 'v3') console.log('  - .kiro/hooks/kspec.json (V3 lifecycle hooks)');
+    else if (hooksChoice !== 'none') console.log(`  - V2 agent profiles (${hooksChoice} embedded hooks)`);
+    console.log(`  - .kiro/agents/ (${selectedEngine === 'v3' ? 'V3 Markdown' : createIdeAgents ? 'V2 JSON + IDE markdown' : 'V2 JSON'} agents)`);
     if (createSkills) console.log('  - .kiro/skills/ (slash commands: /kspec-spec, /kspec-build, /kspec-review, ...)');
     if (enterpriseConfig) console.log('  - .kiro/steering/enterprise-governance.md (MCP/model registries, prompt logging, IdP)');
     if (ciMode) console.log('  - .github/workflows/kspec-review.yml (headless review on every PR)');
@@ -4194,7 +4650,7 @@ const commands = {
 5. Document key dependencies and their purposes
 6. Note any security-sensitive areas
 
-Update .kiro/CONTEXT.md with findings.
+Run \`kspec context --stdout\` after updating source artifacts.
 Update steering docs as needed.`;
 
     if (skipReview) {
@@ -4241,6 +4697,9 @@ Update steering docs as needed.`;
 
     recordMetric(folder, 'spec-started');
     log(`Spec folder: ${folder}`);
+    const engine = getKiroEngine(runtimeOptions.engine);
+    const requirementsName = engine === 'v3' ? 'requirements.md' : 'spec.md';
+    const specChatOptions = engine === 'v3' ? { mode: 'spec' } : {};
 
     if (jiraIssues) {
       // Jira-driven spec creation
@@ -4256,15 +4715,16 @@ WORKFLOW:
    - Acceptance criteria
    - Comments (for context)
    - Linked issues
-3. Consolidate into unified spec.md with:
+3. Consolidate into unified ${requirementsName} with:
    - Problem/Context (from issue descriptions)
    - Requirements (from acceptance criteria)
    - Source attribution: "Source: JIRA-XXX" for each requirement
    - Links to original issues
 4. Create spec-lite.md (<500 words, key requirements only)
 5. Save Jira issue keys to ${folder}/jira-links.json
+${engine === 'v3' ? '6. If the specification defines a structured output contract, write it separately to contract.json.' : ''}
 
-IMPORTANT: Include Jira links for traceability.`, 'kspec-jira');
+IMPORTANT: Include Jira links for traceability.`, engine === 'v3' ? null : 'kspec-jira', [], specChatOptions);
     } else {
       // Standard spec creation
       await chat(`Create specification for: ${feature}
@@ -4277,10 +4737,11 @@ If I say "skip" or "just do it", use your defaults and proceed immediately.
 
 1. Read .kiro/steering/ for context
 2. Ask clarifying questions (see above)
-3. Create ${folder}/spec.md with full specification
+3. Create ${folder}/${requirementsName} with full specification
 4. IMMEDIATELY create ${folder}/spec-lite.md (concise version, <500 words)
+${engine === 'v3' ? '5. If the specification defines a structured output contract, write it separately to ' + folder + '/contract.json.' : ''}
 
-spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec');
+spec-lite.md is critical - it's loaded after context compression.`, engine === 'v3' ? null : 'kspec-spec', [], specChatOptions);
     }
 
     recordMetric(folder, 'spec-completed');
@@ -4292,9 +4753,10 @@ spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec'
 
   async 'verify-spec'(args) {
     const folder = getOrSelectSpec(args.join(' '));
+    const requirements = getRequirementsPath(folder);
     log(`Verifying spec: ${folder}`);
 
-    await chat(`VERIFY-SPEC: Interactively review and shape the specification in ${folder}/spec.md.
+    await chat(`VERIFY-SPEC: Interactively review and shape the specification in ${requirements}.
 
 1. Read spec.md thoroughly
 2. Generate 4-8 targeted, NUMBERED clarifying questions:
@@ -4312,10 +4774,10 @@ Read the codebase to check implementability and inform your questions.`, 'kspec-
 
   async design(args) {
     const folder = getOrSelectSpec(args.join(' '));
-    const specFile = path.join(folder, 'spec.md');
+    const specFile = getRequirementsArtifact(folder)?.path;
 
-    if (!fs.existsSync(specFile)) {
-      die(`No spec.md found in ${folder}. Run 'kspec spec "Feature"' first.`);
+    if (!specFile || !fs.existsSync(specFile)) {
+      die(`No requirements artifact found in ${folder}. Run 'kspec spec "Feature"' first.`);
     }
 
     recordMetric(folder, 'design-started');
@@ -4324,7 +4786,7 @@ Read the codebase to check implementability and inform your questions.`, 'kspec-
     await chat(`Create technical design from specification.
 
 Spec folder: ${folder}
-Read: ${folder}/spec.md and ${folder}/spec-lite.md
+Read: ${specFile} and ${folder}/spec-lite.md
 
 Create ${folder}/design.md with these sections:
 - Architecture Overview
@@ -4335,7 +4797,7 @@ Create ${folder}/design.md with these sections:
 - Technical Decisions
 - Risk Assessment
 
-Read the codebase to inform your architecture decisions.`, 'kspec-design');
+Read the codebase to inform your architecture decisions.`, getKiroEngine() === 'v3' ? null : 'kspec-design', [], getKiroEngine() === 'v3' ? { mode: 'spec' } : {});
 
     recordMetric(folder, 'design-completed');
     console.log('\nNext step:');
@@ -4354,7 +4816,7 @@ Read the codebase to inform your architecture decisions.`, 'kspec-design');
 
     log(`Verifying design: ${folder}`);
 
-    await chat(`VERIFY-DESIGN: Review the technical design in ${folder}/design.md against ${folder}/spec.md.
+    await chat(`VERIFY-DESIGN: Review the technical design in ${folder}/design.md against ${getRequirementsPath(folder)}.
 
 1. Check design covers all spec requirements
 2. Verify architecture decisions are sound
@@ -4470,13 +4932,13 @@ Spec folder: ${folder}
 Target issue: ${updateIssue}
 
 WORKFLOW:
-1. Read ${folder}/spec.md
+1. Read ${getRequirementsPath(folder)}
 2. Use Atlassian MCP to update ${updateIssue}:
    - Update description with spec content (or add as comment)
    - Add label: kspec-spec
    - Add comment: "Technical specification updated via kspec"
 3. Update ${folder}/jira-links.json with the issue key
-4. Update .kiro/CONTEXT.md with Jira link
+4. Run \`kspec context --stdout\`
 
 Report the updated issue URL.`, 'kspec-jira');
     } else {
@@ -4486,7 +4948,7 @@ Spec folder: ${folder}
 Target project: ${project}
 
 WORKFLOW:
-1. Read ${folder}/spec.md and ${folder}/spec-lite.md
+1. Read ${getRequirementsPath(folder)} and ${folder}/spec-lite.md
 2. Check ${folder}/jira-links.json for source issues to link
 3. Use Atlassian MCP to create new issue in project ${project}:
    - Type: Task or Story (based on project settings)
@@ -4496,7 +4958,7 @@ WORKFLOW:
    - Link to source issues if any
 4. Add comment requesting BA/PM review
 5. Save new issue key to ${folder}/jira-links.json
-6. Update .kiro/CONTEXT.md with new Jira link
+6. Run \`kspec context --stdout\`
 
 Report the created issue URL.`, 'kspec-jira');
     }
@@ -4545,7 +5007,7 @@ WORKFLOW:
    - Description: Include any details, file paths mentioned
    - Labels: kspec-task
 3. Save created subtask keys to ${folder}/jira-links.json
-4. Update .kiro/CONTEXT.md with subtask links
+4. Run \`kspec context --stdout\`
 
 Report created subtasks with their URLs.`, 'kspec-jira');
   },
@@ -4561,11 +5023,12 @@ Report created subtasks with their URLs.`, 'kspec-jira');
 
     const designFile = path.join(folder, 'design.md');
     const hasDesign = fs.existsSync(designFile);
+    const requirements = getRequirementsPath(folder);
 
     await chat(`Generate tasks from specification.
 
 Spec folder: ${folder}
-Read: ${folder}/spec.md and ${folder}/spec-lite.md
+Read: ${requirements} and ${folder}/spec-lite.md
 ${hasDesign ? `Design: ${folder}/design.md (use for architecture guidance and dependency ordering)` : ''}
 
 BEFORE generating tasks, ask 2-3 quick questions about technical approach and patterns to follow.
@@ -4579,7 +5042,7 @@ Create ${folder}/tasks.md with:
 - Within each chunk: checkbox format "- [ ] Task description"
 - TDD approach (test first)
 - Logical order within and across chunks
-- File paths for each task`, 'kspec-tasks');
+- File paths for each task`, getKiroEngine() === 'v3' ? null : 'kspec-tasks', [], getKiroEngine() === 'v3' ? { mode: 'spec' } : {});
 
     recordMetric(folder, 'tasks-completed');
     console.log('\nNext step:');
@@ -4600,7 +5063,7 @@ Create ${folder}/tasks.md with:
 
     await chat(`Verify tasks in ${folder}/tasks.md:
 
-1. Do tasks cover ALL requirements from spec.md?
+1. Do tasks cover ALL requirements from ${getRequirementsPath(folder)}?
 2. Check completion status of each task
 3. For completed tasks, verify test coverage
 4. Identify any missing tasks
@@ -4805,16 +5268,17 @@ Report:
     if (force) args.splice(forceIndex, 1);
 
     const folder = getOrSelectSpec(args.join(' '));
-    const specFile = path.join(folder, 'spec.md');
+    const artifact = getRequirementsArtifact(folder);
+    const specFile = artifact?.path;
     const specLiteFile = path.join(folder, 'spec-lite.md');
 
-    if (!fs.existsSync(specFile)) {
-      die(`No spec.md found in ${folder}`);
+    if (!specFile || !fs.existsSync(specFile)) {
+      die(`No requirements artifact found in ${folder}`);
     }
 
     const stale = isSpecStale(folder);
     if (!stale && !force) {
-      log('spec-lite.md is up to date with spec.md');
+      log(`spec-lite.md is up to date with ${artifact.filename}`);
       log('Use --force to regenerate anyway');
       return;
     }
@@ -4822,20 +5286,20 @@ Report:
     // Read the current spec.md content
     const specContent = fs.readFileSync(specFile, 'utf8');
 
-    log(`Refreshing spec-lite.md from ${folder}/spec.md...`);
+    log(`Refreshing spec-lite.md from ${specFile}...`);
 
     await chat(`URGENT: Regenerate spec-lite.md NOW.
 
 TARGET FILE: ${specLiteFile}
 
-CURRENT spec.md CONTENT (source of truth):
+CURRENT ${artifact.filename} CONTENT (source of truth):
 ---
 ${specContent}
 ---
 
 YOUR TASK:
 1. Write a NEW ${specLiteFile} file immediately
-2. Summarize the above spec.md content (under 500 words)
+2. Summarize the above requirements content (under 500 words)
 3. MUST include:
    - All tech stack with EXACT versions (e.g., Next.js 16+, NOT 14+)
    - Key requirements and acceptance criteria
@@ -5010,10 +5474,10 @@ Provide detailed findings.`;
           if (metadata.type) console.log(`Type: ${metadata.type}`);
         } catch {}
       }
-      const specFile = path.join(current, 'spec.md');
+      const specFile = getRequirementsArtifact(current)?.path;
       const designFile = path.join(current, 'design.md');
       const tasksFile = path.join(current, 'tasks.md');
-      const hasSpec = fs.existsSync(specFile);
+      const hasSpec = Boolean(specFile && fs.existsSync(specFile));
       const hasDesign = fs.existsSync(designFile);
       const hasTasks = fs.existsSync(tasksFile);
       const stats = getTaskStats(current);
@@ -5055,10 +5519,10 @@ Provide detailed findings.`;
     console.log('');
   },
 
-  context() {
+  context(args = []) {
     const content = refreshContext();
     console.log(content);
-    console.log(`Context saved to: .kiro/CONTEXT.md\n`);
+    if (!args.includes('--stdout')) console.log(`Context saved to: .kiro/CONTEXT.md\n`);
   },
 
   agents() {
@@ -5114,7 +5578,29 @@ Powers: contract, document, tdd, code-review, code-intelligence
     let jsonUpdated = 0, mdUpdated = 0;
     const cfg = loadConfig();
 
-    for (const [file, content] of Object.entries(getAgentTemplates())) {
+    if (getKiroEngine() === 'v3') {
+      for (const [file, content] of Object.entries(getAgentTemplates('v3'))) {
+        const target = path.join(AGENTS_DIR, file);
+        if (!fs.existsSync(target)) {
+          fs.writeFileSync(target, agentToMarkdown(content));
+        } else {
+          const existing = parseFrontmatter(fs.readFileSync(target, 'utf8'));
+          const desired = parseFrontmatter(agentToMarkdown(content));
+          let body = content.name === 'kspec-context' ? `${content.prompt}\n` : existing.body;
+          if (content.name !== 'kspec-context' && !body.includes('ACTIVE CONTEXT PROTOCOL')) body = `${body.trimEnd()}${AGENT_CONTEXT_PROTOCOL}\n`;
+          const lines = ['---', ...Object.entries(desired.frontmatter).map(([key, value]) => `${key}: ${value}`), '---'];
+          fs.writeFileSync(target, `${lines.join('\n')}\n${body}`);
+        }
+        mdUpdated++;
+      }
+      const hooksDir = path.join(KIRO_DIR, 'hooks');
+      ensureDir(hooksDir);
+      fs.writeFileSync(path.join(hooksDir, 'kspec.json'), JSON.stringify(v3HooksTemplate, null, 2));
+      console.log(`\n✅ Synced ${mdUpdated} V3 agents and .kiro/hooks/kspec.json.\n`);
+      return;
+    }
+
+    for (const [file, content] of Object.entries(getAgentTemplates('v2'))) {
       const p = path.join(AGENTS_DIR, file);
 
       // JSON: update tools/allowedTools/includeMcpJson, preserve custom
@@ -5123,17 +5609,28 @@ Powers: contract, document, tdd, code-review, code-intelligence
         try {
           const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
           let updated = false;
-          if (JSON.stringify(existing.tools) !== JSON.stringify(content.tools)) {
-            existing.tools = content.tools;
-            existing.allowedTools = content.allowedTools;
+          for (const key of ['tools', 'allowedTools', 'resources', 'toolsSettings', 'hooks']) {
+            if (JSON.stringify(existing[key]) !== JSON.stringify(content[key])) {
+              existing[key] = content[key];
+              updated = true;
+            }
+          }
+          if (content.name === 'kspec-context' && existing.prompt !== content.prompt) {
+            existing.prompt = content.prompt;
+            updated = true;
+          } else if (content.name !== 'kspec-context' && !existing.prompt.includes('ACTIVE CONTEXT PROTOCOL')) {
+            existing.prompt = `${existing.prompt.trimEnd()}${AGENT_CONTEXT_PROTOCOL}`;
             updated = true;
           }
           if (content.includeMcpJson && !existing.includeMcpJson) {
             existing.includeMcpJson = true;
             updated = true;
           }
-          if (content.toolsSettings && JSON.stringify(existing.toolsSettings) !== JSON.stringify(content.toolsSettings)) {
-            existing.toolsSettings = content.toolsSettings;
+          if (content.model && existing.model !== content.model) {
+            existing.model = content.model;
+            updated = true;
+          } else if (!content.model && existing.model) {
+            delete existing.model;
             updated = true;
           }
           // Prompt: refresh the MCP-tools section so removed/renamed MCPs
@@ -5414,18 +5911,18 @@ Output findings clearly for decision-making.`, 'kspec-spike');
 
   async revise(args) {
     const folder = getOrSelectSpec(args.join(' '));
-    const specFile = path.join(folder, 'spec.md');
+    const specFile = getRequirementsArtifact(folder)?.path;
 
-    if (!fs.existsSync(specFile)) {
-      die(`No spec.md found in ${folder}. Nothing to revise.`);
+    if (!specFile || !fs.existsSync(specFile)) {
+      die(`No requirements artifact found in ${folder}. Nothing to revise.`);
     }
 
     recordMetric(folder, 'revise-started');
     log(`Revising spec: ${folder}`);
 
-    await chat(`REVISE SPEC: Review and update the specification in ${folder}/spec.md based on feedback.
+    await chat(`REVISE SPEC: Review and update the specification in ${specFile} based on feedback.
 
-1. Read the current ${folder}/spec.md
+1. Read the current ${specFile}
 2. Read ${folder}/tasks.md if it exists (to understand implementation state)
 3. Ask me what feedback or changes are needed
 4. Update spec.md with the changes
@@ -5434,7 +5931,7 @@ Output findings clearly for decision-making.`, 'kspec-spike');
    - Add new tasks if needed
    - Note removed requirements
 6. Regenerate spec-lite.md
-7. Update .kiro/CONTEXT.md
+7. Run \`kspec context --stdout\`
 
 IMPORTANT: Show a diff summary of what changed in the spec before confirming.`, 'kspec-revise');
 
@@ -5446,10 +5943,10 @@ IMPORTANT: Show a diff summary of what changed in the spec before confirming.`, 
 
   async demo(args) {
     const folder = getOrSelectSpec(args.join(' '));
-    const specFile = path.join(folder, 'spec.md');
+    const specFile = getRequirementsArtifact(folder)?.path;
 
-    if (!fs.existsSync(specFile)) {
-      die(`No spec.md found in ${folder}. Nothing to demo.`);
+    if (!specFile || !fs.existsSync(specFile)) {
+      die(`No requirements artifact found in ${folder}. Nothing to demo.`);
     }
 
     recordMetric(folder, 'demo-started');
@@ -5457,7 +5954,7 @@ IMPORTANT: Show a diff summary of what changed in the spec before confirming.`, 
 
     await chat(`DEMO MODE: Generate a stakeholder walkthrough for the implementation in ${folder}.
 
-1. Read ${folder}/spec.md for requirements
+1. Read ${specFile} for requirements
 2. Read ${folder}/tasks.md for implementation status
 3. Examine the actual implementation in the codebase
 4. Generate a DEMO WALKTHROUGH showing:
@@ -5481,17 +5978,17 @@ This is for human review, not AI verification.`, 'kspec-demo');
 
   async estimate(args) {
     const folder = getOrSelectSpec(args.join(' '));
-    const specFile = path.join(folder, 'spec.md');
+    const specFile = getRequirementsArtifact(folder)?.path;
 
-    if (!fs.existsSync(specFile)) {
-      die(`No spec.md found in ${folder}. Create a spec first.`);
+    if (!specFile || !fs.existsSync(specFile)) {
+      die(`No requirements artifact found in ${folder}. Create a spec first.`);
     }
 
     log(`Estimating complexity: ${folder}`);
 
-    await chat(`ESTIMATE: Assess complexity of the specification in ${folder}/spec.md.
+    await chat(`ESTIMATE: Assess complexity of the specification in ${specFile}.
 
-1. Read ${folder}/spec.md thoroughly
+1. Read ${specFile} thoroughly
 2. Read the codebase to understand current state
 3. Read .kiro/memory.md for relevant past experience
 4. Provide a COMPLEXITY ASSESSMENT:
@@ -5705,6 +6202,7 @@ kspec - Spec-driven development for Kiro CLI
 
 CLI Workflow (outside kiro-cli):
   kspec init              Interactive setup (asks once whether to configure enterprise governance)
+  kspec init --engine v3  Initialize Kiro V3 agents/hooks (V2 remains default)
   kspec init --enterprise Skip the prompt — go straight into enterprise governance setup
   kspec init --ci         Setup with GitHub Actions workflow + CI hooks preset
                           Tip: set KSPEC_ENTERPRISE=1 in your shell to default the prompt to Yes
@@ -5782,8 +6280,13 @@ Agentic Review Loop (devil's advocate pattern):
   Default: parallel independent reviews → synthesize findings → consensus verdict
 
 Other:
-  kspec refresh           Regenerate spec-lite.md after editing spec.md
-  kspec context           Refresh/view context file
+  kspec engine status     Show active Kiro engine and CLI version
+  kspec engine set v3     Back up generated profiles and enable V3
+  kspec use <spec>        Select the active spec (.kiro/.current)
+  kspec migrate-spec      Convert active legacy spec.md to requirements.md
+  kspec refresh           Regenerate spec-lite.md from active requirements
+  kspec context           Refresh/view the derived context snapshot
+  kspec context --stdout  Refresh/print context for hooks and agents
   kspec list              List all specs
   kspec status            Current status
   kspec agents            List agents
@@ -5799,6 +6302,8 @@ Powers (in powers/ directory):
   code-intelligence       Code intelligence setup guide
 
 Examples:
+  kspec engine set v3 --dry-run     # Preview V3 agent migration
+  kspec --engine v3 --effort high spec "User Auth"
   kspec init                        # Setup with hooks + reviewers
   kspec spec "User Auth"            # CLI mode
   kspec spec --jira PROJ-123 "Auth" # From Jira story
@@ -5812,12 +6317,40 @@ Examples:
   }
 };
 
+function extractGlobalOptions(args) {
+  const remaining = [];
+  const options = {};
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === '--engine' && args[i + 1]) {
+      options.engine = normalizeEngine(args[++i]);
+    } else if (token.startsWith('--engine=')) {
+      options.engine = normalizeEngine(token.split('=')[1]);
+    } else if (token === '--effort' && args[i + 1]) {
+      options.effort = args[++i];
+    } else if (token.startsWith('--effort=')) {
+      options.effort = token.split('=')[1];
+    } else {
+      remaining.push(token);
+    }
+  }
+  if (options.effort && !['low', 'medium', 'high', 'xhigh', 'max'].includes(options.effort)) {
+    die(`Invalid effort "${options.effort}". Use low, medium, high, xhigh, or max.`);
+  }
+  return { args: remaining, options };
+}
+
 async function run(args) {
   // Check for updates (non-blocking, cached for 24h)
   checkForUpdates();
 
   // Migrate v1 (.kspec/) to v2 (.kiro/) if needed
   await migrateV1toV2();
+
+  const extracted = extractGlobalOptions(args);
+  args = extracted.args;
+  runtimeOptions.engine = extracted.options.engine || null;
+  runtimeOptions.effort = extracted.options.effort || null;
 
   // Handle standard CLI flags first
   if (args.includes('--help') || args.includes('-h')) {
@@ -5840,4 +6373,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };

@@ -2,6 +2,27 @@
 
 All notable changes to kspec are documented in this file.
 
+## [2.3.0] — 2026-06-23
+
+### Kiro CLI 2.8 and V3 early access
+
+- Added workspace engine selection with `kspec engine set v2|v3`, global `--engine`, `KSPEC_KIRO_ENGINE`, and a Kiro 2.8 minimum for V3.
+- Added V3 Markdown agents with tag-based tools, capability permissions, compact resources, MCP access, and standalone `.kiro/hooks/kspec.json` lifecycle hooks.
+- V2 remains the default; CI is explicitly pinned to V2 until V3 headless support is documented.
+- Added Kiro-native `requirements.md` resolution with legacy `spec.md` fallback and reversible `kspec migrate-spec` conversion.
+
+### Deterministic active context
+
+- `.kiro/CONTEXT.md` is now an atomic, derived snapshot capped at 8 KiB. It includes active format/phase, nested task progress, current chunk/task, design, Jira, requirements summary, decisions, and next action.
+- All custom agents and Agent Skills read `.kiro/.current`, refresh through `kspec context --stdout`, and treat source artifacts as authoritative.
+- Removed `.kiro/specs/**/*.md` from always-loaded resources so historical specs no longer consume every prompt's context window.
+- Added `kspec use <spec>` and V3 hooks that track native `/spec` file changes.
+
+### Compatibility
+
+- Kiro model selection now inherits the CLI's persistent preference unless explicitly pinned.
+- Added global `--effort`, `KIRO_HOME` support, the official `cli.kiro.dev` installer, and removed the invalid shell-level `agent swap` invocation.
+
 ## [2.2.0] — 2026-05-04
 
 ### Enterprise Governance (opt-in)
