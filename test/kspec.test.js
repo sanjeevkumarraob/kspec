@@ -3248,24 +3248,20 @@ z`;
       assert.doesNotMatch(templates['kspec-context.json'].prompt, /ACTIVE CONTEXT PROTOCOL/);
     });
 
-    it('builds V3 chat args with --v3 as a global flag before the subcommand', () => {
+    it('builds V3 chat args with a global --v3 flag, spec mode, and effort', () => {
       const { buildChatArgs } = require('../src/index.js');
-      // `--v3` is global and must precede `chat`: `kiro-cli --v3 chat ...`.
+      // Verified against kiro-cli 2.11: `--v3` is global and precedes `chat`;
+      // `--mode spec` engages the native V3 Spec agent; `--effort` sets the
+      // reasoning level (low|medium|high|xhigh|max).
       assert.deepStrictEqual(
-        buildChatArgs('plan it', null, [], { engine: 'v3', effort: 'high' }),
-        ['--v3', 'chat', '--effort', 'high', 'plan it']
+        buildChatArgs('plan it', null, [], { engine: 'v3', mode: 'spec', effort: 'high' }),
+        ['--v3', 'chat', '--mode', 'spec', '--effort', 'high', 'plan it']
       );
-      // With an agent, --v3 still leads the argv.
+      // With an agent, --v3 still leads the argv and passthrough stays after chat.
       assert.deepStrictEqual(
         buildChatArgs('go', 'kspec-build', ['--no-interactive'], { engine: 'v3' }),
         ['--v3', 'chat', '--agent', 'kspec-build', '--no-interactive', 'go']
       );
-    });
-
-    it('never emits a --mode flag (no such flag exists in Kiro V3)', () => {
-      const { buildChatArgs } = require('../src/index.js');
-      assert.ok(!buildChatArgs('x', 'kspec-spec', [], { engine: 'v3', mode: 'spec' }).includes('--mode'));
-      assert.ok(!buildChatArgs('x', null, [], { engine: 'v2' }).includes('--mode'));
     });
 
     it('extracts global engine and effort options without leaking them to commands', () => {

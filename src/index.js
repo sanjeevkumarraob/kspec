@@ -553,11 +553,12 @@ function resetToDefaultAgent() {}
 // parses them as flags, not as part of the prompt body.
 function buildChatArgs(message, agent, passthroughArgs = [], options = {}) {
   const base = agent ? ['chat', '--agent', agent] : ['chat'];
-  // `--effort` (low|medium|high|xhigh|max) is a real `chat` subcommand flag.
+  // Both verified against kiro-cli 2.11: `--mode default|spec` selects the V3
+  // agent mode (`spec` engages Kiro's native Spec agent); `--effort` is one of
+  // low|medium|high|xhigh|max. Both are `chat` subcommand flags.
+  if (options.mode) base.push('--mode', options.mode);
   if (options.effort) base.push('--effort', options.effort);
-  // `--v3` is a GLOBAL flag and must precede the subcommand — the documented
-  // form is `kiro-cli --v3 chat ...` (https://kiro.dev/docs/cli/v3/). There is
-  // no `--mode` chat flag; V3 spec/design/tasks run through the kspec agents.
+  // `--v3` is a GLOBAL flag and precedes the subcommand: `kiro-cli --v3 chat …`.
   const prefix = options.engine === 'v3' ? ['--v3'] : [];
   return [...prefix, ...base, ...passthroughArgs, message];
 }
@@ -606,6 +607,7 @@ function chat(message, agent, passthroughArgs = [], options = {}) {
   assertEngineSupported(engine, cli);
   const args = buildChatArgs(message, agent, passthroughArgs, {
     engine,
+    mode: options.mode,
     effort: options.effort || runtimeOptions.effort
   });
   const child = spawn(cli, args, { stdio: 'inherit' });
@@ -4062,7 +4064,7 @@ const commands = {
     assertEngineSupported('v3');
     await chat(`Convert the legacy kspec at ${legacy} into Kiro V3 requirements.
 
-Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, constraint, requirement ID, and Jira source reference. Use clear structured Markdown suitable for Kiro's Spec agent. Do not include the legacy ## Contract JSON section; kspec migrates it separately. Do not modify or delete ${legacy}.`, null, [], { engine: 'v3' });
+Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, constraint, requirement ID, and Jira source reference. Use clear structured Markdown suitable for Kiro's Spec agent. Do not include the legacy ## Contract JSON section; kspec migrates it separately. Do not modify or delete ${legacy}.`, null, [], { engine: 'v3', mode: 'spec' });
     if (!fs.existsSync(temporary) || fs.statSync(temporary).size === 0) {
       die(`Migration did not produce ${temporary}; the legacy spec is unchanged.`);
     }
@@ -4706,6 +4708,9 @@ Update steering docs as needed.`;
     log(`Spec folder: ${folder}`);
     const engine = getKiroEngine(runtimeOptions.engine);
     const requirementsName = engine === 'v3' ? 'requirements.md' : 'spec.md';
+    // In V3, spec creation runs through Kiro's native Spec agent (`--mode spec`)
+    // rather than a custom agent. See buildChatArgs / kiro-cli 2.11 `--mode`.
+    const specChatOptions = engine === 'v3' ? { mode: 'spec' } : {};
 
     if (jiraIssues) {
       // Jira-driven spec creation
@@ -4730,7 +4735,7 @@ WORKFLOW:
 5. Save Jira issue keys to ${folder}/jira-links.json
 ${engine === 'v3' ? '6. If the specification defines a structured output contract, write it separately to contract.json.' : ''}
 
-IMPORTANT: Include Jira links for traceability.`, 'kspec-jira');
+IMPORTANT: Include Jira links for traceability.`, engine === 'v3' ? null : 'kspec-jira', [], specChatOptions);
     } else {
       // Standard spec creation
       await chat(`Create specification for: ${feature}
@@ -4747,7 +4752,7 @@ If I say "skip" or "just do it", use your defaults and proceed immediately.
 4. IMMEDIATELY create ${folder}/spec-lite.md (concise version, <500 words)
 ${engine === 'v3' ? '5. If the specification defines a structured output contract, write it separately to ' + folder + '/contract.json.' : ''}
 
-spec-lite.md is critical - it's loaded after context compression.`, 'kspec-spec');
+spec-lite.md is critical - it's loaded after context compression.`, engine === 'v3' ? null : 'kspec-spec', [], specChatOptions);
     }
 
     recordMetric(folder, 'spec-completed');
@@ -4803,7 +4808,7 @@ Create ${folder}/design.md with these sections:
 - Technical Decisions
 - Risk Assessment
 
-Read the codebase to inform your architecture decisions.`, 'kspec-design');
+Read the codebase to inform your architecture decisions.`, getKiroEngine() === 'v3' ? null : 'kspec-design', [], getKiroEngine() === 'v3' ? { mode: 'spec' } : {});
 
     recordMetric(folder, 'design-completed');
     console.log('\nNext step:');
@@ -5048,7 +5053,7 @@ Create ${folder}/tasks.md with:
 - Within each chunk: checkbox format "- [ ] Task description"
 - TDD approach (test first)
 - Logical order within and across chunks
-- File paths for each task`, 'kspec-tasks');
+- File paths for each task`, getKiroEngine() === 'v3' ? null : 'kspec-tasks', [], getKiroEngine() === 'v3' ? { mode: 'spec' } : {});
 
     recordMetric(folder, 'tasks-completed');
     console.log('\nNext step:');
