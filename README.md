@@ -9,7 +9,7 @@ Spec-driven development workflow for Kiro CLI with context management, verificat
 
 | Area | What you get |
 |---|---|
-| **Kiro V3 early access** | `kspec engine set v3` generates Markdown agents, capability permissions, and standalone V3 hooks; V2 remains the default |
+| **Kiro V3 early access** | `kspec engine set v3` generates JSON agents with tag-based tools, capability `permissions` (+ `toolsSettings`), and standalone V3 hooks; V2 remains the default |
 | **Native specs** | New V3 work uses `requirements.md`; legacy `spec.md` remains supported and can be converted with `kspec migrate-spec` |
 | **Reliable active context** | Every custom agent and `/kspec-*` skill resolves `.kiro/.current`, refreshes `CONTEXT.md` through kspec, and reads active artifacts |
 | **Lean prompts** | Historical `.kiro/specs/**/*.md` files are no longer loaded into every agent request |
@@ -466,7 +466,7 @@ Every skill reads `.kiro/.current`, refreshes through `kspec context --stdout`, 
 
 ## Agent Permissions (Least-Privilege)
 
-V2 agents use `toolsSettings`; V3 Markdown agents use capability-based `permissions`. Both retain the same role-based filesystem, shell, MCP, secret, and subagent boundaries.
+V2 and V3 agents are JSON configs in `.kiro/agents/`. V2 uses `toolsSettings`; V3 adds capability-based `permissions` **and keeps `toolsSettings`** (kiro-cli 2.11 skips permissions-only agents on discovery, so both are shipped). Both retain the same role-based filesystem, shell, MCP, secret, and subagent boundaries.
 
 | Agent type | Write paths | Shell scope |
 |---|---|---|
@@ -686,7 +686,7 @@ kspec is designed for team collaboration. Most files should be committed to shar
 | `.kiro/config.json` | Yes | Project preferences (incl. enterprise + ideAgents + skills flags) |
 | `.kiro/specs/` | Yes | Specifications, designs, tasks, memory |
 | `.kiro/steering/` | Yes | Shared product, tech, testing guidelines (+ enterprise-governance.md if `--enterprise`) |
-| `.kiro/agents/` | Yes | Active-engine agents — V2 JSON or V3 Markdown |
+| `.kiro/agents/` | Yes | Active-engine agents — JSON configs (V2 `toolsSettings` or V3 `permissions`) |
 | `.kiro/hooks/` | Yes | Versioned V3 lifecycle hooks |
 | `.kiro/skills/` | Yes | Kiro Agent Skills — `/<name>` slash commands |
 | `.kiro/mcp.json.template` | Yes | MCP setup template (no secrets) |

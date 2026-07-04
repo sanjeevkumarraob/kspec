@@ -3213,30 +3213,32 @@ z`;
       assert.match(skillTemplates['kspec-build/SKILL.md'], /resume the first incomplete task/i);
     });
 
-    it('generates V3 Markdown agents with permissions and compact resources', () => {
+    it('generates discoverable V3 JSON agents (tag tools, scoped, no inline permissions)', () => {
       const { getAgentTemplates, validateGeneratedAgents } = require('../src/index.js');
       const templates = getAgentTemplates('v3');
       assert.strictEqual(validateGeneratedAgents('v3', templates), templates);
       assert.strictEqual(Object.keys(templates).length, 16);
       for (const [file, agent] of Object.entries(templates)) {
-        assert.match(file, /\.md$/);
-        assert.ok(Array.isArray(agent.permissions), `${file}: permissions`);
+        // kiro-cli discovers JSON agent configs (not .md). It SKIPS any agent
+        // that declares `permissions` WITHOUT `toolsSettings`, so V3 ships both;
+        // lifecycle hooks move to the standalone .kiro/hooks/kspec.json.
+        assert.match(file, /\.json$/);
+        assert.ok(Array.isArray(agent.permissions), `${file}: V3 capability permissions`);
+        assert.ok(agent.toolsSettings, `${file}: toolsSettings (kiro-cli skips permissions-only agents)`);
+        assert.strictEqual(agent.hooks, undefined, `${file}: hooks are standalone in V3`);
         assert.ok(agent.resources.includes('file://.kiro/CONTEXT.md'), `${file}: context resource`);
         assert.ok(agent.resources.some(resource => resource.startsWith('skill://')), `${file}: skill resource`);
         assert.ok(!agent.resources.some(resource => resource.includes('.kiro/specs')), `${file}: no historical specs`);
-        assert.strictEqual(agent.toolsSettings, undefined);
-        assert.strictEqual(agent.allowedTools, undefined);
       }
     });
 
-    it('serializes V3 resources, permissions, and welcome messages to Markdown', () => {
-      const { agentToMarkdown, getAgentTemplates } = require('../src/index.js');
-      const agent = getAgentTemplates('v3')['kspec-build.md'];
-      const markdown = agentToMarkdown(agent);
-      assert.match(markdown, /\nresources: /);
-      assert.match(markdown, /\npermissions: /);
-      assert.match(markdown, /\nwelcomeMessage: /);
-      assert.match(markdown, /ACTIVE CONTEXT PROTOCOL/);
+    it('emits V3 agents as valid JSON with tag tools and the context protocol', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates('v3')['kspec-build.json'];
+      const roundTripped = JSON.parse(JSON.stringify(agent));
+      assert.ok(roundTripped.tools.includes('shell'));
+      assert.ok(roundTripped.resources.some(r => r.startsWith('skill://')));
+      assert.match(roundTripped.prompt, /ACTIVE CONTEXT PROTOCOL/);
     });
 
     it('validates V2 JSON agents with embedded hooks and scoped tools', () => {

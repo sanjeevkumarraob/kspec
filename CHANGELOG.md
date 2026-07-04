@@ -7,7 +7,7 @@ All notable changes to kspec are documented in this file.
 ### Kiro CLI 2.8 and V3 early access
 
 - Added workspace engine selection with `kspec engine set v2|v3`, global `--engine`, `KSPEC_KIRO_ENGINE`, and a Kiro 2.8 minimum for V3.
-- Added V3 Markdown agents with tag-based tools, capability permissions, compact resources, MCP access, and standalone `.kiro/hooks/kspec.json` lifecycle hooks.
+- Added V3 JSON agents with tag-based tools (`@mcp`, `subagent`, `shell`), capability `permissions`, role-scoped `toolsSettings`, compact resources, and standalone `.kiro/hooks/kspec.json` lifecycle hooks. (kiro-cli discovers JSON agent configs; Markdown is the Kiro IDE subagent format. `toolsSettings` is kept alongside `permissions` because kiro-cli 2.11 skips permissions-only agents on discovery.)
 - V2 remains the default; CI is explicitly pinned to V2 until V3 headless support is documented.
 - Added Kiro-native `requirements.md` resolution with legacy `spec.md` fallback and reversible `kspec migrate-spec` conversion.
 

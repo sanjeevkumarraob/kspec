@@ -2493,6 +2493,13 @@ PIPELINE:
     if ((AGENT_SUBAGENT_GRAPH[agent.name] || []).length) tools.add('subagent');
     tools.add('shell');
     agent.tools = [...tools];
+    // V3 capability permissions (the documented V3 model). CRITICAL: keep
+    // `toolsSettings` alongside them. kiro-cli 2.11's agent loader SKIPS any
+    // agent that declares inline `permissions` WITHOUT `toolsSettings` — a
+    // permissions-only agent is silently undiscoverable (`agent list` omits it,
+    // though `agent validate` accepts it). With BOTH present the agent is
+    // discovered, so V3 ships both. Verified via a toolsSettings×permissions
+    // factorial against kiro-cli 2.11.
     agent.permissions = getV3Permissions(agent.name);
     if (mcpAgents.includes(agent.name) && allMcps.length) {
       agent.permissions.push({
@@ -2501,12 +2508,15 @@ PIPELINE:
         match: allMcps.map(name => `${name}/*`)
       });
     }
-    delete agent.allowedTools;
-    delete agent.toolsSettings;
-    delete agent.includeMcpJson;
-    delete agent.hooks;
+    delete agent.allowedTools;   // superseded by permissions/toolsSettings in V3
+    delete agent.includeMcpJson; // MCP access is granted via the @mcp tool tag
+    delete agent.hooks;          // V3 lifecycle hooks live in .kiro/hooks/kspec.json
     if (!agent.model) delete agent.model;
-    v3Templates[filename.replace(/\.json$/, '.md')] = agent;
+    // Keep the `.json` key: kiro-cli discovers JSON agent configs (verified on
+    // 2.11 via `agent list`), NOT Markdown. `.md` is the Kiro IDE subagent
+    // format. V3 differs from V2 by tag-based tools, capability `permissions`,
+    // and standalone (not embedded) hooks.
+    v3Templates[filename] = agent;
   }
   return v3Templates;
 }
@@ -3879,17 +3889,19 @@ function validateGeneratedAgents(engine, templates = getAgentTemplates(engine)) 
   const entries = Object.entries(templates);
   if (!entries.length) throw new Error(`No ${engine} agent templates were generated.`);
   for (const [file, agent] of entries) {
-    const expectedExtension = engine === 'v3' ? '.md' : '.json';
-    if (!file.endsWith(expectedExtension)) throw new Error(`${engine} agent has the wrong extension: ${file}`);
+    // Both engines emit JSON agent configs (kiro-cli discovers JSON, not .md).
+    if (!file.endsWith('.json')) throw new Error(`${engine} agent has the wrong extension: ${file}`);
     if (!agent.name || !agent.prompt || !Array.isArray(agent.tools)) throw new Error(`Incomplete generated agent: ${file}`);
     if (!agent.resources?.includes('file://.kiro/CONTEXT.md')) throw new Error(`${file} is missing the context resource.`);
     if (!agent.resources?.some(resource => resource.startsWith('skill://'))) throw new Error(`${file} is missing Agent Skill resources.`);
+    JSON.parse(JSON.stringify(agent)); // must be serializable JSON
     if (engine === 'v3') {
-      if (!Array.isArray(agent.permissions)) throw new Error(`${file} is missing V3 permissions.`);
-      if (!agentToMarkdown(agent).startsWith('---\n')) throw new Error(`${file} could not be serialized as Markdown.`);
+      if (!Array.isArray(agent.permissions)) throw new Error(`${file} is missing V3 capability permissions.`);
+      // kiro-cli 2.11 SKIPS permissions-only agents; toolsSettings must accompany them.
+      if (!agent.toolsSettings) throw new Error(`${file} must keep toolsSettings so kiro-cli can discover it.`);
+      if (agent.hooks) throw new Error(`${file} must use standalone V3 hooks (.kiro/hooks/kspec.json), not embedded hooks.`);
     } else {
       if (!agent.toolsSettings || !agent.hooks) throw new Error(`${file} is missing V2 toolsSettings or embedded hooks.`);
-      JSON.parse(JSON.stringify(agent));
     }
   }
   return templates;
@@ -4012,7 +4024,7 @@ const commands = {
     try { templates = validateGeneratedAgents(target); } catch (error) { die(error.message); }
     const files = Object.keys(templates);
     console.log(`\nEngine migration: ${getKiroEngine()} → ${target}`);
-    console.log(`Generated agents: ${files.length} (${target === 'v3' ? 'Markdown + standalone hooks' : 'JSON + embedded hooks'})`);
+    console.log(`Generated agents: ${files.length} (${target === 'v3' ? 'JSON + tag tools + capability permissions + toolsSettings + standalone hooks' : 'JSON + embedded hooks'})`);
     if (dryRun) {
       console.log('Dry run only; no files changed.');
       return;
@@ -4414,28 +4426,18 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
     for (const [file, content] of Object.entries(getAgentTemplates(selectedEngine))) {
       const p = path.join(AGENTS_DIR, file);
       if (!fs.existsSync(p)) {
-        fs.writeFileSync(p, file.endsWith('.md') ? agentToMarkdown(content) : JSON.stringify(content, null, 2));
+        fs.writeFileSync(p, JSON.stringify(content, null, 2));
         log(`Created ${p}`);
-      } else if (file.endsWith('.md')) {
-        try {
-          const existing = parseFrontmatter(fs.readFileSync(p, 'utf8'));
-          const desired = parseFrontmatter(agentToMarkdown(content));
-          let body = content.name === 'kspec-context' ? `${content.prompt}\n` : existing.body;
-          if (content.name !== 'kspec-context' && !body.includes('ACTIVE CONTEXT PROTOCOL')) body = `${body.trimEnd()}${AGENT_CONTEXT_PROTOCOL}\n`;
-          const lines = ['---', ...Object.entries(desired.frontmatter).map(([key, value]) => `${key}: ${value}`), '---'];
-          fs.writeFileSync(p, `${lines.join('\n')}\n${body}`);
-          log(`Updated ${p} (V3 frontmatter; preserved body)`);
-        } catch (error) {
-          die(`Could not update ${p}: ${error.message}`);
-        }
       } else {
-        // Update tools, allowedTools, includeMcpJson, and toolsSettings to
-        // reflect current MCP config + scoping rules, while preserving any
-        // custom prompt modifications.
+        // Update tools, allowedTools, resources, and scoping (toolsSettings +
+        // hooks for V2, permissions for V3) to reflect current MCP config +
+        // scoping rules, while preserving any custom prompt modifications.
+        // Absent keys (e.g. toolsSettings on a V3 agent) are cleared, so a
+        // workspace that switches engines converges to the target shape.
         try {
           const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
           let updated = false;
-          for (const key of ['tools', 'allowedTools', 'resources', 'toolsSettings', 'hooks']) {
+          for (const key of ['tools', 'allowedTools', 'resources', 'toolsSettings', 'hooks', 'permissions']) {
             if (JSON.stringify(existing[key]) !== JSON.stringify(content[key])) {
               existing[key] = content[key];
               updated = true;
@@ -4612,7 +4614,7 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
     if (createAgentsMd) console.log('  - AGENTS.md (auto-included by Kiro)');
     if (selectedEngine === 'v3') console.log('  - .kiro/hooks/kspec.json (V3 lifecycle hooks)');
     else if (hooksChoice !== 'none') console.log(`  - V2 agent profiles (${hooksChoice} embedded hooks)`);
-    console.log(`  - .kiro/agents/ (${selectedEngine === 'v3' ? 'V3 Markdown' : createIdeAgents ? 'V2 JSON + IDE markdown' : 'V2 JSON'} agents)`);
+    console.log(`  - .kiro/agents/ (${selectedEngine === 'v3' ? 'V3 JSON, tag tools + capability permissions + toolsSettings' : createIdeAgents ? 'V2 JSON + IDE markdown' : 'V2 JSON'} agents)`);
     if (createSkills) console.log('  - .kiro/skills/ (slash commands: /kspec-spec, /kspec-build, /kspec-review, ...)');
     if (enterpriseConfig) console.log('  - .kiro/steering/enterprise-governance.md (MCP/model registries, prompt logging, IdP)');
     if (ciMode) console.log('  - .github/workflows/kspec-review.yml (headless review on every PR)');
@@ -5593,16 +5595,39 @@ Powers: contract, document, tdd, code-review, code-intelligence
       for (const [file, content] of Object.entries(getAgentTemplates('v3'))) {
         const target = path.join(AGENTS_DIR, file);
         if (!fs.existsSync(target)) {
-          fs.writeFileSync(target, agentToMarkdown(content));
-        } else {
-          const existing = parseFrontmatter(fs.readFileSync(target, 'utf8'));
-          const desired = parseFrontmatter(agentToMarkdown(content));
-          let body = content.name === 'kspec-context' ? `${content.prompt}\n` : existing.body;
-          if (content.name !== 'kspec-context' && !body.includes('ACTIVE CONTEXT PROTOCOL')) body = `${body.trimEnd()}${AGENT_CONTEXT_PROTOCOL}\n`;
-          const lines = ['---', ...Object.entries(desired.frontmatter).map(([key, value]) => `${key}: ${value}`), '---'];
-          fs.writeFileSync(target, `${lines.join('\n')}\n${body}`);
+          fs.writeFileSync(target, JSON.stringify(content, null, 2));
+          mdUpdated++;
+          continue;
         }
-        mdUpdated++;
+        try {
+          const existing = JSON.parse(fs.readFileSync(target, 'utf8'));
+          let updated = false;
+          for (const key of ['tools', 'resources', 'toolsSettings', 'permissions', 'model']) {
+            if (JSON.stringify(existing[key]) !== JSON.stringify(content[key])) {
+              existing[key] = content[key];
+              updated = true;
+            }
+          }
+          // Clear fields V3 agents must not carry: embedded hooks (standalone
+          // now), MCP JSON, and V2 allowedTools (superseded by permissions).
+          for (const stale of ['hooks', 'includeMcpJson', 'allowedTools']) {
+            if (stale in existing) { delete existing[stale]; updated = true; }
+          }
+          if (content.name !== 'kspec-context' && !existing.prompt.includes('ACTIVE CONTEXT PROTOCOL')) {
+            existing.prompt = `${existing.prompt.trimEnd()}${AGENT_CONTEXT_PROTOCOL}`;
+            updated = true;
+          }
+          if (content.prompt.includes(MCP_TOOLS_MARKER)) {
+            const refreshed = applyMcpToolsSection(existing.prompt, allMcps);
+            if (refreshed !== existing.prompt) { existing.prompt = refreshed; updated = true; }
+          }
+          if (updated) {
+            fs.writeFileSync(target, JSON.stringify(existing, null, 2));
+            mdUpdated++;
+          }
+        } catch (e) {
+          log(`Skipped ${target} (parse failed: ${e.message})`);
+        }
       }
       const hooksDir = path.join(KIRO_DIR, 'hooks');
       ensureDir(hooksDir);
