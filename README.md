@@ -5,6 +5,18 @@
 
 Spec-driven development workflow for Kiro CLI with context management, verification at every step, and Jira integration.
 
+## What's new in 2.3.0
+
+| Area | What you get |
+|---|---|
+| **Kiro V3 early access** | `kspec engine set v3` generates JSON agents with tag-based tools, capability `permissions` (+ `toolsSettings`), and standalone V3 hooks; V2 remains the default |
+| **Native specs** | New V3 work uses `requirements.md`; legacy `spec.md` remains supported and can be converted with `kspec migrate-spec` |
+| **Reliable active context** | Every custom agent and `/kspec-*` skill resolves `.kiro/.current`, refreshes `CONTEXT.md` through kspec, and reads active artifacts |
+| **Lean prompts** | Historical `.kiro/specs/**/*.md` files are no longer loaded into every agent request |
+| **Current CLI support** | Persistent model inheritance, `--effort`, `KIRO_HOME`, official installer URL, and explicit V2 CI |
+
+See [CHANGELOG](CHANGELOG.md#230--2026-06-23) for the full release notes.
+
 ## What's new in 2.2.0
 
 | Area | What you get |
@@ -76,7 +88,7 @@ $ kiro-cli
 
 > /agent swap kspec-spec
 > Build a todo app with categories
-  (agent creates spec.md, spec-lite.md, updates context)
+  (agent creates requirements.md on V3 or spec.md on V2, plus spec-lite.md)
   → Next: /agent swap kspec-design or /agent swap kspec-tasks
 
 > /agent swap kspec-design
@@ -110,8 +122,12 @@ init → analyse → spec → verify-spec → design (optional) → tasks → ve
 | `kspec init --enterprise` | Skip the prompt — go straight into governance setup (MCP/model registries, IdP, prompt logging) |
 | `kspec init --ci` | Setup with GitHub Actions workflow + CI hooks preset (audit + destructive-block) |
 | `kspec sync-agents` | Refresh agent JSON/markdown after adding a new MCP server (idempotent) |
+| `kspec engine status` | Show the selected engine and detected Kiro CLI version |
+| `kspec engine set v2\|v3 [--dry-run]` | Validate, back up, and regenerate agents/hooks for one engine |
+| `kspec use <spec>` | Select the active spec and refresh deterministic context |
+| `kspec migrate-spec <spec> [--dry-run] [--yes]` | Reversibly convert legacy `spec.md` to native `requirements.md` |
 | `kspec analyse` | Analyse codebase, update steering docs |
-| `kspec spec "Name"` | Create spec.md + spec-lite.md |
+| `kspec spec "Name"` | Create active-engine requirements + spec-lite.md |
 | `kspec verify-spec` | Interactively review and shape spec with clarifying questions |
 | `kspec design` | Create technical design from spec (optional) |
 | `kspec verify-design` | Verify design against spec requirements |
@@ -413,10 +429,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: curl -fsSL https://kiro.dev/install.sh | sh
+      - run: curl -fsSL https://cli.kiro.dev/install | bash
       - run: npm install -g kspec
       - env: { KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }} }
-        run: kspec review --simple --trust-tools=read,shell --no-interactive
+        run: kspec review --engine v2 --simple --trust-tools=read,shell --no-interactive
       # ...posts review as PR comment via actions/github-script
 ```
 
@@ -424,12 +440,7 @@ You only need to add `KIRO_API_KEY` as a repo secret — everything else is wire
 
 ### 2. CI hooks preset
 
-`.kiro/settings/hooks.json` with:
-
-- **`preToolUse`** — audit-log every shell command, hard-block destructive patterns (`rm -rf`, `git push`, `sudo`, `curl http`)
-- **`postToolUse`** — audit-log every file write
-- **`onSpecComplete`** — runs `kspec verify` and `kspec sync-jira --progress` automatically
-- **`onSessionStop`** — refreshes CONTEXT.md so the next CI run starts clean
+V2 hooks are embedded in generated agent profiles; V3 uses `.kiro/hooks/kspec.json`. They refresh context on agent/session start and apply the destructive-command guard before shell execution. The generated headless CI workflow remains explicitly V2.
 
 Powered by Kiro CLI 2.0+ headless mode (`--no-interactive`, `KIRO_API_KEY`, `--trust-tools`). See [Kiro headless docs](https://kiro.dev/docs/cli/headless/).
 
@@ -440,7 +451,7 @@ In addition to the JSON custom agents (`/agent swap kspec-spec`), kspec ships **
 ```
 > /kspec-spec
 > Build a payment processing feature
-  (clarifies → spec.md → spec-lite.md)
+  (clarifies → active requirements → spec-lite.md)
 
 > /kspec-build
   (executes tasks with strict TDD)
@@ -451,9 +462,11 @@ In addition to the JSON custom agents (`/agent swap kspec-spec`), kspec ships **
 
 5 skills shipped: `kspec-spec`, `kspec-build`, `kspec-review`, `kspec-verify`, `kspec-jira`. Created when you answer `Y` to "Create Kiro Agent Skills?" during `kspec init` (default Yes). See [Kiro skills docs](https://kiro.dev/docs/cli/skills/).
 
+Every skill reads `.kiro/.current`, refreshes through `kspec context --stdout`, reads `.kiro/CONTEXT.md`, and then loads the active requirements/tasks. Skills never write `CONTEXT.md` directly.
+
 ## Agent Permissions (Least-Privilege)
 
-Every kspec agent ships with a `toolsSettings` block scoping what it can touch:
+V2 and V3 agents are JSON configs in `.kiro/agents/`. V2 uses `toolsSettings`; V3 adds capability-based `permissions` **and keeps `toolsSettings`** (kiro-cli 2.11 skips permissions-only agents on discovery, so both are shipped). Both retain the same role-based filesystem, shell, MCP, secret, and subagent boundaries.
 
 | Agent type | Write paths | Shell scope |
 |---|---|---|
@@ -514,23 +527,23 @@ Legacy `inclusion_mode: on_demand` files are auto-migrated to `inclusion: auto` 
 
 ## Context Management
 
-kspec maintains context that survives AI context compression:
+kspec maintains a deterministic active-work snapshot regenerated from source artifacts:
 
 ```
-.kiro/CONTEXT.md (auto-generated)
-├── Current Spec: 2026-01-24-user-auth
-├── Progress: 3/12 tasks completed
-├── Design: present / not yet created
-├── Requirements Summary (from spec-lite)
-├── Decisions & Learnings
-├── Jira Links (if integrated)
-└── Quick Commands (design, tasks, build, verify...)
+.kiro/CONTEXT.md (auto-generated, max 8 KiB)
+├── Active spec, format, phase, type, milestone
+├── Nested task progress, current chunk and task
+├── Design and Jira status
+├── Requirements summary and recent decisions
+└── Next action
 ```
 
-Agents read CONTEXT.md first, automatically restoring state after context compression. CONTEXT.md is refreshed both before and after agent chat sessions.
+Every custom agent and `/kspec-*` Agent Skill resolves `.kiro/.current`, runs `kspec context --stdout`, reads `CONTEXT.md`, and then reads the active requirements and tasks. Source artifacts remain authoritative, and kspec is the only writer of `CONTEXT.md`.
 
 ```bash
-kspec context    # View and refresh context (CLI)
+kspec context             # Refresh and view context
+kspec context --stdout    # Hook/agent-safe output without the footer
+kspec use <spec>          # Select the active spec
 ```
 
 Or refresh inline without leaving kiro-cli:
@@ -539,7 +552,16 @@ Or refresh inline without leaving kiro-cli:
 > /agent swap kspec-context
 ```
 
-**Note:** There is no automatic hook for `/compact` — CONTEXT.md won't auto-refresh on context compaction. Use `kspec-context` agent or run `kspec context` after compacting.
+Compaction creates a new Kiro session and reloads persistent resources. Session-start hooks and the Agent Skill preflight regenerate the snapshot before it is consumed.
+
+### Native Kiro session controls
+
+kspec does not wrap controls Kiro already provides:
+
+- [`/goal`](https://kiro.dev/changelog/cli/2-7/) runs an iterative, completion-checked loop for longer work.
+- [Queue steering](https://kiro.dev/docs/cli/chat/queue-steering/) redirects active work at the next tool boundary; `Ctrl+S` toggles steer/queue behavior.
+- [`/rewind`](https://kiro.dev/docs/cli/chat/rewind/) branches from an earlier turn without changing the original session.
+- [`/transcript save`](https://kiro.dev/changelog/cli/2-6/) exports the current conversation as Markdown, plaintext, or JSON.
 
 ## Agents & Shortcuts
 
@@ -568,13 +590,13 @@ Every agent includes a **PIPELINE** section suggesting contextual next steps —
 
 ### Context Refresh After /compact
 
-When you run `/compact` in kiro-cli, CONTEXT.md may become stale. Refresh it inline:
+Kiro compaction creates a new session and reloads resources. The session-start hook refreshes context automatically. You can also refresh it explicitly:
 
 ```
 > /agent swap kspec-context
 ```
 
-This regenerates CONTEXT.md with current spec progress without leaving your session.
+The context agent delegates to `kspec context --stdout`; it never writes its own alternate snapshot format.
 
 ## ACP (Agent Client Protocol)
 
@@ -624,7 +646,9 @@ See: https://kiro.dev/docs/cli/code-intelligence/
 ├── memory.md             # Project learnings (commit)
 ├── specs/
 │   └── 2026-01-22-feature/
-│       ├── spec.md       # Full specification (commit)
+│       ├── requirements.md # Kiro V3 requirements (commit)
+│       ├── spec.md       # Legacy requirements (supported)
+│       ├── contract.json # V3 structured output contract (optional)
 │       ├── spec-lite.md  # Concise (for context compression)
 │       ├── design.md     # Technical design (commit, optional)
 │       ├── tasks.md      # Implementation tasks (commit)
@@ -637,11 +661,11 @@ See: https://kiro.dev/docs/cli/code-intelligence/
 ├── milestones/           # Milestone groupings (commit)
 ├── sessions/             # Review session logs (local only)
 ├── steering/             # Project rules — incl. enterprise-governance.md if --enterprise (commit)
-├── agents/               # kspec-generated agents — *.json (CLI) + *.md (IDE chat, optional) (commit)
+├── agents/               # Active engine agents — V2 *.json or V3 *.md (commit)
 ├── skills/               # Kiro Agent Skills — /<name> slash commands in default chat (commit)
+├── hooks/                # V3 versioned lifecycle hooks (commit)
 ├── settings/
-│   ├── mcp.json          # MCP config (local only)
-│   └── hooks.json        # Hooks (basic / enterprise / documentation / ci preset)
+│   └── mcp.json          # MCP config (local only)
 └── mcp.json.template     # MCP config template (commit, no secrets)
 ```
 
@@ -662,16 +686,16 @@ kspec is designed for team collaboration. Most files should be committed to shar
 | `.kiro/config.json` | Yes | Project preferences (incl. enterprise + ideAgents + skills flags) |
 | `.kiro/specs/` | Yes | Specifications, designs, tasks, memory |
 | `.kiro/steering/` | Yes | Shared product, tech, testing guidelines (+ enterprise-governance.md if `--enterprise`) |
-| `.kiro/agents/` | Yes | Agent configurations — JSON for CLI, optional `.md` for IDE chat |
+| `.kiro/agents/` | Yes | Active-engine agents — JSON configs (V2 `toolsSettings` or V3 `permissions`) |
+| `.kiro/hooks/` | Yes | Versioned V3 lifecycle hooks |
 | `.kiro/skills/` | Yes | Kiro Agent Skills — `/<name>` slash commands |
 | `.kiro/mcp.json.template` | Yes | MCP setup template (no secrets) |
 | `.kiro/memory.md` | Yes | Project learnings |
 | `.github/workflows/kspec-review.yml` | Yes | If `--ci` was used — headless review on PRs |
 | `.kiro/.current` | No | Personal working state |
 | `.kiro/CONTEXT.md` | No | Auto-generated, local state |
-| `.kiro/audit.log` | No | CI hooks audit trail (local only) |
 | `.kiro/sessions/` | No | Review session logs |
-| `.kiro/settings/` | No | Local MCP config + hooks.json |
+| `.kiro/settings/` | No | Local workspace MCP config |
 | `~/.kiro/mcp.json` | N/A | Personal secrets in home directory |
 
 ### Setting Up MCP for Teams
@@ -790,7 +814,7 @@ $ kspec status
   Migrate .kspec/ to .kiro/ now? (Y/n):
 ```
 
-Migration moves `config.json`, `.current`, `CONTEXT.md`, `memory.md`, and `specs/` from `.kspec/` to `.kiro/`, then removes the empty `.kspec/` directory.
+Migration moves `config.json`, `.current`, `memory.md`, and `specs/` from `.kspec/` to `.kiro/`, regenerates `CONTEXT.md` from the migrated source artifacts, then removes the empty `.kspec/` directory.
 
 ## Configuration
 
@@ -798,19 +822,22 @@ Set during `kspec init`:
 
 - **Date format**: YYYY-MM-DD, DD-MM-YYYY, or MM-DD-YYYY
 - **Auto-execute**: ask (default), auto, or dry-run
-- **Model**: AI model for agents (claude-sonnet-4.6, claude-opus-4.6, claude-haiku-4.5, or custom)
+- **Kiro engine**: V2 by default; select V3 with `--engine v3` or `kspec engine set v3`
+- **Model**: inherits Kiro's persistent preference by default, or pin a custom model ID
 - **Jira project**: Default project key for `sync-jira` (when Atlassian MCP detected)
 - **Reviewers**: Multi-CLI reviewers for agentic review loop (Copilot, Claude, Gemini, etc.)
 - **IDE chat subagents**: Optional `.md` agent files for Kiro IDE chat (default No)
 - **Agent Skills**: Slash-command skills (`/kspec-spec` etc.) for default chat (default Yes)
 - **Enterprise governance**: MCP/model registry URLs, IdP, prompt logging (opt-in, off by default)
-- **Hooks preset**: none / basic / enterprise / documentation / ci
+- **Hooks**: V2 embeds context lifecycle and destructive-command guard hooks; V3 uses the versioned lifecycle hook file
 
 ### Environment variables
 
 | Variable | Effect |
 |---|---|
 | `KSPEC_ENTERPRISE=1` | Flips the "Configure enterprise governance?" prompt default to Yes (orgs set this in dev container / shell init) |
+| `KSPEC_KIRO_ENGINE=v2|v3` | Selects the harness when no global `--engine` flag is supplied |
+| `KIRO_HOME=/path` | Overrides the global Kiro agents/settings/MCP home |
 | `KIRO_API_KEY` | Required for headless mode — used by the `--ci` GitHub Actions workflow |
 
 ### File Locking
@@ -835,8 +862,8 @@ kspec --version
 
 | Limitation | Workaround |
 |------------|------------|
-| **No `/compact` hook** | CONTEXT.md doesn't auto-refresh on context compaction. Run `/agent swap kspec-context` or `kspec context` manually. |
-| **spec-lite.md auto-update is truncation** | `truncateSpecLite()` truncates spec.md (not AI summary). Run `kspec refresh` or `/agent swap kspec-refresh` for AI-generated summary. |
+| **V3 headless CI is early access** | Generated CI stays explicitly on V2 until Kiro documents stable V3 headless behavior. |
+| **spec-lite.md auto-update is truncation** | `truncateSpecLite()` truncates the active requirements artifact. Run `kspec refresh` or `/agent swap kspec-refresh` for an AI-generated summary. |
 
 ## Requirements
 

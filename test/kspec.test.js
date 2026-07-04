@@ -310,7 +310,7 @@ describe('kspec', () => {
 
       const content = refreshContext();
       assert(content.includes('1/3 completed'));
-      assert(content.includes('Current Task'));
+      assert(content.includes('Current task'));
     });
   });
 
@@ -349,25 +349,28 @@ describe('kspec', () => {
         assert(agent.prompt, `${filename}: missing prompt`);
 
         // Kiro CLI format fields
-        assert(agent.model, `${filename}: missing model`);
+        assert(!('model' in agent) || typeof agent.model === 'string', `${filename}: model should be optional or a string`);
         assert(Array.isArray(agent.tools), `${filename}: tools should be array`);
         assert(Array.isArray(agent.allowedTools), `${filename}: allowedTools should be array`);
         assert(Array.isArray(agent.resources), `${filename}: resources should be array`);
 
-        // Resources use file:// protocol
+        // Resources use supported resource protocols
         for (const resource of agent.resources) {
-          assert(resource.startsWith('file://'), `${filename}: resource should use file:// protocol: ${resource}`);
+          assert(resource.startsWith('file://') || resource.startsWith('skill://'),
+            `${filename}: unsupported resource protocol: ${resource}`);
         }
       }
     });
 
-    it('agents include steering and specs resources', () => {
+    it('agents include steering and skills without preloading historical specs', () => {
       for (const [filename, agent] of Object.entries(getAgentTemplates())) {
         const hasSteeringResource = agent.resources.some(r => r.includes('.kiro/steering'));
         const hasSpecsResource = agent.resources.some(r => r.includes('.kiro/specs'));
+        const hasSkillsResource = agent.resources.some(r => r.startsWith('skill://'));
 
         assert(hasSteeringResource, `${filename}: should include .kiro/steering resource`);
-        assert(hasSpecsResource, `${filename}: should include .kiro/specs resource`);
+        assert(!hasSpecsResource, `${filename}: should not preload all historical specs`);
+        assert(hasSkillsResource, `${filename}: should include kspec skills`);
       }
     });
 
@@ -405,7 +408,7 @@ describe('kspec', () => {
 
       try {
         commands.context();
-        assert(output.includes('kspec Context'));
+        assert(output.includes('kspec Active Context') || output.includes('kspec Context'));
         assert(output.includes('.kiro/CONTEXT.md'));
       } finally {
         console.log = originalLog;
@@ -579,7 +582,7 @@ describe('kspec', () => {
       fs.writeFileSync('.kiro/.current', specFolder);
 
       const content = refreshContext();
-      assert(content.includes('Jira Links'), 'Should include Jira Links section');
+      assert(content.includes('## Jira'), 'Should include Jira section');
       assert(content.includes('PROJ-123'), 'Should include source issue');
       assert(content.includes('PROJ-789'), 'Should include spec issue');
       assert(content.includes('PROJ-790'), 'Should include subtask');
@@ -592,7 +595,7 @@ describe('kspec', () => {
       fs.writeFileSync('.kiro/.current', specFolder);
 
       const content = refreshContext();
-      assert(!content.includes('Jira Links'), 'Should not include Jira Links section');
+      assert(!content.includes('## Jira'), 'Should not include Jira section');
     });
   });
 
@@ -709,9 +712,9 @@ describe('kspec', () => {
   });
 
   describe('agent model version', () => {
-    it('all agents use claude-sonnet-4.6', () => {
+    it('agents inherit the Kiro model when the project does not pin one', () => {
       for (const [filename, agent] of Object.entries(getAgentTemplates())) {
-        assert.strictEqual(agent.model, 'claude-sonnet-4.6', `${filename}: should use claude-sonnet-4.6`);
+        assert.strictEqual(agent.model, undefined, `${filename}: should omit model`);
       }
     });
   });
@@ -720,7 +723,7 @@ describe('kspec', () => {
     it('kspec-spec uses standardized .current format', () => {
       const agent = getAgentTemplates()['kspec-spec.json'];
       assert(agent.prompt.includes('.kiro/specs/'), 'Should reference .kiro/specs/ format');
-      assert(agent.prompt.includes('Regenerate .kiro/CONTEXT.md'), 'Should say regenerate CONTEXT.md');
+      assert(agent.prompt.includes('kspec context --stdout'), 'Should refresh CONTEXT.md through kspec');
     });
 
     it('kspec-tasks references design.md', () => {
@@ -730,7 +733,7 @@ describe('kspec', () => {
 
     it('kspec-build uses regenerate for CONTEXT.md', () => {
       const agent = getAgentTemplates()['kspec-build.json'];
-      assert(agent.prompt.includes('regenerate .kiro/CONTEXT.md'), 'Should say regenerate CONTEXT.md');
+      assert(agent.prompt.includes('kspec context --stdout'), 'Should refresh CONTEXT.md through kspec');
     });
 
     it('kspec-verify has VERIFY-DESIGN section', () => {
@@ -745,6 +748,7 @@ describe('kspec', () => {
 
     it('all agents have PIPELINE section', () => {
       for (const [filename, agent] of Object.entries(getAgentTemplates())) {
+        if (filename === 'kspec-context.json') continue;
         assert(agent.prompt.includes('PIPELINE'), `${filename}: should have PIPELINE section`);
       }
     });
@@ -863,7 +867,7 @@ describe('kspec', () => {
     it('has correct structure', () => {
       const agent = getAgentTemplates()['kspec-design.json'];
       assert.strictEqual(agent.name, 'kspec-design');
-      assert.strictEqual(agent.model, 'claude-sonnet-4.6');
+      assert.strictEqual(agent.model, undefined);
       assert(Array.isArray(agent.tools));
       assert(agent.tools.includes('read'));
       assert(agent.tools.includes('write'));
@@ -892,7 +896,7 @@ describe('kspec', () => {
 
       const content = refreshContext();
       assert(content.includes('Design'), 'Should include Design section');
-      assert(content.includes('not yet created'), 'Should show not yet created');
+      assert(content.includes('not created'), 'Should show not created');
     });
 
     it('shows design present', () => {
@@ -911,7 +915,7 @@ describe('kspec', () => {
       const specFolder = '.kiro/specs/2026-01-25-has-design';
       fs.writeFileSync('.kiro/.current', specFolder);
       const content = refreshContext();
-      assert(content.includes('kspec design'), 'Quick commands should include design');
+      assert(content.includes('Next Action'), 'Should include a next action');
     });
   });
 
@@ -1554,7 +1558,7 @@ describe('kspec', () => {
   });
 
   describe('revise command', () => {
-    it('requires existing spec.md', async () => {
+    it('requires an existing requirements artifact', async () => {
       const folder = path.join('.kiro', 'specs', 'revise-no-spec');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync('.kiro/.current', folder);
@@ -1568,7 +1572,7 @@ describe('kspec', () => {
       try {
         await commands.revise([]);
       } catch (e) {
-        assert(errorOutput.includes('No spec.md'), 'Should require spec.md');
+        assert(errorOutput.includes('No requirements artifact'), 'Should require requirements');
       } finally {
         console.error = originalError;
         process.exit = originalExit;
@@ -1577,7 +1581,7 @@ describe('kspec', () => {
   });
 
   describe('demo command', () => {
-    it('requires existing spec.md', async () => {
+    it('requires an existing requirements artifact', async () => {
       const folder = path.join('.kiro', 'specs', 'demo-no-spec');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync('.kiro/.current', folder);
@@ -1591,7 +1595,7 @@ describe('kspec', () => {
       try {
         await commands.demo([]);
       } catch (e) {
-        assert(errorOutput.includes('No spec.md'), 'Should require spec.md');
+        assert(errorOutput.includes('No requirements artifact'), 'Should require requirements');
       } finally {
         console.error = originalError;
         process.exit = originalExit;
@@ -1600,7 +1604,7 @@ describe('kspec', () => {
   });
 
   describe('estimate command', () => {
-    it('requires existing spec.md', async () => {
+    it('requires an existing requirements artifact', async () => {
       const folder = path.join('.kiro', 'specs', 'estimate-no-spec');
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync('.kiro/.current', folder);
@@ -1614,7 +1618,7 @@ describe('kspec', () => {
       try {
         await commands.estimate([]);
       } catch (e) {
-        assert(errorOutput.includes('No spec.md'), 'Should require spec.md');
+        assert(errorOutput.includes('No requirements artifact'), 'Should require requirements');
       } finally {
         console.error = originalError;
         process.exit = originalExit;
@@ -1972,7 +1976,7 @@ describe('kspec', () => {
     it('kspec-fix has correct structure', () => {
       const agent = getAgentTemplates()['kspec-fix.json'];
       assert.strictEqual(agent.name, 'kspec-fix');
-      assert.strictEqual(agent.model, 'claude-sonnet-4.6');
+      assert.strictEqual(agent.model, undefined);
       assert(agent.tools.includes('bash'), 'Fix agent should have bash tool');
       assert(agent.tools.includes('read'), 'Fix agent should have read tool');
       assert(agent.tools.includes('write'), 'Fix agent should have write tool');
@@ -2192,14 +2196,14 @@ describe('kspec', () => {
       ({ getConfiguredModel } = require('../src/index.js'));
     });
 
-    it('returns default model when not configured', () => {
+    it('inherits the Kiro model when not configured', () => {
       // Clear any existing config by writing empty object
       const configPath = path.join('.kiro', 'config.json');
       fs.mkdirSync('.kiro', { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify({}, null, 2));
 
       const model = getConfiguredModel();
-      assert.strictEqual(model, 'claude-sonnet-4.6', 'Should return default model');
+      assert.strictEqual(model, null, 'Should not pin a default model');
     });
 
     it('returns configured model when set', () => {
@@ -2236,7 +2240,7 @@ describe('kspec', () => {
       assert.match(md, /^---\n/, 'starts with frontmatter delimiter');
       assert.match(md, /\nname: kspec-spec\n/);
       assert.match(md, /\ndescription: "Create a new spec"\n/);
-      assert.match(md, /\ntools: \["read", "write"\]\n/);
+      assert.match(md, /\ntools: \["read","write"\]\n/);
       assert.match(md, /\nmodel: claude-sonnet-4.6\n/);
       assert.match(md, /---\n\nYou are the kspec spec agent\.\n$/);
     });
@@ -2333,7 +2337,6 @@ z`;
 
   describe('all-MCP injection (Option A)', () => {
     let getAgentTemplates, getAllMcpNames;
-    const ORIGINAL_CWD = process.cwd();
     const ORIGINAL_HOME = process.env.HOME;
     const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
     const MCP_TEST_DIR = path.join(__dirname, 'mcp-injection-workspace');
@@ -2350,7 +2353,7 @@ z`;
     });
 
     after(() => {
-      process.chdir(ORIGINAL_CWD);
+      process.chdir(TEST_DIR);
       fs.rmSync(MCP_TEST_DIR, { recursive: true, force: true });
       fs.rmSync(MCP_TEST_HOME, { recursive: true, force: true });
       if (ORIGINAL_HOME === undefined) delete process.env.HOME;
@@ -2812,7 +2815,7 @@ z`;
         assert.ok(agent.toolsSettings.shell, `${file} missing shell scoping`);
         assert.ok(Array.isArray(agent.toolsSettings.shell.allowedCommands));
         assert.ok(Array.isArray(agent.toolsSettings.shell.deniedCommands));
-        assert.strictEqual(agent.toolsSettings.shell.autoAllowReadonly, true);
+        assert.strictEqual(typeof agent.toolsSettings.shell.autoAllowReadonly, 'boolean');
       }
     });
 
@@ -2934,11 +2937,7 @@ z`;
       assert.ok(complete.some(h => h.command === 'kspec verify'));
     });
 
-    it('upgradeKspecGitignore migrates whole-dir rule and adds audit.log', () => {
-      // Regression: re-running `kspec init --ci` on an existing project
-      // (already had `.kiro/.current` in .gitignore) skipped the
-      // gitignore append entirely, leaving the old `.kiro/settings/`
-      // rule in place — which silently ignored the new hooks.json.
+    it('upgradeKspecGitignore migrates legacy local-state rules', () => {
       const { upgradeKspecGitignore } = require('../src/index.js');
       const old = `node_modules/
 .env
@@ -2951,8 +2950,9 @@ z`;
       const upgraded = upgradeKspecGitignore(old);
       assert.ok(upgraded, 'should produce an upgrade');
       assert.match(upgraded, /^\.kiro\/settings\/\*$/m, 'replaces whole-dir with per-file rule');
-      assert.match(upgraded, /^!\.kiro\/settings\/hooks\.json$/m, 'un-ignores shareable hooks.json');
+      assert.doesNotMatch(upgraded, /^!\.kiro\/settings\/hooks\.json$/m, 'removes obsolete hooks.json exception');
       assert.match(upgraded, /^\.kiro\/audit\.log$/m, 'ignores audit log');
+      assert.match(upgraded, /^\.kiro\/backups\/$/m, 'ignores generated engine backups');
       assert.doesNotMatch(upgraded, /^\.kiro\/settings\/$/m, 'old whole-dir rule must be gone');
       assert.match(upgraded, /node_modules\//, 'preserves unrelated entries');
     });
@@ -2971,22 +2971,16 @@ z`;
       assert.match(upgraded, /^\.kiro\/audit\.log$/m);
     });
 
-    it('gitignore block keeps hooks.json shareable and ignores audit.log', () => {
-      // Regression: previously `.kiro/settings/` ignored the whole dir,
-      // so the CI hook preset (`.kiro/settings/hooks.json`) silently
-      // wasn't checked in. And `.kiro/audit.log` was untracked, easy to
-      // commit accidentally.
+    it('gitignore block keeps local settings and engine backups private', () => {
       const { KSPEC_GITIGNORE_BLOCK } = require('../src/index.js');
-      // Use per-file pattern so the negation can re-include hooks.json.
       assert.match(KSPEC_GITIGNORE_BLOCK, /^\.kiro\/settings\/\*$/m,
-        'should ignore .kiro/settings/* (per-file, not directory)');
-      assert.match(KSPEC_GITIGNORE_BLOCK, /^!\.kiro\/settings\/hooks\.json$/m,
-        'should un-ignore hooks.json so CI/team hooks are commit-shared');
+        'should ignore local .kiro/settings files');
+      assert.doesNotMatch(KSPEC_GITIGNORE_BLOCK, /^!\.kiro\/settings\/hooks\.json$/m,
+        'V2 hooks are embedded and V3 hooks live under .kiro/hooks');
       assert.match(KSPEC_GITIGNORE_BLOCK, /^\.kiro\/audit\.log$/m,
-        'should ignore the audit log generated by CI hooks');
-      // The whole-directory pattern would block negation; ensure absent.
-      assert.doesNotMatch(KSPEC_GITIGNORE_BLOCK, /^\.kiro\/settings\/$/m,
-        'must not use the whole-dir form (negation cannot re-include)');
+        'should ignore legacy audit output');
+      assert.match(KSPEC_GITIGNORE_BLOCK, /^\.kiro\/backups\/$/m,
+        'should ignore generated engine backups');
     });
 
     it('all hook presets use `kspec context`, never the non-existent `kspec refresh-context`', () => {
@@ -3204,6 +3198,210 @@ z`;
         assert.match(md, new RegExp(`\\nname: ${content.name}\\n`), `${file}: name is set`);
         assert.ok(md.includes(content.prompt.split('\n')[0]), `${file}: prompt body present`);
       }
+    });
+  });
+
+  describe('Kiro V3 and context upgrade', () => {
+    it('injects the active context protocol into every Agent Skill', () => {
+      const { skillTemplates } = require('../src/index.js');
+      for (const [file, skill] of Object.entries(skillTemplates)) {
+        assert.match(skill, /\.kiro\/\.current/, `${file}: reads .current`);
+        assert.match(skill, /kspec context --stdout/, `${file}: refreshes context`);
+        assert.match(skill, /\.kiro\/CONTEXT\.md/, `${file}: reads CONTEXT.md`);
+        assert.match(skill, /Never compose CONTEXT\.md yourself/, `${file}: enforces single writer`);
+      }
+      assert.match(skillTemplates['kspec-build/SKILL.md'], /resume the first incomplete task/i);
+    });
+
+    it('generates discoverable V3 JSON agents (tag tools, scoped, no inline permissions)', () => {
+      const { getAgentTemplates, validateGeneratedAgents } = require('../src/index.js');
+      const templates = getAgentTemplates('v3');
+      assert.strictEqual(validateGeneratedAgents('v3', templates), templates);
+      assert.strictEqual(Object.keys(templates).length, 16);
+      for (const [file, agent] of Object.entries(templates)) {
+        // kiro-cli discovers JSON agent configs (not .md). It SKIPS any agent
+        // that declares `permissions` WITHOUT `toolsSettings`, so V3 ships both;
+        // lifecycle hooks move to the standalone .kiro/hooks/kspec.json.
+        assert.match(file, /\.json$/);
+        assert.ok(Array.isArray(agent.permissions), `${file}: V3 capability permissions`);
+        assert.ok(agent.toolsSettings, `${file}: toolsSettings (kiro-cli skips permissions-only agents)`);
+        assert.strictEqual(agent.hooks, undefined, `${file}: hooks are standalone in V3`);
+        assert.ok(agent.resources.includes('file://.kiro/CONTEXT.md'), `${file}: context resource`);
+        assert.ok(agent.resources.some(resource => resource.startsWith('skill://')), `${file}: skill resource`);
+        assert.ok(!agent.resources.some(resource => resource.includes('.kiro/specs')), `${file}: no historical specs`);
+      }
+    });
+
+    it('emits V3 agents as valid JSON with tag tools and the context protocol', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates('v3')['kspec-build.json'];
+      const roundTripped = JSON.parse(JSON.stringify(agent));
+      assert.ok(roundTripped.tools.includes('shell'));
+      assert.ok(roundTripped.resources.some(r => r.startsWith('skill://')));
+      assert.match(roundTripped.prompt, /ACTIVE CONTEXT PROTOCOL/);
+    });
+
+    it('validates V2 JSON agents with embedded hooks and scoped tools', () => {
+      const { getAgentTemplates, validateGeneratedAgents } = require('../src/index.js');
+      const templates = getAgentTemplates('v2');
+      assert.strictEqual(validateGeneratedAgents('v2', templates), templates);
+      assert.ok(templates['kspec-build.json'].hooks.agentSpawn);
+      assert.match(templates['kspec-context.json'].prompt, /^Run `kspec context --stdout`/);
+      assert.doesNotMatch(templates['kspec-context.json'].prompt, /ACTIVE CONTEXT PROTOCOL/);
+    });
+
+    it('builds V3 chat args with a global --v3 flag, spec mode, and effort', () => {
+      const { buildChatArgs } = require('../src/index.js');
+      // Verified against kiro-cli 2.11: `--v3` is global and precedes `chat`;
+      // `--mode spec` engages the native V3 Spec agent; `--effort` sets the
+      // reasoning level (low|medium|high|xhigh|max).
+      assert.deepStrictEqual(
+        buildChatArgs('plan it', null, [], { engine: 'v3', mode: 'spec', effort: 'high' }),
+        ['--v3', 'chat', '--mode', 'spec', '--effort', 'high', 'plan it']
+      );
+      // With an agent, --v3 still leads the argv and passthrough stays after chat.
+      assert.deepStrictEqual(
+        buildChatArgs('go', 'kspec-build', ['--no-interactive'], { engine: 'v3' }),
+        ['--v3', 'chat', '--agent', 'kspec-build', '--no-interactive', 'go']
+      );
+    });
+
+    it('extracts global engine and effort options without leaking them to commands', () => {
+      const { extractGlobalOptions } = require('../src/index.js');
+      assert.deepStrictEqual(
+        extractGlobalOptions(['review', '--engine', 'v3', '--effort=high', '--simple']),
+        { args: ['review', '--simple'], options: { engine: 'v3', effort: 'high' } }
+      );
+    });
+
+    it('applies engine precedence as CLI, environment, config, then V2', () => {
+      const { getKiroEngine } = require('../src/index.js');
+      const original = process.env.KSPEC_KIRO_ENGINE;
+      process.env.KSPEC_KIRO_ENGINE = 'v3';
+      assert.strictEqual(getKiroEngine(), 'v3');
+      assert.strictEqual(getKiroEngine('v2'), 'v2');
+      if (original === undefined) delete process.env.KSPEC_KIRO_ENGINE;
+      else process.env.KSPEC_KIRO_ENGINE = original;
+    });
+
+    it('prefers requirements.md and falls back to spec.md', () => {
+      const { getRequirementsArtifact } = require('../src/index.js');
+      const folder = '.kiro/specs/artifact-resolution';
+      fs.rmSync(folder, { recursive: true, force: true });
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Legacy');
+      assert.strictEqual(getRequirementsArtifact(folder).format, 'legacy');
+      fs.writeFileSync(path.join(folder, 'requirements.md'), '# Native');
+      const artifact = getRequirementsArtifact(folder);
+      assert.strictEqual(artifact.format, 'v3');
+      assert.strictEqual(path.basename(artifact.path), 'requirements.md');
+    });
+
+    it('recovers missing and stale .current only when one spec exists', () => {
+      const { refreshContext, getCurrentSpec } = require('../src/index.js');
+      const specs = '.kiro/specs';
+      const parked = '.kiro/specs-test-parked';
+      const current = '.kiro/.current';
+      const previousCurrent = fs.existsSync(current) ? fs.readFileSync(current, 'utf8') : null;
+      fs.renameSync(specs, parked);
+      try {
+        fs.mkdirSync(`${specs}/only-spec`, { recursive: true });
+        fs.writeFileSync(`${specs}/only-spec/requirements.md`, '# Only');
+        if (fs.existsSync(current)) fs.unlinkSync(current);
+        assert.match(refreshContext(), /Name: only-spec/);
+        assert.strictEqual(path.basename(getCurrentSpec()), 'only-spec');
+
+        fs.writeFileSync(current, `${specs}/missing-spec`);
+        assert.match(refreshContext(), /Name: only-spec/);
+
+        fs.mkdirSync(`${specs}/second-spec`, { recursive: true });
+        fs.writeFileSync(`${specs}/second-spec/requirements.md`, '# Second');
+        fs.writeFileSync(current, `${specs}/still-missing`);
+        assert.match(refreshContext(), /No active spec/);
+        assert.strictEqual(fs.readFileSync(current, 'utf8'), `${specs}/still-missing`);
+      } finally {
+        fs.rmSync(specs, { recursive: true, force: true });
+        fs.renameSync(parked, specs);
+        if (previousCurrent === null) {
+          if (fs.existsSync(current)) fs.unlinkSync(current);
+        } else {
+          fs.writeFileSync(current, previousCurrent);
+        }
+      }
+    });
+
+    it('counts nested native tasks and caps CONTEXT.md at 8 KiB', () => {
+      const { refreshContext, CONTEXT_MAX_BYTES } = require('../src/index.js');
+      const folder = '.kiro/specs/native-context';
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'requirements.md'), '# Requirements\n' + 'Detail '.repeat(2000));
+      fs.writeFileSync(path.join(folder, 'tasks.md'), '## Chunk 1: API\n- [x] Parent\n  - [x] Nested done\n  - [ ] Nested pending\n');
+      fs.writeFileSync(path.join(folder, 'memory.md'), 'Decision '.repeat(1000));
+      fs.writeFileSync(path.join(folder, 'jira-links.json'), JSON.stringify({
+        sourceIssues: ['KEEP-101', 'KEEP-202'],
+        specIssue: 'KEEP-303'
+      }));
+      fs.writeFileSync('.kiro/.current', folder);
+      const content = refreshContext();
+      assert.match(content, /2\/3 completed; 1 remaining/);
+      assert.match(content, /Current chunk: Chunk 1: API/);
+      assert.match(content, /Format: v3 \(requirements\.md\)/);
+      assert.match(content, /KEEP-101, KEEP-202/);
+      assert.match(content, /KEEP-303/);
+      assert.ok(Buffer.byteLength(content, 'utf8') <= CONTEXT_MAX_BYTES);
+      assert.ok(!fs.readdirSync('.kiro').some(file => file.includes('CONTEXT.md.') && file.endsWith('.tmp')));
+    });
+
+    it('keeps refreshContext as the sole CONTEXT.md writer', () => {
+      const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.js'), 'utf8');
+      assert.doesNotMatch(source, /writeFileSync\(CONTEXT_FILE/);
+      assert.doesNotMatch(source, /copyFileSync\([^\n]*CONTEXT/);
+      assert.match(source, /renameSync\(tmp, CONTEXT_FILE\)/);
+    });
+
+    it('respects KIRO_HOME', () => {
+      const { getKiroHome } = require('../src/index.js');
+      const original = process.env.KIRO_HOME;
+      process.env.KIRO_HOME = '/tmp/custom-kiro-home';
+      assert.strictEqual(getKiroHome(), '/tmp/custom-kiro-home');
+      if (original === undefined) delete process.env.KIRO_HOME;
+      else process.env.KIRO_HOME = original;
+    });
+
+    it('ships versioned V3 lifecycle hooks', () => {
+      const { v3HooksTemplate } = require('../src/index.js');
+      assert.strictEqual(v3HooksTemplate.version, 'v1');
+      const triggers = v3HooksTemplate.hooks.map(hook => hook.trigger);
+      for (const trigger of ['SessionStart', 'PostFileCreate', 'PostFileSave', 'PostTaskExec', 'PreToolUse']) {
+        assert.ok(triggers.includes(trigger), `missing ${trigger}`);
+      }
+    });
+
+    it('dry-runs legacy spec migration without changing files', async () => {
+      const folder = '.kiro/specs/migration-dry-run';
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'spec.md'), '# Requirements\n## Acceptance Criteria\n- Works\nSource: PROJ-1');
+      fs.writeFileSync('.kiro/.current', folder);
+      await commands['migrate-spec'](['--dry-run']);
+      assert.ok(fs.existsSync(path.join(folder, 'spec.md')));
+      assert.ok(!fs.existsSync(path.join(folder, 'requirements.md')));
+      assert.ok(!fs.existsSync(path.join(folder, 'spec.legacy.md')));
+    });
+
+    it('renders the migration confirmation diff', () => {
+      const { formatMigrationDiff } = require('../src/index.js');
+      const diff = formatMigrationDiff('# Legacy\n- REQ-1 old', '# Requirements\n- REQ-1 new');
+      assert.match(diff, /--- spec\.md/);
+      assert.match(diff, /\+\+\+ requirements\.md/);
+      assert.match(diff, /-# Legacy/);
+      assert.match(diff, /\+# Requirements/);
+    });
+
+    it('uses the official installer and forces V2 in generated CI', () => {
+      const { githubActionsKspecReview } = require('../src/index.js');
+      assert.match(githubActionsKspecReview, /https:\/\/cli\.kiro\.dev\/install/);
+      assert.match(githubActionsKspecReview, /\.local\/bin/);
+      assert.match(githubActionsKspecReview, /--engine v2/);
     });
   });
 });
