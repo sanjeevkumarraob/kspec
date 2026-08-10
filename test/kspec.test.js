@@ -6,12 +6,12 @@ const path = require('path');
 const TEST_DIR = path.join(__dirname, 'test-workspace');
 
 describe('kspec', () => {
-  let commands, loadConfig, run, detectCli, requireCli, getAgentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR;
+  let commands, loadConfig, run, detectCli, requireCli, getAgentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR;
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
     process.chdir(TEST_DIR);
-    ({ commands, loadConfig, run, detectCli, requireCli, getAgentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR } = require('../src/index.js'));
+    ({ commands, loadConfig, run, detectCli, requireCli, getAgentTemplates, getTaskStats, refreshContext, getCurrentSpec, setCurrentSpec, getOrSelectSpec, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, migrateV1toV2, resetToDefaultAgent, KIRO_DIR, SPECS_DIR, LEGACY_KSPEC_DIR } = require('../src/index.js'));
   });
 
   after(() => {
@@ -325,6 +325,9 @@ describe('kspec', () => {
         'kspec-verify.json',
         'kspec-review.json',
         'kspec-jira.json',
+        'kspec-rally.json',
+        'kspec-ado.json',
+        'kspec-github.json',
         'kspec-fix.json',
         'kspec-refactor.json',
         'kspec-spike.json',
@@ -338,7 +341,7 @@ describe('kspec', () => {
       for (const agent of expectedAgents) {
         assert(getAgentTemplates()[agent], `Missing agent: ${agent}`);
       }
-      assert.strictEqual(Object.keys(getAgentTemplates()).length, 16, 'Should have exactly 16 agents');
+      assert.strictEqual(Object.keys(getAgentTemplates()).length, 19, 'Should have exactly 19 agents');
     });
 
     it('agents have Kiro CLI compatible format', () => {
@@ -529,6 +532,21 @@ describe('kspec', () => {
       assert(typeof result === 'boolean');
     });
 
+    it('hasRallyMcp returns boolean', () => {
+      const result = hasRallyMcp();
+      assert(typeof result === 'boolean');
+    });
+
+    it('hasAzureDevOpsMcp returns boolean', () => {
+      const result = hasAzureDevOpsMcp();
+      assert(typeof result === 'boolean');
+    });
+
+    it('hasGitHubMcp returns boolean', () => {
+      const result = hasGitHubMcp();
+      assert(typeof result === 'boolean');
+    });
+
     it('getMcpConfig returns object or null', () => {
       const result = getMcpConfig();
       assert(result === null || typeof result === 'object');
@@ -569,6 +587,50 @@ describe('kspec', () => {
     });
   });
 
+  describe('agentTemplates - Rally agent', () => {
+    it('has kspec-rally agent', () => {
+      assert(getAgentTemplates()['kspec-rally.json'], 'Missing kspec-rally agent');
+    });
+
+    it('kspec-rally has Rally MCP access', () => {
+      const rallyAgent = getAgentTemplates()['kspec-rally.json'];
+      assert(rallyAgent.tools.includes('@rally'), 'kspec-rally should include @rally tool');
+      assert(rallyAgent.allowedTools.includes('@rally'), 'kspec-rally should allow @rally tool');
+      assert(rallyAgent.includeMcpJson === true, 'kspec-rally should have includeMcpJson: true');
+    });
+
+    it('kspec-rally has correct keyboard shortcut', () => {
+      const rallyAgent = getAgentTemplates()['kspec-rally.json'];
+      assert.strictEqual(rallyAgent.keyboardShortcut, 'ctrl+shift+y');
+    });
+  });
+
+  describe('agentTemplates - Azure DevOps and GitHub agents', () => {
+    it('has kspec-ado and kspec-github agents', () => {
+      assert(getAgentTemplates()['kspec-ado.json'], 'Missing kspec-ado agent');
+      assert(getAgentTemplates()['kspec-github.json'], 'Missing kspec-github agent');
+    });
+
+    it('kspec-ado has Azure DevOps MCP access', () => {
+      const adoAgent = getAgentTemplates()['kspec-ado.json'];
+      assert(adoAgent.tools.includes('@azure-devops'), 'kspec-ado should include @azure-devops tool');
+      assert(adoAgent.allowedTools.includes('@azure-devops'), 'kspec-ado should allow @azure-devops tool');
+      assert(adoAgent.includeMcpJson === true, 'kspec-ado should have includeMcpJson: true');
+    });
+
+    it('kspec-github has GitHub MCP access', () => {
+      const githubAgent = getAgentTemplates()['kspec-github.json'];
+      assert(githubAgent.tools.includes('@github'), 'kspec-github should include @github tool');
+      assert(githubAgent.allowedTools.includes('@github'), 'kspec-github should allow @github tool');
+      assert(githubAgent.includeMcpJson === true, 'kspec-github should have includeMcpJson: true');
+    });
+
+    it('new planning agents have keyboard shortcuts', () => {
+      assert.strictEqual(getAgentTemplates()['kspec-ado.json'].keyboardShortcut, 'ctrl+shift+u');
+      assert.strictEqual(getAgentTemplates()['kspec-github.json'].keyboardShortcut, 'ctrl+shift+o');
+    });
+  });
+
   describe('refreshContext with Jira links', () => {
     it('includes Jira links when jira-links.json exists', () => {
       const specFolder = '.kiro/specs/2026-01-24-jira-test';
@@ -599,6 +661,76 @@ describe('kspec', () => {
     });
   });
 
+  describe('refreshContext with Rally links', () => {
+    it('includes Rally links when rally-links.json exists', () => {
+      const specFolder = '.kiro/specs/2026-01-24-rally-test';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# Rally Test Spec');
+      fs.writeFileSync(`${specFolder}/rally-links.json`, JSON.stringify({
+        sourceItems: ['US123456', 'DE123456'],
+        specItem: 'US789012',
+        tasks: ['TA789013', 'TA789014'],
+        traceability: ['REQ-1 -> TEST-1']
+      }));
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const content = refreshContext();
+      assert(content.includes('## Rally'), 'Should include Rally section');
+      assert(content.includes('US123456'), 'Should include source item');
+      assert(content.includes('US789012'), 'Should include spec item');
+      assert(content.includes('TA789013'), 'Should include task');
+      assert(content.includes('REQ-1 -> TEST-1'), 'Should include traceability');
+    });
+
+    it('omits Rally section when no rally-links.json', () => {
+      const specFolder = '.kiro/specs/2026-01-24-no-rally';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# No Rally Spec');
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const content = refreshContext();
+      assert(!content.includes('## Rally'), 'Should not include Rally section');
+    });
+  });
+
+  describe('refreshContext with Azure DevOps and GitHub links', () => {
+    it('includes Azure DevOps links when ado-links.json exists', () => {
+      const specFolder = '.kiro/specs/2026-01-24-ado-test';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# ADO Test Spec');
+      fs.writeFileSync(`${specFolder}/ado-links.json`, JSON.stringify({
+        sourceItems: ['12345'],
+        specItem: '67890',
+        tasks: ['67891']
+      }));
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const content = refreshContext();
+      assert(content.includes('## Azure DevOps'), 'Should include Azure DevOps section');
+      assert(content.includes('12345'), 'Should include source work item');
+      assert(content.includes('67890'), 'Should include spec work item');
+      assert(content.includes('67891'), 'Should include task');
+    });
+
+    it('includes GitHub links when github-links.json exists', () => {
+      const specFolder = '.kiro/specs/2026-01-24-github-test';
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(`${specFolder}/spec-lite.md`, '# GitHub Test Spec');
+      fs.writeFileSync(`${specFolder}/github-links.json`, JSON.stringify({
+        sourceIssues: ['owner/repo#123'],
+        specIssue: 'owner/repo#456',
+        tasks: ['owner/repo#457']
+      }));
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const content = refreshContext();
+      assert(content.includes('## GitHub Issues'), 'Should include GitHub Issues section');
+      assert(content.includes('owner/repo#123'), 'Should include source issue');
+      assert(content.includes('owner/repo#456'), 'Should include spec issue');
+      assert(content.includes('owner/repo#457'), 'Should include task issue');
+    });
+  });
+
   describe('help text', () => {
     it('includes Jira integration section', () => {
       let output = '';
@@ -611,6 +743,40 @@ describe('kspec', () => {
         assert(output.includes('--jira'), 'Help should mention --jira flag');
         assert(output.includes('sync-jira'), 'Help should mention sync-jira command');
         assert(output.includes('jira-subtasks'), 'Help should mention jira-subtasks command');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('includes Rally integration section', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('Rally Integration'), 'Help should mention Rally Integration');
+        assert(output.includes('rally-pull'), 'Help should mention rally-pull command');
+        assert(output.includes('sync-rally'), 'Help should mention sync-rally command');
+        assert(output.includes('rally-tasks'), 'Help should mention rally-tasks command');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('includes Azure DevOps and GitHub Issues integration sections', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.help();
+        assert(output.includes('Azure DevOps Integration'), 'Help should mention Azure DevOps Integration');
+        assert(output.includes('ado-pull'), 'Help should mention ado-pull command');
+        assert(output.includes('sync-ado'), 'Help should mention sync-ado command');
+        assert(output.includes('GitHub Issues Integration'), 'Help should mention GitHub Issues Integration');
+        assert(output.includes('github-pull'), 'Help should mention github-pull command');
+        assert(output.includes('sync-github'), 'Help should mention sync-github command');
       } finally {
         console.log = originalLog;
       }
@@ -643,6 +809,36 @@ describe('kspec', () => {
         commands.agents();
         assert(output.includes('kspec-jira'), 'Should list kspec-jira agent');
         assert(output.includes('Ctrl+Shift+J'), 'Should show Jira agent shortcut');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('lists kspec-rally agent', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.agents();
+        assert(output.includes('kspec-rally'), 'Should list kspec-rally agent');
+        assert(output.includes('Ctrl+Shift+Y'), 'Should show Rally agent shortcut');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('lists kspec-ado and kspec-github agents', () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (...args) => { output += args.join(' ') + '\n'; };
+
+      try {
+        commands.agents();
+        assert(output.includes('kspec-ado'), 'Should list kspec-ado agent');
+        assert(output.includes('Ctrl+Shift+U'), 'Should show Azure DevOps agent shortcut');
+        assert(output.includes('kspec-github'), 'Should list kspec-github agent');
+        assert(output.includes('Ctrl+Shift+O'), 'Should show GitHub agent shortcut');
       } finally {
         console.log = originalLog;
       }
@@ -744,6 +940,18 @@ describe('kspec', () => {
     it('kspec-jira references jira-links.json', () => {
       const agent = getAgentTemplates()['kspec-jira.json'];
       assert(agent.prompt.includes('jira-links.json'), 'Should reference jira-links.json');
+    });
+
+    it('kspec-rally references rally-links.json', () => {
+      const agent = getAgentTemplates()['kspec-rally.json'];
+      assert(agent.prompt.includes('rally-links.json'), 'Should reference rally-links.json');
+    });
+
+    it('kspec-ado and kspec-github reference provider link files', () => {
+      assert(getAgentTemplates()['kspec-ado.json'].prompt.includes('ado-links.json'),
+        'Should reference ado-links.json');
+      assert(getAgentTemplates()['kspec-github.json'].prompt.includes('github-links.json'),
+        'Should reference github-links.json');
     });
 
     it('all agents have PIPELINE section', () => {
@@ -1012,6 +1220,85 @@ describe('kspec', () => {
         assert(
           errorOutput.includes('jira-links.json') || errorOutput.includes('Atlassian MCP'),
           'Should mention missing jira-links.json or Atlassian MCP'
+        );
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('rally-pull command', () => {
+    it('requires MCP or rally-links.json', async () => {
+      const folder = '.kiro/specs/2026-01-25-rally-pull-test';
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(`${folder}/spec-lite.md`, '# Rally Pull Test');
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' ') + '\n'; };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands['rally-pull']([]);
+      } catch (e) {
+        assert(
+          errorOutput.includes('rally-links.json') || errorOutput.includes('Rally MCP'),
+          'Should mention missing rally-links.json or Rally MCP'
+        );
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+  });
+
+  describe('ado-pull and github-pull commands', () => {
+    it('ado-pull requires MCP or ado-links.json', async () => {
+      const folder = '.kiro/specs/2026-01-25-ado-pull-test';
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(`${folder}/spec-lite.md`, '# ADO Pull Test');
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' ') + '\n'; };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands['ado-pull']([]);
+      } catch (e) {
+        assert(
+          errorOutput.includes('ado-links.json') || errorOutput.includes('Azure DevOps MCP'),
+          'Should mention missing ado-links.json or Azure DevOps MCP'
+        );
+      } finally {
+        console.error = originalError;
+        process.exit = originalExit;
+      }
+    });
+
+    it('github-pull requires MCP or github-links.json', async () => {
+      const folder = '.kiro/specs/2026-01-25-github-pull-test';
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(`${folder}/spec-lite.md`, '# GitHub Pull Test');
+      fs.writeFileSync('.kiro/.current', folder);
+
+      let errorOutput = '';
+      const originalError = console.error;
+      const originalExit = process.exit;
+      console.error = (...args) => { errorOutput += args.join(' ') + '\n'; };
+      process.exit = () => { throw new Error('EXIT'); };
+
+      try {
+        await commands['github-pull']([]);
+      } catch (e) {
+        assert(
+          errorOutput.includes('github-links.json') || errorOutput.includes('GitHub MCP'),
+          'Should mention missing github-links.json or GitHub MCP'
         );
       } finally {
         console.error = originalError;
@@ -2054,7 +2341,7 @@ describe('kspec', () => {
   });
 
   describe('agents command updated', () => {
-    it('lists all 14 agents', () => {
+    it('lists newer workflow agents', () => {
       let output = '';
       const originalLog = console.log;
       console.log = (...args) => { output += args.join(' ') + '\n'; };
@@ -2080,8 +2367,8 @@ describe('kspec', () => {
   });
 
   describe('all agents count', () => {
-    it('has exactly 16 agents', () => {
-      assert.strictEqual(Object.keys(getAgentTemplates()).length, 16, 'Should have exactly 16 agents');
+    it('has exactly 19 agents', () => {
+      assert.strictEqual(Object.keys(getAgentTemplates()).length, 19, 'Should have exactly 19 agents');
     });
   });
 
@@ -2518,6 +2805,36 @@ You have access to: \`@github\`.
         'kspec-jira must include the configured `@jira` MCP via dynamic injection');
     });
 
+    it('injects non-default Rally MCP server name into kspec-rally', () => {
+      process.chdir(MCP_TEST_DIR);
+      fs.rmSync('.kiro', { recursive: true, force: true });
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: { 'agile-central': { command: 'npx' } }
+      }));
+      const templates = getAgentTemplates();
+      const rallyAgent = templates['kspec-rally.json'];
+      assert.ok(rallyAgent.tools.includes('@agile-central'),
+        'kspec-rally must include the configured Rally MCP via dynamic injection');
+    });
+
+    it('injects non-default Azure DevOps and GitHub MCP server names into planning agents', () => {
+      process.chdir(MCP_TEST_DIR);
+      fs.rmSync('.kiro', { recursive: true, force: true });
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: {
+          ado: { command: 'npx' },
+          github: { command: 'npx' }
+        }
+      }));
+      const templates = getAgentTemplates();
+      assert.ok(templates['kspec-ado.json'].tools.includes('@ado'),
+        'kspec-ado must include the configured ADO MCP via dynamic injection');
+      assert.ok(templates['kspec-github.json'].tools.includes('@github'),
+        'kspec-github must include the configured GitHub MCP via dynamic injection');
+    });
+
     it('does not inject MCP into non-allow-listed agents', () => {
       process.chdir(MCP_TEST_DIR);
       fs.mkdirSync('.kiro/settings', { recursive: true });
@@ -2638,12 +2955,15 @@ z`;
     let skillTemplates;
     before(() => { ({ skillTemplates } = require('../src/index.js')); });
 
-    it('ships skills for kspec-spec, kspec-build, kspec-review, kspec-verify, kspec-jira', () => {
+    it('ships skills for kspec-spec, build/review/verify, and planning integrations', () => {
       assert.ok(skillTemplates['kspec-spec/SKILL.md']);
       assert.ok(skillTemplates['kspec-build/SKILL.md']);
       assert.ok(skillTemplates['kspec-review/SKILL.md']);
       assert.ok(skillTemplates['kspec-verify/SKILL.md']);
       assert.ok(skillTemplates['kspec-jira/SKILL.md']);
+      assert.ok(skillTemplates['kspec-rally/SKILL.md']);
+      assert.ok(skillTemplates['kspec-ado/SKILL.md']);
+      assert.ok(skillTemplates['kspec-github/SKILL.md']);
     });
 
     it('every SKILL.md has the required frontmatter (name + description)', () => {
@@ -2789,6 +3109,71 @@ z`;
       assert.match(agent.prompt, /UNION/, 'agent UNIONs labels (no clobbering)');
       assert.match(agent.prompt, /inherits? these|inherits? the PARENT/i,
         'subtasks inherit parent labels');
+    });
+
+    it('kspec-rally skill recognizes IDs, URLs, flags, tasks, and no-overwrite pull updates', () => {
+      const rally = skillTemplates['kspec-rally/SKILL.md'];
+      assert.match(rally, /--rally/, 'mentions --rally flag');
+      assert.match(rally, /--update/, 'mentions --update flag');
+      assert.match(rally, /--create/, 'mentions --create flag');
+      assert.match(rally, /--project/, 'mentions --project flag');
+      assert.match(rally, /US123456/, 'mentions Rally user story IDs');
+      assert.match(rally, /DE123456/, 'mentions Rally defect IDs');
+      assert.match(rally, /TA123456/, 'mentions Rally task IDs');
+      assert.match(rally, /F123456/, 'mentions Rally feature IDs');
+      assert.match(rally, /URLs containing Rally artifacts/i, 'mentions Rally URL parsing');
+      assert.match(rally, /rally-links\.json/, 'mentions rally-links.json');
+      assert.match(rally, /Do not silently overwrite/i, 'requires confirmation before overwriting local specs');
+      assert.match(rally, /kspec context --stdout/, 'requires context refresh after link changes');
+    });
+
+    it('kspec-rally skill preserves tags and documents QMS traceability', () => {
+      const rally = skillTemplates['kspec-rally/SKILL.md'];
+      assert.match(rally, /--tags/, 'mentions --tags');
+      assert.match(rally, /config\.rally\.defaultTags/, 'mentions config.rally.defaultTags');
+      assert.match(rally, /UNION/i, 'preserves existing tags by union');
+      assert.match(rally, /Never clobber/i, 'warns against clobbering tags');
+      assert.match(rally, /QMS Traceability/i, 'has QMS traceability section');
+      assert.match(rally, /requirement ID -> design ID -> contract ID -> test ID -> evidence ID/i,
+        'documents regulated traceability chain');
+    });
+
+    it('kspec-rally agent prompt parses flags + IDs before dispatching mode', () => {
+      const { getAgentTemplates } = require('../src/index.js');
+      const agent = getAgentTemplates()['kspec-rally.json'];
+      assert.match(agent.prompt, /PARSE USER INPUT/, 'agent has explicit parse step');
+      assert.match(agent.prompt, /--rally/, 'agent recognizes --rally');
+      assert.match(agent.prompt, /--update/, 'agent recognizes --update');
+      assert.match(agent.prompt, /--create/, 'agent recognizes --create');
+      assert.match(agent.prompt, /\(\?:US\|DE\|TA\|F\)\\d\+/, 'agent recognizes Rally formatted IDs');
+      assert.match(agent.prompt, /NEVER auto-update/i, 'agent warns against auto-updating local specs');
+      assert.match(agent.prompt, /kiro-cli mcp add --name rally/, 'agent has MCP-missing fallback');
+    });
+
+    it('kspec-ado skill and agent document Azure DevOps work-item workflow', () => {
+      const ado = skillTemplates['kspec-ado/SKILL.md'];
+      const agent = getAgentTemplates()['kspec-ado.json'];
+      assert.match(ado, /--ado/, 'skill mentions --ado flag');
+      assert.match(ado, /_workitems\/edit\/<id>/, 'skill mentions Azure DevOps URL pattern');
+      assert.match(ado, /ado-links\.json/, 'skill mentions ado-links.json');
+      assert.match(ado, /CHANGE REPORT/, 'skill requires change reports');
+      assert.match(ado, /wait for human confirmation/i, 'skill prevents silent local overwrites');
+      assert.match(ado, /Preserve existing tags/i, 'skill preserves tags');
+      assert.match(agent.prompt, /Source: Azure DevOps #12345/, 'agent includes source attribution');
+      assert.match(agent.prompt, /NEVER auto-update/i, 'agent warns against auto-updating local specs');
+    });
+
+    it('kspec-github skill and agent document GitHub Issues workflow', () => {
+      const github = skillTemplates['kspec-github/SKILL.md'];
+      const agent = getAgentTemplates()['kspec-github.json'];
+      assert.match(github, /--github/, 'skill mentions --github flag');
+      assert.match(github, /owner\/repo#123/, 'skill mentions owner/repo issue refs');
+      assert.match(github, /github-links\.json/, 'skill mentions github-links.json');
+      assert.match(github, /CHANGE REPORT/, 'skill requires change reports');
+      assert.match(github, /wait for human confirmation/i, 'skill prevents silent local overwrites');
+      assert.match(github, /Preserve\s+labels/i, 'skill preserves labels');
+      assert.match(agent.prompt, /Source: GitHub owner\/repo#123/, 'agent includes source attribution');
+      assert.match(agent.prompt, /NEVER auto-update/i, 'agent warns against auto-updating local specs');
     });
   });
 
@@ -3217,7 +3602,7 @@ z`;
       const { getAgentTemplates, validateGeneratedAgents } = require('../src/index.js');
       const templates = getAgentTemplates('v3');
       assert.strictEqual(validateGeneratedAgents('v3', templates), templates);
-      assert.strictEqual(Object.keys(templates).length, 16);
+      assert.strictEqual(Object.keys(templates).length, 19);
       for (const [file, agent] of Object.entries(templates)) {
         // kiro-cli discovers JSON agent configs (not .md). It SKIPS any agent
         // that declares `permissions` WITHOUT `toolsSettings`, so V3 ships both;

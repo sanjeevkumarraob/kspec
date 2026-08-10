@@ -48,6 +48,18 @@ const defaultConfig = {
   jira: {
     project: null,
     enabled: false
+  },
+  rally: {
+    project: null,
+    enabled: false
+  },
+  ado: {
+    project: null,
+    enabled: false
+  },
+  githubIssues: {
+    repo: null,
+    enabled: false
   }
 };
 
@@ -192,6 +204,70 @@ function getAtlassianMcpName() {
   );
 }
 
+function hasRallyMcp() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return false;
+
+  const serverNames = Object.keys(mcpConfig.mcpServers);
+  return serverNames.some(name =>
+    name.toLowerCase().includes('rally') ||
+    name.toLowerCase().includes('broadcom') ||
+    name.toLowerCase().includes('agile-central')
+  );
+}
+
+function getRallyMcpName() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return null;
+
+  const serverNames = Object.keys(mcpConfig.mcpServers);
+  return serverNames.find(name =>
+    name.toLowerCase().includes('rally') ||
+    name.toLowerCase().includes('broadcom') ||
+    name.toLowerCase().includes('agile-central')
+  );
+}
+
+function hasAzureDevOpsMcp() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return false;
+
+  const serverNames = Object.keys(mcpConfig.mcpServers);
+  return serverNames.some(name =>
+    name.toLowerCase().includes('azure-devops') ||
+    name.toLowerCase().includes('azure') ||
+    name.toLowerCase().includes('ado')
+  );
+}
+
+function getAzureDevOpsMcpName() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return null;
+
+  const serverNames = Object.keys(mcpConfig.mcpServers);
+  return serverNames.find(name =>
+    name.toLowerCase().includes('azure-devops') ||
+    name.toLowerCase().includes('azure') ||
+    name.toLowerCase().includes('ado')
+  );
+}
+
+function hasGitHubMcp() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return false;
+
+  const serverNames = Object.keys(mcpConfig.mcpServers);
+  return serverNames.some(name => name.toLowerCase().includes('github'));
+}
+
+function getGitHubMcpName() {
+  const mcpConfig = getMcpConfig();
+  if (!mcpConfig || !mcpConfig.mcpServers) return null;
+
+  const serverNames = Object.keys(mcpConfig.mcpServers);
+  return serverNames.find(name => name.toLowerCase().includes('github'));
+}
+
 // Return every MCP server name configured in ANY of the lookup paths,
 // merged and deduplicated. Used by getAgentTemplates() to grant kspec
 // agents access to all configured MCP servers — workspace-plus-user
@@ -308,6 +384,21 @@ function getJiraProject() {
   return cfg.jira?.project || null;
 }
 
+function getRallyProject() {
+  const cfg = loadConfig();
+  return cfg.rally?.project || null;
+}
+
+function getAdoProject() {
+  const cfg = loadConfig();
+  return cfg.ado?.project || null;
+}
+
+function getGitHubIssuesRepo() {
+  const cfg = loadConfig();
+  return cfg.githubIssues?.repo || null;
+}
+
 function requireJiraProject() {
   const project = getJiraProject();
   if (!project) {
@@ -344,6 +435,53 @@ Or run: kiro-cli mcp add --name atlassian
 See: https://kiro.dev/docs/cli/mcp/`);
   }
   return getAtlassianMcpName();
+}
+
+function requireRallyMcp() {
+  if (!hasRallyMcp()) {
+    die(`Rally MCP not configured.
+
+To use Rally integration, configure a Rally MCP server in one of these locations:
+- Workspace: .kiro/settings/mcp.json
+- Workspace: .kiro/mcp.json
+- User: ~/.kiro/settings/mcp.json
+
+Example future command:
+  kiro-cli mcp add --name rally
+
+If no Rally MCP exists in your environment yet, expose one through the configured MCP/provider layer and rerun kspec init.`);
+  }
+  return getRallyMcpName();
+}
+
+function requireAzureDevOpsMcp() {
+  if (!hasAzureDevOpsMcp()) {
+    die(`Azure DevOps MCP not configured.
+
+To use Azure DevOps Boards integration, configure an Azure DevOps MCP server in one of these locations:
+- Workspace: .kiro/settings/mcp.json
+- Workspace: .kiro/mcp.json
+- User: ~/.kiro/settings/mcp.json
+
+Example future command:
+  kiro-cli mcp add --name azure-devops`);
+  }
+  return getAzureDevOpsMcpName();
+}
+
+function requireGitHubMcp() {
+  if (!hasGitHubMcp()) {
+    die(`GitHub MCP not configured.
+
+To use GitHub Issues integration, configure GitHub MCP in one of these locations:
+- Workspace: .kiro/settings/mcp.json
+- Workspace: .kiro/mcp.json
+- User: ~/.kiro/settings/mcp.json
+
+Example command:
+  kiro-cli mcp add --name github`);
+  }
+  return getGitHubMcpName();
 }
 
 // Helpers
@@ -887,6 +1025,12 @@ function refreshContext() {
   try { metadata = JSON.parse(fs.readFileSync(path.join(current, 'metadata.json'), 'utf8')); } catch {}
   let jiraLinks = null;
   try { jiraLinks = JSON.parse(fs.readFileSync(path.join(current, 'jira-links.json'), 'utf8')); } catch {}
+  let rallyLinks = null;
+  try { rallyLinks = JSON.parse(fs.readFileSync(path.join(current, 'rally-links.json'), 'utf8')); } catch {}
+  let adoLinks = null;
+  try { adoLinks = JSON.parse(fs.readFileSync(path.join(current, 'ado-links.json'), 'utf8')); } catch {}
+  let githubLinks = null;
+  try { githubLinks = JSON.parse(fs.readFileSync(path.join(current, 'github-links.json'), 'utf8')); } catch {}
 
   let milestoneName = null;
   if (fs.existsSync(MILESTONES_DIR)) {
@@ -925,6 +1069,25 @@ function refreshContext() {
   if (jiraLinks?.subtasks?.length) jiraLines.push(`- Subtasks: ${jiraLinks.subtasks.join(', ')}`);
   if (jiraLines.length) content += `\n## Jira\n${jiraLines.join('\n')}\n`;
 
+  const rallyLines = [];
+  if (rallyLinks?.sourceItems?.length) rallyLines.push(`- Source items: ${rallyLinks.sourceItems.join(', ')}`);
+  if (rallyLinks?.specItem) rallyLines.push(`- Spec item: ${rallyLinks.specItem}`);
+  if (rallyLinks?.tasks?.length) rallyLines.push(`- Tasks: ${rallyLinks.tasks.join(', ')}`);
+  if (rallyLinks?.traceability?.length) rallyLines.push(`- Traceability: ${rallyLinks.traceability.join(', ')}`);
+  if (rallyLines.length) content += `\n## Rally\n${rallyLines.join('\n')}\n`;
+
+  const adoLines = [];
+  if (adoLinks?.sourceItems?.length) adoLines.push(`- Source work items: ${adoLinks.sourceItems.join(', ')}`);
+  if (adoLinks?.specItem) adoLines.push(`- Spec work item: ${adoLinks.specItem}`);
+  if (adoLinks?.tasks?.length) adoLines.push(`- Tasks: ${adoLinks.tasks.join(', ')}`);
+  if (adoLines.length) content += `\n## Azure DevOps\n${adoLines.join('\n')}\n`;
+
+  const githubLines = [];
+  if (githubLinks?.sourceIssues?.length) githubLines.push(`- Source issues: ${githubLinks.sourceIssues.join(', ')}`);
+  if (githubLinks?.specIssue) githubLines.push(`- Spec issue: ${githubLinks.specIssue}`);
+  if (githubLinks?.tasks?.length) githubLines.push(`- Tasks: ${githubLinks.tasks.join(', ')}`);
+  if (githubLines.length) content += `\n## GitHub Issues\n${githubLines.join('\n')}\n`;
+
   let summary = '';
   const litePath = path.join(current, 'spec-lite.md');
   if (!stale && fs.existsSync(litePath)) summary = fs.readFileSync(litePath, 'utf8');
@@ -947,7 +1110,7 @@ function refreshContext() {
   // candidates. Only derived prose sections consume the remaining budget.
   const fixedBytes = Buffer.byteLength(content + tail, 'utf8');
   if (fixedBytes > CONTEXT_MAX_BYTES) {
-    throw new Error('Active identifiers and Jira references exceed the 8 KiB context limit. Reduce jira-links.json before refreshing context.');
+    throw new Error('Active identifiers and planning-tool references exceed the 8 KiB context limit. Reduce planning link files before refreshing context.');
   }
   let remaining = CONTEXT_MAX_BYTES - fixedBytes;
   if (summary && remaining > 160) {
@@ -1130,7 +1293,7 @@ Before doing stateful work:
 4. Read the active source artifacts: \`requirements.md\` (V3) or \`spec.md\` (legacy), plus \`design.md\` and \`tasks.md\` when present.
 5. Source artifacts are authoritative when they conflict with CONTEXT.md.
 
-After changing requirements, design, tasks, Jira links, memory, or metadata, run \`kspec context --stdout\` again. Never compose CONTEXT.md yourself. If shell access is unavailable, stop and tell the user to run \`kspec context --stdout\`; do not continue with stale context.
+After changing requirements, design, tasks, planning-tool links, memory, or metadata, run \`kspec context --stdout\` again. Never compose CONTEXT.md yourself. If shell access is unavailable, stop and tell the user to run \`kspec context --stdout\`; do not continue with stale context.
 `;
 
 const skillTemplates = {
@@ -1416,6 +1579,226 @@ These apply to every issue kspec creates. \`--tags\` adds to (not replaces) thes
   - \`kspec jira-subtasks\` / \`kspec jira-subtasks PROJ-123\`
 - Direct agent: \`/agent swap kspec-jira\`
 - Pull a Jira ticket INTO a fresh spec instead: \`/kspec-spec --jira PROJ-123 "Feature"\`
+`,
+
+  'kspec-rally/SKILL.md': `---
+name: kspec-rally
+description: Sync kspec specs/tasks to Rally (pull work items, push specs, create tasks, preserve traceability)
+---
+# Sync kspec to Rally
+
+Use this skill for any Rally operation: pulling Rally work items into a spec,
+refreshing linked Rally context, creating or updating Rally work items from a
+spec, or creating Rally tasks from \`tasks.md\`.
+
+${SKILL_CONTEXT_PROTOCOL}
+
+## When to invoke
+- "Pull Rally story US123456 into this spec"
+- "Sync this spec to Rally"
+- "Create Rally tasks from tasks.md"
+- "Refresh from Rally" / "Pull latest Rally updates"
+- CLI-style flags also work in chat:
+  - \`/kspec-rally --rally US123456\` — pull specific work item(s)
+  - \`/kspec-rally --update US123456\` — update an existing Rally work item
+  - \`/kspec-rally --create\` — force-create a new Rally work item
+  - \`/kspec-rally --project "Workspace / Project"\` — target workspace or project
+  - \`/kspec-rally --tags "qms,sdd,traceability"\` — attach tags without replacing existing tags
+  - \`/kspec-rally tasks US123456\` — create Rally tasks under a parent item
+  - \`/kspec-rally pull\` — refresh linked work items into a change report
+
+## Prerequisites
+- Rally MCP configured, for example \`kiro-cli mcp add --name rally\`
+- If MCP calls fail, configure Rally MCP first.
+- If no Rally MCP exists, use the same provider contract: fetch work items,
+  create/update work items, create tasks, manage tags, and return canonical IDs/URLs.
+
+## Step 1 — Detect intent + Rally input
+Parse the user's message for:
+
+**Action keywords**:
+- "create", "push", "sync to" → SYNC TO RALLY mode
+- "pull", "sync from", "fetch updates", "refresh" → PULL UPDATES mode
+- "tasks", "task creation" → CREATE RALLY TASKS mode
+- bare Rally ID or URL with no action keyword → PULL FROM RALLY mode
+
+**Flags**:
+- \`--update <ID>\` or \`--update=<ID>\` → update existing Rally work item
+- \`--create\` → force-create new Rally work item
+- \`--project <workspace-or-project>\` or \`--project=<workspace-or-project>\`
+- \`--rally <ID_OR_URL>\` or \`--rally=<ID_OR_URL>\` → operate on specific item(s), comma-separated allowed
+- \`--tags "<csv>"\` or \`--labels "<csv>"\` → attach tags to created/updated work items
+
+**Rally references**:
+- Formatted IDs: \`US123456\`, \`DE123456\`, \`TA123456\`, \`F123456\`
+- URLs containing Rally artifacts. Extract the formatted ID from the URL path,
+  query, object identifier, or visible text when available.
+- Multiple IDs can be comma-separated.
+
+## Tags
+- Split \`--tags\` or \`--labels\` on comma; trim whitespace; drop empty values.
+- CREATE: merge configured \`config.rally.defaultTags\`, kspec defaults
+  (\`kspec\`, \`technical-specification\`), and user-provided tags.
+- UPDATE: fetch the current Rally tags first, then UNION them with the computed
+  tags. Never clobber tags created outside kspec.
+- TASKS: inherit parent tags when Rally supports it, then add computed tags.
+
+## Step 2 — Execute the mode
+
+### PULL FROM RALLY
+1. Use Rally MCP/provider to fetch each work item.
+2. Extract formatted ID, canonical URL, title, description, acceptance criteria,
+   status, owner, discussion, tags, and child tasks.
+3. Add or update local source context/requirements with attribution:
+   \`Source: Rally US123456\`.
+4. Write \`<spec>/rally-links.json\` with source items and canonical URLs.
+5. Run \`kspec context --stdout\`.
+
+### PULL UPDATES
+1. Read \`rally-links.json\` for linked work item IDs, unless explicit IDs were passed.
+2. Fetch current Rally state through MCP/provider.
+3. Compare Rally description, acceptance criteria, status, owner, discussion,
+   tags, and tasks against local source artifacts.
+4. Produce a CHANGE REPORT.
+5. Do not silently overwrite \`requirements.md\`, \`design.md\`, or \`tasks.md\`.
+   Wait for human confirmation before changing local specs.
+6. On approval, update local artifacts, regenerate \`spec-lite.md\`, update
+   \`rally-links.json\`, and run \`kspec context --stdout\`.
+
+### SYNC TO RALLY
+1. Read active requirements, design, tasks, metadata, and existing \`rally-links.json\`.
+2. Create a Rally user story or portfolio item when \`--create\` is passed or no
+   linked spec item exists.
+3. Update the specified item when \`--update <ID>\` is passed or a linked spec
+   item exists.
+4. Append a note/comment summarizing the spec update.
+5. Preserve existing tags and labels by UNION; never replace the full set.
+6. Write or update \`rally-links.json\` and run \`kspec context --stdout\`.
+
+### CREATE RALLY TASKS
+1. Read \`tasks.md\` from the active spec.
+2. Determine parent item from the command argument, \`--rally\`, or
+   \`rally-links.json\`.
+3. Create one Rally task per implementation task or selected task group.
+4. Link each task to the parent user story or defect.
+5. Include task acceptance criteria, requirement IDs, contract IDs, test IDs,
+   and evidence IDs where present.
+6. Record created task IDs in \`rally-links.json\`.
+
+## QMS Traceability
+For regulated projects, preserve mappings such as:
+\`Rally Feature/User Story -> Kiro requirement ID -> design ID -> contract ID -> test ID -> evidence ID\`.
+Rally owns planning items, Kiro specs own local SDD artifacts, QMS artifacts own
+regulated traceability/evidence views, and CI/CD owns final evidence publication.
+
+## Always
+- Treat source artifacts as authoritative over derived context.
+- Never write \`.kiro/CONTEXT.md\` directly.
+- Run \`kspec context --stdout\` after Rally link/spec metadata changes.
+- If Rally MCP is unavailable, say so and ask the user to configure it; do not
+  invent Rally content.
+
+## Related
+- Terminal equivalents:
+  - \`kspec rally-pull\`
+  - \`kspec sync-rally\` / \`--create\` / \`--update ID\` / \`--project PROJECT\`
+  - \`kspec rally-tasks\` / \`kspec rally-tasks US123456\`
+- Direct agent: \`/agent swap kspec-rally\`
+`,
+
+  'kspec-ado/SKILL.md': `---
+name: kspec-ado
+description: Sync kspec specs/tasks to Azure DevOps Boards (pull work items, push specs, create tasks)
+---
+# Sync kspec to Azure DevOps Boards
+
+Use this skill for Azure DevOps Boards operations: pulling work items into a
+spec, refreshing linked work items, creating/updating work items from a spec,
+or creating tasks from \`tasks.md\`.
+
+${SKILL_CONTEXT_PROTOCOL}
+
+## Inputs
+- Work item IDs such as \`12345\` or \`AB#12345\`
+- Azure DevOps work item URLs containing \`/_workitems/edit/<id>\`
+- Flags: \`--ado <ID_OR_URL>\`, \`--update <ID>\`, \`--create\`,
+  \`--project <org/project>\`, \`--tags "<csv>"\`, \`--labels "<csv>"\`
+- Chat forms: \`/kspec-ado pull\`, \`/kspec-ado --update 12345\`,
+  \`/kspec-ado tasks 12345\`
+
+## Modes
+- PULL FROM ADO: fetch work item title, description, acceptance criteria,
+  state, assignee, tags, comments, and relations. Add local attribution
+  \`Source: Azure DevOps #12345\` and write \`ado-links.json\`.
+- PULL UPDATES: read \`ado-links.json\`, fetch current work item state, produce
+  a CHANGE REPORT, and wait for human confirmation before changing
+  \`requirements.md\`, \`design.md\`, or \`tasks.md\`.
+- SYNC TO ADO: create or update a Product Backlog Item, User Story, Feature, or
+  Task from the active spec. Preserve existing tags by fetching first and
+  unioning with configured/default/user tags. Append an update note/comment.
+- CREATE TASKS: read \`tasks.md\`, create one child task per implementation
+  task or selected task group, link each task to the parent work item, and
+  record task IDs in \`ado-links.json\`.
+
+## Rules
+- Requires Azure DevOps MCP/provider, for example \`kiro-cli mcp add --name azure-devops\`.
+- If MCP/provider is unavailable, do not invent work item content.
+- Store links in \`<spec>/ado-links.json\`.
+- Run \`kspec context --stdout\` after link/spec metadata changes.
+- Preserve requirement, design, contract, test, and evidence IDs for QMS traceability.
+
+## Related
+- \`kspec ado-pull\`
+- \`kspec sync-ado\`
+- \`kspec ado-tasks\`
+- Direct agent: \`/agent swap kspec-ado\`
+`,
+
+  'kspec-github/SKILL.md': `---
+name: kspec-github
+description: Sync kspec specs/tasks to GitHub Issues (pull issues, push specs, create task issues)
+---
+# Sync kspec to GitHub Issues
+
+Use this skill for GitHub Issues operations: pulling issues into a spec,
+refreshing linked issue context, creating/updating issues from a spec, or
+creating implementation task issues from \`tasks.md\`.
+
+${SKILL_CONTEXT_PROTOCOL}
+
+## Inputs
+- Issue references such as \`#123\`, \`owner/repo#123\`, or GitHub issue URLs
+- Flags: \`--github <ISSUE_OR_URL>\`, \`--update <ISSUE>\`, \`--create\`,
+  \`--repo <owner/repo>\`, \`--tags "<csv>"\`, \`--labels "<csv>"\`
+- Chat forms: \`/kspec-github pull\`, \`/kspec-github --update #123\`,
+  \`/kspec-github tasks owner/repo#123\`
+
+## Modes
+- PULL FROM GITHUB: fetch title, body, labels, state, assignees, comments, and
+  linked issues/PRs. Add local attribution \`Source: GitHub owner/repo#123\`
+  and write \`github-links.json\`.
+- PULL UPDATES: read \`github-links.json\`, fetch current issue state, produce
+  a CHANGE REPORT, and wait for human confirmation before changing local specs.
+- SYNC TO GITHUB: create or update an issue from the active spec. Preserve
+  labels by fetching current labels first and unioning with
+  \`config.githubIssues.defaultLabels\`, kspec defaults, and user labels.
+  Add a comment summarizing the spec update.
+- CREATE TASKS: read \`tasks.md\`, create one issue per implementation task or
+  selected task group, link each issue to the parent issue, include acceptance
+  criteria and traceability IDs, and record issue numbers in \`github-links.json\`.
+
+## Rules
+- Requires GitHub MCP, for example \`kiro-cli mcp add --name github\`.
+- If MCP is unavailable, do not invent issue content.
+- Store links in \`<spec>/github-links.json\`.
+- Run \`kspec context --stdout\` after link/spec metadata changes.
+- Preserve requirement, design, contract, test, and evidence IDs for traceability.
+
+## Related
+- \`kspec github-pull\`
+- \`kspec sync-github\`
+- \`kspec github-tasks\`
+- Direct agent: \`/agent swap kspec-github\`
 `
 };
 
@@ -1434,6 +1817,9 @@ const AGENT_PATH_SCOPES = {
   'kspec-context':  ['.kiro/**'],
   'kspec-refresh':  ['.kiro/**'],
   'kspec-jira':     ['.kiro/**'],
+  'kspec-rally':    ['.kiro/**'],
+  'kspec-ado':      ['.kiro/**'],
+  'kspec-github':   ['.kiro/**'],
   'kspec-demo':     ['.kiro/**'],
   'kspec-estimate': ['.kiro/**'],
   'kspec-revise':   ['.kiro/**'],
@@ -1552,6 +1938,9 @@ const AGENT_SUBAGENT_GRAPH = {
   'kspec-spike':    ['kspec-spec'],
   'kspec-revise':   ['kspec-verify', 'kspec-tasks'],
   'kspec-jira':     [],
+  'kspec-rally':    [],
+  'kspec-ado':      [],
+  'kspec-github':   [],
   'kspec-context':  [],
   'kspec-refresh':  [],
   'kspec-demo':     [],
@@ -1629,7 +2018,7 @@ ACTIVE CONTEXT PROTOCOL (mandatory):
 2. Run \`kspec context --stdout\`, then read .kiro/CONTEXT.md.
 3. Read requirements.md (V3) or spec.md (legacy), plus design.md/tasks.md as relevant.
 4. Source artifacts override the derived context snapshot.
-5. After changing spec artifacts, Jira links, memory, metadata, or tasks, run \`kspec context --stdout\` again.
+5. After changing spec artifacts, planning-tool links, memory, metadata, or tasks, run \`kspec context --stdout\` again.
 Never compose or directly write .kiro/CONTEXT.md yourself.`;
 
 function getV2AgentHooks() {
@@ -1649,7 +2038,7 @@ function getAgentTemplates(engine = getKiroEngine()) {
   // (not just hard-coding `@atlassian`) so workspaces using non-default
   // Atlassian MCP server names like `@jira` still get the configured
   // server injected into the agent's tools list.
-  const mcpAgents = ['kspec-spec', 'kspec-analyse', 'kspec-review', 'kspec-verify', 'kspec-revise', 'kspec-tasks', 'kspec-build', 'kspec-jira'];
+  const mcpAgents = ['kspec-spec', 'kspec-analyse', 'kspec-review', 'kspec-verify', 'kspec-revise', 'kspec-tasks', 'kspec-build', 'kspec-jira', 'kspec-rally', 'kspec-ado', 'kspec-github'];
 
   const templates = {
   'kspec-analyse.json': {
@@ -2121,6 +2510,208 @@ PIPELINE (suggest next steps):
     welcomeMessage: 'Jira integration ready. Provide issue keys to pull, or say "sync" to push spec to Jira.'
   },
 
+  'kspec-rally.json': {
+    name: 'kspec-rally',
+    description: 'Rally integration for specs',
+    model,
+    tools: ['read', 'write', '@rally'],
+    allowedTools: ['read', 'write', '@rally'],
+    includeMcpJson: true,
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+    ],
+    prompt: `You are the kspec Rally integration agent.
+
+PREREQUISITE: This agent requires Rally MCP to be configured.
+If MCP calls fail, inform the user to configure Rally MCP first
+(\`kiro-cli mcp add --name rally\`). If no Rally MCP exists, use the configured
+provider abstraction with the same contract and do not invent Rally content.
+
+PARSE USER INPUT (before deciding mode):
+
+ACTION KEYWORDS (decide mode):
+- "create", "push", "sync to" → SYNC TO RALLY mode
+- "pull", "sync from", "fetch updates", "refresh" → PULL UPDATES mode
+- "tasks", "task creation" → CREATE RALLY TASKS mode
+- bare Rally ID or URL with no action keyword → PULL FROM RALLY mode (default)
+
+CLI-STYLE FLAGS:
+- \`--update <ID>\` / \`--update=<ID>\` → update that specific Rally work item
+- \`--create\` → force-create a new Rally work item, skip existing-link check
+- \`--project <workspace-or-project>\` / \`--project=<workspace-or-project>\`
+- \`--rally <ID_OR_URL>\` / \`--rally=<ID_OR_URL>\` → operate on specific item(s); comma-separated allowed
+- \`--tags "<csv>"\` / \`--labels "<csv>"\` → attach tags to created/updated items
+
+RALLY REFERENCES:
+- Formatted IDs matching \`(?:US|DE|TA|F)\\d+\` (US123456, DE123456, TA123456, F123456)
+- Rally URLs; extract the formatted ID from path/query/object fields when present
+- Multiple IDs can be comma-separated
+
+TAGS:
+- Split comma-separated tag input, trim whitespace, drop empty values
+- Compute final tags as \`config.rally.defaultTags\` ∪ kspec defaults (\`kspec\`, \`technical-specification\`) ∪ \`--tags\`
+- On UPDATE: fetch existing Rally tags first, then UNION. Never clobber existing tags.
+- On TASKS: inherit parent tags where supported, then UNION computed tags.
+
+CAPABILITIES:
+
+1. PULL FROM RALLY:
+   - Use MCP/provider to fetch each work item
+   - Extract formatted ID, URL, title, description, acceptance criteria, status, owner, discussion, tags, and child tasks
+   - Create or update local requirements/source context with "Source: Rally US123456" attribution
+   - Save links to rally-links.json and run \`kspec context --stdout\`
+
+2. PULL UPDATES:
+   - Read rally-links.json unless explicit IDs were passed
+   - Fetch latest Rally state
+   - Compare description, acceptance criteria, status, owner, discussion, tags, and tasks against local artifacts
+   - Produce a CHANGE REPORT
+   - NEVER auto-update requirements.md, design.md, or tasks.md; wait for human confirmation
+   - On approval, update local artifacts, regenerate spec-lite.md, update rally-links.json, and refresh context
+
+3. SYNC TO RALLY:
+   - Create a Rally user story or portfolio item when \`--create\` is passed or no linked spec item exists
+   - Update an existing item when \`--update <ID>\` is passed or rally-links.json has a spec item
+   - Append a note/comment summarizing the spec update
+   - Preserve existing tags/labels by UNION
+   - Update rally-links.json and run \`kspec context --stdout\`
+
+4. CREATE RALLY TASKS:
+   - Read tasks.md from current spec
+   - Determine parent from command argument, \`--rally\`, or rally-links.json
+   - Create one Rally task per implementation task or selected task group
+   - Link each task to the parent user story or defect
+   - Include acceptance criteria and traceability IDs where present
+   - Record created task IDs in rally-links.json
+
+QMS TRACEABILITY:
+- Preserve mappings from Rally Feature/User Story to Kiro requirement IDs,
+  design IDs, contract IDs, test IDs, and evidence IDs
+- Support hybrid workflows: Rally owns planning, Kiro owns SDD artifacts,
+  QMS artifacts own regulated traceability/evidence, CI/CD owns publication
+
+WORKFLOW:
+1. Read .kiro/CONTEXT.md for current spec state
+2. Parse flags, URLs, and Rally IDs
+3. Identify mode (pull / pull-updates / sync / tasks)
+4. Use Rally MCP/provider for Rally operations
+5. Update rally-links.json with canonical IDs and URLs
+6. Run \`kspec context --stdout\` after link/spec metadata changes
+7. Report what was created/updated
+
+IMPORTANT:
+- Always include "Source: Rally US123456" attribution for pulled content
+- NEVER auto-update local spec artifacts on pull-updates
+- If Rally MCP is not in your tools list, tell the user to configure it (\`kiro-cli mcp add --name rally\`) or use the matching CLI command (\`kspec sync-rally\` / \`kspec rally-pull\` / \`kspec rally-tasks\`)
+
+PIPELINE (suggest next steps):
+- After pull: \`/agent swap kspec-spec\` or \`kspec spec\`
+- After sync: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
+- After tasks: \`kspec status\` to see full picture`,
+    keyboardShortcut: 'ctrl+shift+y',
+    welcomeMessage: 'Rally integration ready. Provide Rally IDs to pull, or say "sync" to push spec to Rally.'
+  },
+
+  'kspec-ado.json': {
+    name: 'kspec-ado',
+    description: 'Azure DevOps Boards integration for specs',
+    model,
+    tools: ['read', 'write', '@azure-devops'],
+    allowedTools: ['read', 'write', '@azure-devops'],
+    includeMcpJson: true,
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+    ],
+    prompt: `You are the kspec Azure DevOps Boards integration agent.
+
+PREREQUISITE: This agent requires Azure DevOps MCP/provider to be configured
+(\`kiro-cli mcp add --name azure-devops\`). If unavailable, do not invent work item content.
+
+PARSE USER INPUT:
+- Work item IDs: \`12345\` or \`AB#12345\`
+- URLs containing \`/_workitems/edit/<id>\`
+- Flags: \`--ado <ID_OR_URL>\`, \`--update <ID>\`, \`--create\`,
+  \`--project <org/project>\`, \`--tags "<csv>"\`, \`--labels "<csv>"\`
+- Action keywords: pull/refresh, sync/create/update, tasks
+
+CAPABILITIES:
+1. PULL FROM ADO: fetch work item title, description, acceptance criteria,
+   state, assignee, tags, comments, and relations. Add "Source: Azure DevOps #12345"
+   attribution and write ado-links.json.
+2. PULL UPDATES: read ado-links.json unless explicit IDs were passed, fetch
+   current work item state, produce a CHANGE REPORT, and NEVER auto-update
+   requirements.md, design.md, or tasks.md without human confirmation.
+3. SYNC TO ADO: create or update a Product Backlog Item, User Story, Feature,
+   or Task from the active spec. Preserve existing tags by UNION and append an
+   update note/comment.
+4. CREATE TASKS: read tasks.md, create child tasks under the parent work item,
+   include acceptance criteria and traceability IDs, and record task IDs in
+   ado-links.json.
+
+IMPORTANT:
+- Store links in ado-links.json.
+- Run \`kspec context --stdout\` after link/spec metadata changes.
+- Preserve requirement, design, contract, test, and evidence IDs for QMS traceability.
+
+PIPELINE (suggest next steps):
+- After pull: \`/agent swap kspec-spec\` or \`kspec spec\`
+- After sync: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
+- After tasks: \`kspec status\` to see full picture`,
+    keyboardShortcut: 'ctrl+shift+u',
+    welcomeMessage: 'Azure DevOps integration ready. Provide work item IDs to pull, or say "sync" to push spec to Boards.'
+  },
+
+  'kspec-github.json': {
+    name: 'kspec-github',
+    description: 'GitHub Issues integration for specs',
+    model,
+    tools: ['read', 'write', '@github'],
+    allowedTools: ['read', 'write', '@github'],
+    includeMcpJson: true,
+    resources: [
+      'file://.kiro/CONTEXT.md',
+      'file://.kiro/steering/**/*.md',
+    ],
+    prompt: `You are the kspec GitHub Issues integration agent.
+
+PREREQUISITE: This agent requires GitHub MCP to be configured
+(\`kiro-cli mcp add --name github\`). If unavailable, do not invent issue content.
+
+PARSE USER INPUT:
+- Issue references: \`#123\`, \`owner/repo#123\`, or GitHub issue URLs
+- Flags: \`--github <ISSUE_OR_URL>\`, \`--update <ISSUE>\`, \`--create\`,
+  \`--repo <owner/repo>\`, \`--tags "<csv>"\`, \`--labels "<csv>"\`
+- Action keywords: pull/refresh, sync/create/update, tasks
+
+CAPABILITIES:
+1. PULL FROM GITHUB: fetch title, body, labels, state, assignees, comments,
+   and linked issues/PRs. Add "Source: GitHub owner/repo#123" attribution and
+   write github-links.json.
+2. PULL UPDATES: read github-links.json unless explicit issues were passed,
+   fetch current issue state, produce a CHANGE REPORT, and NEVER auto-update
+   requirements.md, design.md, or tasks.md without human confirmation.
+3. SYNC TO GITHUB: create or update an issue from the active spec. Preserve
+   current labels by UNION with config.githubIssues.defaultLabels, kspec
+   defaults, and user-provided labels. Add a comment summarizing the update.
+4. CREATE TASKS: read tasks.md, create one issue per task or selected task
+   group, link each to the parent issue, include acceptance criteria and
+   traceability IDs, and record issue numbers in github-links.json.
+
+IMPORTANT:
+- Store links in github-links.json.
+- Run \`kspec context --stdout\` after link/spec metadata changes.
+- Preserve requirement, design, contract, test, and evidence IDs for traceability.
+
+PIPELINE (suggest next steps):
+- After pull: \`/agent swap kspec-spec\` or \`kspec spec\`
+- After sync: \`/agent swap kspec-verify\` or \`kspec verify-spec\`
+- After tasks: \`kspec status\` to see full picture`,
+    keyboardShortcut: 'ctrl+shift+o',
+    welcomeMessage: 'GitHub Issues integration ready. Provide issues to pull, or say "sync" to push spec to GitHub.'
+  },
+
   'kspec-fix.json': {
     name: 'kspec-fix',
     description: 'Fix bugs with abbreviated TDD pipeline',
@@ -2536,7 +3127,7 @@ function applyMcpToolsSection(prompt, mcpServers) {
 ${MCP_TOOLS_MARKER}
 ## Available MCP Tools
 You have access to: ${toolList}.
-- Prefer MCP tools over manual lookups when fetching external context (Jira tickets, GitHub issues, Confluence pages, design docs).
+- Prefer MCP tools over manual lookups when fetching external context (Jira tickets, Rally work items, GitHub issues, Confluence pages, design docs).
 - Cite the source MCP and resource ID in spec/design output so reviewers can trace provenance.
 - If a relevant MCP is not in your tools list but seems needed, surface that as a question rather than guessing.`;
 }
@@ -4285,24 +4876,64 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
       }
     }
 
-    // Check for Jira integration
+    // Planning-tool integration
     let jiraConfig = { project: null, enabled: false };
+    let rallyConfig = { project: null, enabled: false };
+    let adoConfig = { project: null, enabled: false };
+    let githubIssuesConfig = { repo: null, enabled: false };
     const hasMcp = hasAtlassianMcp();
+    const hasRally = hasRallyMcp();
+    const hasAdo = hasAzureDevOpsMcp();
+    const hasGitHub = hasGitHubMcp();
     const envJiraProject = (process.env.KSPEC_JIRA_PROJECT || '').trim();
+    const envRallyProject = (process.env.KSPEC_RALLY_PROJECT || '').trim();
+    const envAdoProject = (process.env.KSPEC_ADO_PROJECT || '').trim();
+    const envGitHubRepo = (process.env.KSPEC_GITHUB_REPO || '').trim();
 
-    if (hasMcp) {
-      console.log('\n✅ Atlassian MCP detected!');
-      if (autoAccept) {
-        if (envJiraProject) {
-          jiraConfig = { project: envJiraProject.toUpperCase(), enabled: true };
-          console.log(`  Jira project set to: ${jiraConfig.project} (from KSPEC_JIRA_PROJECT)`);
+    if (autoAccept) {
+      if (hasMcp && envJiraProject) {
+        jiraConfig = { project: envJiraProject.toUpperCase(), enabled: true };
+        console.log(`\n✅ Jira project set to: ${jiraConfig.project} (from KSPEC_JIRA_PROJECT)`);
+      } else if (hasMcp) {
+        console.log('\n📋 Jira integration: Skipping setup in non-interactive mode (set KSPEC_JIRA_PROJECT to enable).');
+      }
+
+      if (hasRally && envRallyProject) {
+        rallyConfig = { project: envRallyProject, enabled: true };
+        console.log(`✅ Rally project set to: ${rallyConfig.project} (from KSPEC_RALLY_PROJECT)`);
+      } else if (hasRally) {
+        console.log('📋 Rally integration: Skipping setup in non-interactive mode (set KSPEC_RALLY_PROJECT to enable).');
+      }
+
+      if (hasAdo && envAdoProject) {
+        adoConfig = { project: envAdoProject, enabled: true };
+        console.log(`✅ Azure DevOps project set to: ${adoConfig.project} (from KSPEC_ADO_PROJECT)`);
+      } else if (hasAdo) {
+        console.log('📋 Azure DevOps integration: Skipping setup in non-interactive mode (set KSPEC_ADO_PROJECT to enable).');
+      }
+
+      if (hasGitHub && envGitHubRepo) {
+        githubIssuesConfig = { repo: envGitHubRepo, enabled: true };
+        console.log(`✅ GitHub Issues repo set to: ${githubIssuesConfig.repo} (from KSPEC_GITHUB_REPO)`);
+      } else if (hasGitHub) {
+        console.log('📋 GitHub Issues integration: Skipping setup in non-interactive mode (set KSPEC_GITHUB_REPO to enable).');
+      }
+    } else {
+      const planningTool = await prompt('Configure planning tool integration?', [
+        { label: 'Jira', value: 'jira' },
+        { label: 'Rally', value: 'rally' },
+        { label: 'Azure DevOps Boards', value: 'ado' },
+        { label: 'GitHub Issues', value: 'github' },
+        { label: 'None', value: 'none' }
+      ]);
+
+      if (planningTool === 'jira') {
+        if (!hasMcp) {
+          console.log('\n📋 Jira integration: Atlassian MCP not configured');
+          console.log('   To enable, run: kiro-cli mcp add --name atlassian');
+          console.log('   Then run: kspec init (again to configure project)');
         } else {
-          console.log('  Skipping Jira setup in non-interactive mode (set KSPEC_JIRA_PROJECT to enable).');
-        }
-      } else {
-        const setupJira = await confirm('Configure Jira integration?');
-
-        if (setupJira) {
+          console.log('\n✅ Atlassian MCP detected!');
           const projectKey = await prompt('Default Jira project key (e.g., SECOPS, PROJ): ');
           if (projectKey && projectKey.trim()) {
             jiraConfig = {
@@ -4312,11 +4943,67 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
             console.log(`  Jira project set to: ${jiraConfig.project}`);
           }
         }
+      } else if (planningTool === 'rally') {
+        if (!hasRally) {
+          console.log('\n📋 Rally integration: Rally MCP not configured');
+          console.log('   To enable, run: kiro-cli mcp add --name rally');
+          console.log('   If no Rally MCP exists yet, configure a compatible provider and rerun kspec init.');
+        } else {
+          console.log('\n✅ Rally MCP detected!');
+          const projectName = await prompt('Default Rally workspace or project (leave empty to choose per command): ');
+          if (projectName && projectName.trim()) {
+            rallyConfig = {
+              project: projectName.trim(),
+              enabled: true
+            };
+            console.log(`  Rally project set to: ${rallyConfig.project}`);
+          }
+        }
+      } else if (planningTool === 'ado') {
+        if (!hasAdo) {
+          console.log('\n📋 Azure DevOps integration: Azure DevOps MCP not configured');
+          console.log('   To enable, run: kiro-cli mcp add --name azure-devops');
+          console.log('   If no Azure DevOps MCP exists yet, configure a compatible provider and rerun kspec init.');
+        } else {
+          console.log('\n✅ Azure DevOps MCP detected!');
+          const projectName = await prompt('Default Azure DevOps org/project (leave empty to choose per command): ');
+          if (projectName && projectName.trim()) {
+            adoConfig = {
+              project: projectName.trim(),
+              enabled: true
+            };
+            console.log(`  Azure DevOps project set to: ${adoConfig.project}`);
+          }
+        }
+      } else if (planningTool === 'github') {
+        if (!hasGitHub) {
+          console.log('\n📋 GitHub Issues integration: GitHub MCP not configured');
+          console.log('   To enable, run: kiro-cli mcp add --name github');
+        } else {
+          console.log('\n✅ GitHub MCP detected!');
+          const repoName = await prompt('Default GitHub repo (owner/name, leave empty to choose per command): ');
+          if (repoName && repoName.trim()) {
+            githubIssuesConfig = {
+              repo: repoName.trim(),
+              enabled: true
+            };
+            console.log(`  GitHub Issues repo set to: ${githubIssuesConfig.repo}`);
+          }
+        }
       }
-    } else {
-      console.log('\n📋 Jira integration: Not configured');
-      console.log('   To enable, run: kiro-cli mcp add --name atlassian');
-      console.log('   Then run: kspec init (again to configure project)');
+    }
+
+    if (!autoAccept && [hasMcp, hasRally, hasAdo, hasGitHub].some(Boolean)
+      && !jiraConfig.enabled && !rallyConfig.enabled && !adoConfig.enabled && !githubIssuesConfig.enabled) {
+      // The user explicitly selected none or skipped project setup; no extra output.
+    } else if (autoAccept && !hasMcp && !hasRally && !hasAdo && !hasGitHub) {
+      console.log('\n📋 Planning integrations: No planning MCP configured');
+      console.log('   Jira:          kiro-cli mcp add --name atlassian');
+      console.log('   Rally:         kiro-cli mcp add --name rally');
+      console.log('   Azure DevOps:  kiro-cli mcp add --name azure-devops');
+      console.log('   GitHub Issues: kiro-cli mcp add --name github');
+    } else if (!autoAccept && !hasMcp && !hasRally && !hasAdo && !hasGitHub) {
+      console.log('\n📋 Planning integrations: No planning MCP configured');
     }
 
     // Save config
@@ -4328,6 +5015,9 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
       model: model?.trim() || null,
       kiroEngine: selectedEngine,
       jira: jiraConfig,
+      rally: rallyConfig,
+      ado: adoConfig,
+      githubIssues: githubIssuesConfig,
       ideAgents: createIdeAgents,
       skills: createSkills,
       enterprise: enterpriseConfig,
@@ -5025,6 +5715,415 @@ WORKFLOW:
 Report created subtasks with their URLs.`, 'kspec-jira');
   },
 
+  async 'rally-pull'(args) {
+    requireRallyMcp();
+
+    const folder = getOrSelectSpec();
+    const rallyLinksFile = path.join(folder, 'rally-links.json');
+    const explicitRefs = args.filter(arg => !arg.startsWith('--')).join(', ');
+
+    if (!explicitRefs && !fs.existsSync(rallyLinksFile)) {
+      die(`No Rally item specified and no rally-links.json found in ${folder}. Usage: kspec rally-pull US123456`);
+    }
+
+    log(`Pulling Rally updates: ${folder}`);
+
+    await chat(`PULL RALLY: Fetch Rally work item context and produce a change report.
+
+Spec folder: ${folder}
+Rally links: ${rallyLinksFile}
+Explicit Rally input: ${explicitRefs || '(use rally-links.json)'}
+
+WORKFLOW:
+1. Parse Rally IDs and URLs from the explicit input, or read ${rallyLinksFile} for linked item IDs.
+2. Use Rally MCP/provider to fetch the latest state for each work item.
+3. Read current ${getRequirementsPath(folder)}, ${folder}/design.md, and ${folder}/tasks.md when present.
+4. Compare description, acceptance criteria, status, owner, discussion, tags, and tasks.
+5. Generate a CHANGE REPORT with concrete differences.
+6. NEVER auto-update requirements.md, design.md, or tasks.md — wait for user confirmation.
+7. After confirmation, update local artifacts as directed, update ${rallyLinksFile}, regenerate spec-lite.md, and run \`kspec context --stdout\`.
+
+IMPORTANT: Include "Source: Rally US123456" attribution for pulled content.`, 'kspec-rally');
+  },
+
+  async 'sync-rally'(args) {
+    requireRallyMcp();
+
+    const folder = getOrSelectSpec();
+    const createFlag = args.includes('--create');
+    const updateIndex = args.findIndex(a => a === '--update' || a.startsWith('--update='));
+    const projectIndex = args.findIndex(a => a === '--project' || a.startsWith('--project='));
+    let updateItem = null;
+    let project = null;
+
+    if (projectIndex !== -1) {
+      if (args[projectIndex].startsWith('--project=')) {
+        project = args[projectIndex].split('=')[1];
+      } else if (args[projectIndex + 1] && !args[projectIndex + 1].startsWith('-')) {
+        project = args[projectIndex + 1];
+      }
+    }
+    if (!project) project = getRallyProject();
+
+    if (updateIndex !== -1) {
+      if (args[updateIndex].startsWith('--update=')) {
+        updateItem = args[updateIndex].split('=')[1];
+      } else if (args[updateIndex + 1] && !args[updateIndex + 1].startsWith('-')) {
+        updateItem = args[updateIndex + 1];
+      } else {
+        die('Usage: kspec sync-rally --update US123456');
+      }
+    }
+
+    if (!createFlag && !updateItem) {
+      const rallyLinksFile = path.join(folder, 'rally-links.json');
+      if (fs.existsSync(rallyLinksFile)) {
+        try {
+          const links = JSON.parse(fs.readFileSync(rallyLinksFile, 'utf8'));
+          if (links.specItem) {
+            updateItem = links.specItem;
+            log(`Found existing Rally item ${updateItem}, updating (use --create to force new)`);
+          }
+        } catch {}
+      }
+      if (!updateItem) {
+        log('No existing Rally item found, will create new');
+      }
+    }
+
+    log(`Syncing spec to Rally: ${folder}`);
+    if (project && !updateItem) log(`Target Rally project: ${project}`);
+
+    if (updateItem) {
+      await chat(`Update existing Rally work item with specification.
+
+Spec folder: ${folder}
+Target Rally item: ${updateItem}
+
+WORKFLOW:
+1. Read ${getRequirementsPath(folder)}, ${folder}/spec-lite.md, ${folder}/design.md, and ${folder}/tasks.md when present.
+2. Use Rally MCP/provider to update ${updateItem}:
+   - Update description or append a note with the current spec summary.
+   - Preserve existing tags/labels by fetching them first and unioning with kspec tags and any --tags input.
+   - Add a discussion note summarizing the spec update.
+3. Update ${folder}/rally-links.json with the item ID and canonical URL.
+4. Run \`kspec context --stdout\`.
+
+Report the updated Rally item URL.`, 'kspec-rally');
+    } else {
+      await chat(`Create a new Rally work item from specification.
+
+Spec folder: ${folder}
+Target Rally project/workspace: ${project || '(choose via Rally MCP/provider)'}
+
+WORKFLOW:
+1. Read ${getRequirementsPath(folder)} and ${folder}/spec-lite.md.
+2. Check ${folder}/rally-links.json for source items to link.
+3. Use Rally MCP/provider to create a user story or portfolio item:
+   - Summary: extract from spec title.
+   - Description: include spec-lite.md and traceability context.
+   - Tags: kspec, technical-specification, plus configured/default/user tags.
+   - Link to source work items if any.
+4. Add a note requesting planning-owner review.
+5. Save the created item ID and URL to ${folder}/rally-links.json.
+6. Run \`kspec context --stdout\`.
+
+Report the created Rally item URL.`, 'kspec-rally');
+    }
+  },
+
+  async 'rally-tasks'(args) {
+    requireRallyMcp();
+
+    const folder = getOrSelectSpec();
+    const tasksFile = path.join(folder, 'tasks.md');
+
+    if (!fs.existsSync(tasksFile)) {
+      die(`No tasks.md found in ${folder}. Run 'kspec tasks' first.`);
+    }
+
+    const rallyLinksFile = path.join(folder, 'rally-links.json');
+    let parentItem = args.find(arg => /^(?:US|DE|TA|F)\d+$/i.test(arg));
+
+    if (!parentItem && fs.existsSync(rallyLinksFile)) {
+      try {
+        const links = JSON.parse(fs.readFileSync(rallyLinksFile, 'utf8'));
+        parentItem = links.specItem || links.sourceItems?.[0];
+      } catch {}
+    }
+
+    if (!parentItem) {
+      die(`No parent Rally item specified. Usage: kspec rally-tasks US123456
+Or run 'kspec sync-rally' first to create a Rally item.`);
+    }
+
+    log(`Creating Rally tasks from: ${folder}`);
+
+    await chat(`Create Rally tasks from tasks.md.
+
+Spec folder: ${folder}
+Parent Rally item: ${parentItem}
+Tasks file: ${tasksFile}
+
+WORKFLOW:
+1. Read ${tasksFile}.
+2. For each implementation task or selected task group:
+   - Use Rally MCP/provider to create a task under ${parentItem}.
+   - Summary: task description.
+   - Description: include details, file paths, acceptance criteria, and traceability IDs.
+   - Preserve/inherit parent tags where supported, then union kspec/default/user tags.
+3. Save created task IDs to ${folder}/rally-links.json.
+4. Run \`kspec context --stdout\`.
+
+Report created Rally tasks with their URLs.`, 'kspec-rally');
+  },
+
+  async 'ado-pull'(args) {
+    requireAzureDevOpsMcp();
+
+    const folder = getOrSelectSpec();
+    const adoLinksFile = path.join(folder, 'ado-links.json');
+    const explicitRefs = args.filter(arg => !arg.startsWith('--')).join(', ');
+
+    if (!explicitRefs && !fs.existsSync(adoLinksFile)) {
+      die(`No Azure DevOps work item specified and no ado-links.json found in ${folder}. Usage: kspec ado-pull 12345`);
+    }
+
+    log(`Pulling Azure DevOps updates: ${folder}`);
+
+    await chat(`PULL AZURE DEVOPS: Fetch Azure DevOps work item context and produce a change report.
+
+Spec folder: ${folder}
+Azure DevOps links: ${adoLinksFile}
+Explicit work item input: ${explicitRefs || '(use ado-links.json)'}
+
+WORKFLOW:
+1. Parse work item IDs or URLs from explicit input, or read ${adoLinksFile}.
+2. Use Azure DevOps MCP/provider to fetch title, description, acceptance criteria, state, assignee, tags, comments, and relations.
+3. Compare current ${getRequirementsPath(folder)}, ${folder}/design.md, and ${folder}/tasks.md when present.
+4. Generate a CHANGE REPORT.
+5. NEVER auto-update requirements.md, design.md, or tasks.md — wait for user confirmation.
+6. After confirmation, update local artifacts as directed, update ${adoLinksFile}, regenerate spec-lite.md, and run \`kspec context --stdout\`.
+
+IMPORTANT: Include "Source: Azure DevOps #12345" attribution for pulled content.`, 'kspec-ado');
+  },
+
+  async 'sync-ado'(args) {
+    requireAzureDevOpsMcp();
+
+    const folder = getOrSelectSpec();
+    const createFlag = args.includes('--create');
+    const updateIndex = args.findIndex(a => a === '--update' || a.startsWith('--update='));
+    const projectIndex = args.findIndex(a => a === '--project' || a.startsWith('--project='));
+    let updateItem = null;
+    let project = null;
+
+    if (projectIndex !== -1) {
+      if (args[projectIndex].startsWith('--project=')) project = args[projectIndex].split('=')[1];
+      else if (args[projectIndex + 1] && !args[projectIndex + 1].startsWith('-')) project = args[projectIndex + 1];
+    }
+    if (!project) project = getAdoProject();
+
+    if (updateIndex !== -1) {
+      if (args[updateIndex].startsWith('--update=')) updateItem = args[updateIndex].split('=')[1];
+      else if (args[updateIndex + 1] && !args[updateIndex + 1].startsWith('-')) updateItem = args[updateIndex + 1];
+      else die('Usage: kspec sync-ado --update 12345');
+    }
+
+    if (!createFlag && !updateItem) {
+      const adoLinksFile = path.join(folder, 'ado-links.json');
+      if (fs.existsSync(adoLinksFile)) {
+        try {
+          const links = JSON.parse(fs.readFileSync(adoLinksFile, 'utf8'));
+          if (links.specItem) {
+            updateItem = links.specItem;
+            log(`Found existing Azure DevOps work item ${updateItem}, updating (use --create to force new)`);
+          }
+        } catch {}
+      }
+      if (!updateItem) log('No existing Azure DevOps work item found, will create new');
+    }
+
+    log(`Syncing spec to Azure DevOps: ${folder}`);
+
+    await chat(`${updateItem ? 'Update existing' : 'Create new'} Azure DevOps work item from specification.
+
+Spec folder: ${folder}
+${updateItem ? `Target work item: ${updateItem}` : `Target org/project: ${project || '(choose via Azure DevOps MCP/provider)'}`}
+
+WORKFLOW:
+1. Read ${getRequirementsPath(folder)}, ${folder}/spec-lite.md, ${folder}/design.md, and ${folder}/tasks.md when present.
+2. Use Azure DevOps MCP/provider to ${updateItem ? 'update the target work item' : 'create a Product Backlog Item, User Story, Feature, or Task'}.
+3. Preserve existing tags by fetching first and unioning with kspec/default/user tags.
+4. Add a note/comment summarizing the spec update.
+5. Save the work item ID and URL to ${folder}/ado-links.json.
+6. Run \`kspec context --stdout\`.
+
+Report the Azure DevOps work item URL.`, 'kspec-ado');
+  },
+
+  async 'ado-tasks'(args) {
+    requireAzureDevOpsMcp();
+
+    const folder = getOrSelectSpec();
+    const tasksFile = path.join(folder, 'tasks.md');
+    if (!fs.existsSync(tasksFile)) die(`No tasks.md found in ${folder}. Run 'kspec tasks' first.`);
+
+    const adoLinksFile = path.join(folder, 'ado-links.json');
+    let parentItem = args.find(arg => /^\d+$/.test(arg) || /^AB#\d+$/i.test(arg));
+    if (!parentItem && fs.existsSync(adoLinksFile)) {
+      try {
+        const links = JSON.parse(fs.readFileSync(adoLinksFile, 'utf8'));
+        parentItem = links.specItem || links.sourceItems?.[0];
+      } catch {}
+    }
+    if (!parentItem) {
+      die(`No parent Azure DevOps work item specified. Usage: kspec ado-tasks 12345
+Or run 'kspec sync-ado' first to create a work item.`);
+    }
+
+    log(`Creating Azure DevOps tasks from: ${folder}`);
+
+    await chat(`Create Azure DevOps child tasks from tasks.md.
+
+Spec folder: ${folder}
+Parent work item: ${parentItem}
+Tasks file: ${tasksFile}
+
+WORKFLOW:
+1. Read ${tasksFile}.
+2. Create one child task per implementation task or selected task group under ${parentItem}.
+3. Include task details, file paths, acceptance criteria, and traceability IDs.
+4. Preserve/inherit parent tags where supported.
+5. Save created task IDs to ${folder}/ado-links.json.
+6. Run \`kspec context --stdout\`.
+
+Report created Azure DevOps tasks with their URLs.`, 'kspec-ado');
+  },
+
+  async 'github-pull'(args) {
+    requireGitHubMcp();
+
+    const folder = getOrSelectSpec();
+    const githubLinksFile = path.join(folder, 'github-links.json');
+    const explicitRefs = args.filter(arg => !arg.startsWith('--')).join(', ');
+
+    if (!explicitRefs && !fs.existsSync(githubLinksFile)) {
+      die(`No GitHub issue specified and no github-links.json found in ${folder}. Usage: kspec github-pull owner/repo#123`);
+    }
+
+    log(`Pulling GitHub issue updates: ${folder}`);
+
+    await chat(`PULL GITHUB ISSUES: Fetch GitHub issue context and produce a change report.
+
+Spec folder: ${folder}
+GitHub links: ${githubLinksFile}
+Explicit issue input: ${explicitRefs || '(use github-links.json)'}
+
+WORKFLOW:
+1. Parse issue refs or URLs from explicit input, or read ${githubLinksFile}.
+2. Use GitHub MCP to fetch title, body, labels, state, assignees, comments, and linked issues/PRs.
+3. Compare current ${getRequirementsPath(folder)}, ${folder}/design.md, and ${folder}/tasks.md when present.
+4. Generate a CHANGE REPORT.
+5. NEVER auto-update requirements.md, design.md, or tasks.md — wait for user confirmation.
+6. After confirmation, update local artifacts as directed, update ${githubLinksFile}, regenerate spec-lite.md, and run \`kspec context --stdout\`.
+
+IMPORTANT: Include "Source: GitHub owner/repo#123" attribution for pulled content.`, 'kspec-github');
+  },
+
+  async 'sync-github'(args) {
+    requireGitHubMcp();
+
+    const folder = getOrSelectSpec();
+    const createFlag = args.includes('--create');
+    const updateIndex = args.findIndex(a => a === '--update' || a.startsWith('--update='));
+    const repoIndex = args.findIndex(a => a === '--repo' || a.startsWith('--repo='));
+    let updateIssue = null;
+    let repo = null;
+
+    if (repoIndex !== -1) {
+      if (args[repoIndex].startsWith('--repo=')) repo = args[repoIndex].split('=')[1];
+      else if (args[repoIndex + 1] && !args[repoIndex + 1].startsWith('-')) repo = args[repoIndex + 1];
+    }
+    if (!repo) repo = getGitHubIssuesRepo();
+
+    if (updateIndex !== -1) {
+      if (args[updateIndex].startsWith('--update=')) updateIssue = args[updateIndex].split('=')[1];
+      else if (args[updateIndex + 1] && !args[updateIndex + 1].startsWith('-')) updateIssue = args[updateIndex + 1];
+      else die('Usage: kspec sync-github --update owner/repo#123');
+    }
+
+    if (!createFlag && !updateIssue) {
+      const githubLinksFile = path.join(folder, 'github-links.json');
+      if (fs.existsSync(githubLinksFile)) {
+        try {
+          const links = JSON.parse(fs.readFileSync(githubLinksFile, 'utf8'));
+          if (links.specIssue) {
+            updateIssue = links.specIssue;
+            log(`Found existing GitHub issue ${updateIssue}, updating (use --create to force new)`);
+          }
+        } catch {}
+      }
+      if (!updateIssue) log('No existing GitHub issue found, will create new');
+    }
+
+    log(`Syncing spec to GitHub Issues: ${folder}`);
+
+    await chat(`${updateIssue ? 'Update existing' : 'Create new'} GitHub issue from specification.
+
+Spec folder: ${folder}
+${updateIssue ? `Target issue: ${updateIssue}` : `Target repo: ${repo || '(choose via GitHub MCP)'}`}
+
+WORKFLOW:
+1. Read ${getRequirementsPath(folder)}, ${folder}/spec-lite.md, ${folder}/design.md, and ${folder}/tasks.md when present.
+2. Use GitHub MCP to ${updateIssue ? 'update the target issue' : 'create an issue'}.
+3. Preserve existing labels by fetching first and unioning with config.githubIssues.defaultLabels, kspec defaults, and user labels.
+4. Add a comment summarizing the spec update.
+5. Save the issue reference and URL to ${folder}/github-links.json.
+6. Run \`kspec context --stdout\`.
+
+Report the GitHub issue URL.`, 'kspec-github');
+  },
+
+  async 'github-tasks'(args) {
+    requireGitHubMcp();
+
+    const folder = getOrSelectSpec();
+    const tasksFile = path.join(folder, 'tasks.md');
+    if (!fs.existsSync(tasksFile)) die(`No tasks.md found in ${folder}. Run 'kspec tasks' first.`);
+
+    const githubLinksFile = path.join(folder, 'github-links.json');
+    let parentIssue = args.find(arg => /^#\d+$/.test(arg) || /^[\w.-]+\/[\w.-]+#\d+$/.test(arg));
+    if (!parentIssue && fs.existsSync(githubLinksFile)) {
+      try {
+        const links = JSON.parse(fs.readFileSync(githubLinksFile, 'utf8'));
+        parentIssue = links.specIssue || links.sourceIssues?.[0];
+      } catch {}
+    }
+    if (!parentIssue) {
+      die(`No parent GitHub issue specified. Usage: kspec github-tasks owner/repo#123
+Or run 'kspec sync-github' first to create an issue.`);
+    }
+
+    log(`Creating GitHub task issues from: ${folder}`);
+
+    await chat(`Create GitHub task issues from tasks.md.
+
+Spec folder: ${folder}
+Parent issue: ${parentIssue}
+Tasks file: ${tasksFile}
+
+WORKFLOW:
+1. Read ${tasksFile}.
+2. Create one issue per implementation task or selected task group.
+3. Link each task issue to ${parentIssue}; include task details, acceptance criteria, and traceability IDs.
+4. Preserve/inherit parent labels where appropriate.
+5. Save created issue refs to ${folder}/github-links.json.
+6. Run \`kspec context --stdout\`.
+
+Report created GitHub issues with their URLs.`, 'kspec-github');
+  },
+
   async tasks(args) {
     const folder = getOrSelectSpec(args.join(' '));
 
@@ -5464,7 +6563,13 @@ Provide detailed findings.`;
   status() {
     const current = getCurrentSpec();
     const jiraProject = getJiraProject();
+    const rallyProject = getRallyProject();
+    const adoProject = getAdoProject();
+    const githubIssuesRepo = getGitHubIssuesRepo();
     const hasMcp = hasAtlassianMcp();
+    const hasRally = hasRallyMcp();
+    const hasAdo = hasAzureDevOpsMcp();
+    const hasGitHub = hasGitHubMcp();
 
     console.log('\nkspec Status\n');
     console.log(`CLI: ${detectCli() || '(not installed)'}`);
@@ -5472,10 +6577,28 @@ Provide detailed findings.`;
     console.log(`Date format: ${config.dateFormat || 'YYYY-MM-DD'}`);
     console.log(`Auto-execute: ${config.autoExecute || 'ask'}`);
     console.log(`Jira MCP: ${hasMcp ? '✅ configured' : '❌ not configured'}`);
+    console.log(`Rally MCP: ${hasRally ? '✅ configured' : '❌ not configured'}`);
+    console.log(`Azure DevOps MCP: ${hasAdo ? '✅ configured' : '❌ not configured'}`);
+    console.log(`GitHub MCP: ${hasGitHub ? '✅ configured' : '❌ not configured'}`);
     if (jiraProject) {
       console.log(`Jira project: ${jiraProject}`);
     } else if (hasMcp) {
       console.log(`Jira project: (not configured - run kspec init)`);
+    }
+    if (rallyProject) {
+      console.log(`Rally project: ${rallyProject}`);
+    } else if (hasRally) {
+      console.log(`Rally project: (not configured - run kspec init)`);
+    }
+    if (adoProject) {
+      console.log(`Azure DevOps project: ${adoProject}`);
+    } else if (hasAdo) {
+      console.log(`Azure DevOps project: (not configured - run kspec init)`);
+    }
+    if (githubIssuesRepo) {
+      console.log(`GitHub Issues repo: ${githubIssuesRepo}`);
+    } else if (hasGitHub) {
+      console.log(`GitHub Issues repo: (not configured - run kspec init)`);
     }
 
     if (current) {
@@ -5552,6 +6675,9 @@ kspec-build        Ctrl+Shift+B    Execute tasks with strict TDD
 kspec-verify       Ctrl+Shift+V    Verify spec/design/tasks/implementation
 kspec-review       Ctrl+Shift+R    Code review (+ configured reviewers)
 kspec-jira         Ctrl+Shift+J    Jira integration
+kspec-rally        Ctrl+Shift+Y    Rally integration
+kspec-ado          Ctrl+Shift+U    Azure DevOps Boards integration
+kspec-github       Ctrl+Shift+O    GitHub Issues integration
 kspec-fix          Ctrl+Shift+F    Fix bugs (abbreviated pipeline)
 kspec-refactor     Ctrl+Shift+G    Refactor code (no behavior change)
 kspec-spike        Ctrl+Shift+I    Investigate/spike (no code)
@@ -6289,6 +7415,43 @@ Jira Integration (requires Atlassian MCP):
   kspec jira-subtasks PROJ-123
                           Create subtasks under specific issue
 
+Rally Integration (requires Rally MCP/provider):
+  kspec rally-pull US123456
+                          Pull Rally item context or updates
+  kspec sync-rally        Smart sync (updates existing or creates new)
+  kspec sync-rally --create
+                          Force create new Rally work item
+  kspec sync-rally --project "Workspace / Project"
+                          Create in specific Rally project/workspace
+  kspec sync-rally --update US123456
+                          Update existing Rally work item
+  kspec rally-tasks       Create Rally tasks from tasks.md
+  kspec rally-tasks US123456
+                          Create tasks under specific Rally item
+
+Azure DevOps Integration (requires Azure DevOps MCP/provider):
+  kspec ado-pull 12345    Pull Azure DevOps work item context or updates
+  kspec sync-ado          Smart sync (updates existing or creates new)
+  kspec sync-ado --create Force create new Azure DevOps work item
+  kspec sync-ado --project "org/project"
+                          Create in specific Azure DevOps project
+  kspec sync-ado --update 12345
+                          Update existing Azure DevOps work item
+  kspec ado-tasks 12345   Create child tasks from tasks.md
+
+GitHub Issues Integration (requires GitHub MCP):
+  kspec github-pull owner/repo#123
+                          Pull GitHub issue context or updates
+  kspec sync-github       Smart sync (updates existing or creates new)
+  kspec sync-github --create
+                          Force create new GitHub issue
+  kspec sync-github --repo owner/repo
+                          Create in specific repo
+  kspec sync-github --update owner/repo#123
+                          Update existing GitHub issue
+  kspec github-tasks owner/repo#123
+                          Create task issues from tasks.md
+
 Memory:
   kspec memory                    Show project memory
   kspec memory review             AI-assisted memory review
@@ -6343,11 +7506,17 @@ Examples:
   kspec init                        # Setup with hooks + reviewers
   kspec spec "User Auth"            # CLI mode
   kspec spec --jira PROJ-123 "Auth" # From Jira story
+  kspec rally-pull US123456         # Pull Rally story context
+  kspec ado-pull 12345              # Pull Azure DevOps work item context
+  kspec github-pull owner/repo#123  # Pull GitHub issue context
   kspec fix "Login fails"           # Bug fix mode
   kspec spike "Can we use GraphQL?" # Investigation
   kspec design                      # Create design (optional)
   kspec review                      # Review (uses configured reviewers)
   kspec jira-pull                   # Pull latest Jira updates
+  kspec sync-rally                  # Sync current spec to Rally
+  kspec sync-ado                    # Sync current spec to Azure DevOps
+  kspec sync-github                 # Sync current spec to GitHub Issues
   kiro-cli --agent kspec-spec       # Direct agent mode
 `);
   }
@@ -6409,4 +7578,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, getMcpConfig, getJiraProject, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
