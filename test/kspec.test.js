@@ -3789,4 +3789,140 @@ z`;
       assert.match(githubActionsKspecReview, /--engine v2/);
     });
   });
+
+  describe('PR #18 review fixes', () => {
+    const ORIGINAL_HOME = process.env.HOME;
+    const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
+    const FIX_HOME = path.join(__dirname, 'review-fix-home');
+
+    before(() => {
+      fs.mkdirSync(FIX_HOME, { recursive: true });
+      process.env.HOME = FIX_HOME;
+      process.env.USERPROFILE = FIX_HOME;
+    });
+
+    after(() => {
+      process.chdir(TEST_DIR);
+      fs.rmSync(FIX_HOME, { recursive: true, force: true });
+      if (ORIGINAL_HOME === undefined) delete process.env.HOME;
+      else process.env.HOME = ORIGINAL_HOME;
+      if (ORIGINAL_USERPROFILE === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = ORIGINAL_USERPROFILE;
+    });
+
+    it('isAzureDevOpsMcpName matches Boards servers, not azure-openai', () => {
+      const { isAzureDevOpsMcpName, hasAzureDevOpsMcp, getAzureDevOpsMcpName } = require('../src/index.js');
+      assert.strictEqual(isAzureDevOpsMcpName('azure-devops'), true);
+      assert.strictEqual(isAzureDevOpsMcpName('ado'), true);
+      assert.strictEqual(isAzureDevOpsMcpName('my-ado-boards'), true);
+      assert.strictEqual(isAzureDevOpsMcpName('azure-openai'), false);
+      assert.strictEqual(isAzureDevOpsMcpName('shadow'), false);
+      assert.strictEqual(isAzureDevOpsMcpName('cascade'), false);
+
+      fs.mkdirSync('.kiro/settings', { recursive: true });
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: {
+          'azure-openai': { command: 'npx' },
+          'azure-devops': { command: 'npx' }
+        }
+      }));
+      assert.strictEqual(hasAzureDevOpsMcp(), true);
+      assert.strictEqual(getAzureDevOpsMcpName(), 'azure-devops');
+
+      fs.writeFileSync('.kiro/settings/mcp.json', JSON.stringify({
+        mcpServers: { 'azure-openai': { command: 'npx' } }
+      }));
+      assert.strictEqual(hasAzureDevOpsMcp(), false);
+      assert.strictEqual(getAzureDevOpsMcpName(), null);
+    });
+
+    it('parseOptionValue reads --flag value and --flag=value aliases', () => {
+      const { parseOptionValue } = require('../src/index.js');
+      assert.strictEqual(parseOptionValue(['--tags', 'qms,sdd'], ['--tags', '--labels']), 'qms,sdd');
+      assert.strictEqual(parseOptionValue(['--labels=alpha,beta'], ['--tags', '--labels']), 'alpha,beta');
+      assert.strictEqual(parseOptionValue(['--create'], ['--tags', '--labels']), null);
+    });
+
+    it('refreshContext truncates oversized planning links instead of throwing', () => {
+      const { refreshContext, CONTEXT_MAX_BYTES } = require('../src/index.js');
+      const folder = '.kiro/specs/huge-links';
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, 'requirements.md'), '# Requirements\n');
+      const bigIds = Array.from({ length: 400 }, (_, i) => `US${100000 + i}`);
+      fs.writeFileSync(path.join(folder, 'rally-links.json'), JSON.stringify({
+        sourceItems: bigIds,
+        specItem: 'US999999',
+        tasks: bigIds,
+        traceability: bigIds.map(id => `${id}->REQ-1`)
+      }));
+      fs.writeFileSync('.kiro/.current', folder);
+      const content = refreshContext();
+      assert.ok(Buffer.byteLength(content, 'utf8') <= CONTEXT_MAX_BYTES);
+      assert.match(content, /planning links truncated|Rally|US999999|Active Spec/);
+    });
+
+    it('V2 sync-agents creates missing planning agents and skills', async () => {
+      const { skillTemplates, SKILLS_DIR } = require('../src/index.js');
+      fs.mkdirSync('.kiro/agents', { recursive: true });
+      fs.writeFileSync('.kiro/config.json', JSON.stringify({
+        initialized: true,
+        kiroEngine: 'v2',
+        skills: true
+      }));
+      // Simulate an older workspace that only had the core agent set.
+      fs.writeFileSync('.kiro/agents/kspec-spec.json', JSON.stringify({
+        name: 'kspec-spec',
+        tools: ['read', 'write'],
+        allowedTools: ['read'],
+        prompt: 'old'
+      }));
+      fs.rmSync(SKILLS_DIR, { recursive: true, force: true });
+
+      await commands['sync-agents']();
+
+      assert.ok(fs.existsSync('.kiro/agents/kspec-rally.json'), 'should create kspec-rally');
+      assert.ok(fs.existsSync('.kiro/agents/kspec-ado.json'), 'should create kspec-ado');
+      assert.ok(fs.existsSync('.kiro/agents/kspec-github.json'), 'should create kspec-github');
+      assert.ok(fs.existsSync(path.join(SKILLS_DIR, 'kspec-rally/SKILL.md')), 'should create rally skill');
+      assert.ok(fs.existsSync(path.join(SKILLS_DIR, 'kspec-ado/SKILL.md')), 'should create ado skill');
+      assert.ok(fs.existsSync(path.join(SKILLS_DIR, 'kspec-github/SKILL.md')), 'should create github skill');
+      assert.strictEqual(
+        fs.readFileSync(path.join(SKILLS_DIR, 'kspec-rally/SKILL.md'), 'utf8'),
+        skillTemplates['kspec-rally/SKILL.md']
+      );
+    });
+
+    it('V3 sync-agents syncs skills after agents/hooks', async () => {
+      const { skillTemplates, SKILLS_DIR } = require('../src/index.js');
+      fs.mkdirSync('.kiro/agents', { recursive: true });
+      fs.writeFileSync('.kiro/config.json', JSON.stringify({
+        initialized: true,
+        kiroEngine: 'v3',
+        skills: true
+      }));
+      fs.writeFileSync('.kiro/agents/kspec-spec.json', JSON.stringify({
+        name: 'kspec-spec',
+        tools: ['read', 'write', 'shell', '@mcp'],
+        permissions: [],
+        toolsSettings: {},
+        prompt: 'old'
+      }));
+      // Existing skills dir without the new planning skills.
+      fs.mkdirSync(path.join(SKILLS_DIR, 'kspec-spec'), { recursive: true });
+      fs.writeFileSync(path.join(SKILLS_DIR, 'kspec-spec/SKILL.md'), 'stale');
+      fs.rmSync(path.join(SKILLS_DIR, 'kspec-rally'), { recursive: true, force: true });
+      fs.rmSync(path.join(SKILLS_DIR, 'kspec-ado'), { recursive: true, force: true });
+      fs.rmSync(path.join(SKILLS_DIR, 'kspec-github'), { recursive: true, force: true });
+
+      await commands['sync-agents']();
+
+      assert.ok(fs.existsSync('.kiro/hooks/kspec.json'), 'should sync V3 hooks');
+      assert.ok(fs.existsSync('.kiro/agents/kspec-rally.json'), 'should create missing V3 rally agent');
+      assert.ok(fs.existsSync(path.join(SKILLS_DIR, 'kspec-rally/SKILL.md')), 'V3 sync must write skills');
+      assert.strictEqual(
+        fs.readFileSync(path.join(SKILLS_DIR, 'kspec-spec/SKILL.md'), 'utf8'),
+        skillTemplates['kspec-spec/SKILL.md']
+      );
+    });
+  });
 });

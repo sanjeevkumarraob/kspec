@@ -11,9 +11,17 @@ All notable changes to kspec are documented in this file.
 - V2 remains the default; CI is explicitly pinned to V2 until V3 headless support is documented.
 - Added Kiro-native `requirements.md` resolution with legacy `spec.md` fallback and reversible `kspec migrate-spec` conversion.
 
+### Planning tool integrations
+
+- Added first-class Rally, Azure DevOps Boards, and GitHub Issues agents/skills alongside Jira (`kspec-rally`, `kspec-ado`, `kspec-github`).
+- Added CLI workflows: `rally-pull` / `sync-rally` / `rally-tasks`, `ado-pull` / `sync-ado` / `ado-tasks`, `github-pull` / `sync-github` / `github-tasks`, with `--tags`/`--labels` forwarded into sync prompts.
+- `kspec init` can configure multiple planning tools in one run; link files (`rally-links.json`, `ado-links.json`, `github-links.json`) appear in active context.
+- `kspec sync-agents` now creates missing agent templates on V2 and syncs shipped skills on both V2 and V3 (upgrade path for new planning agents/skills).
+
 ### Deterministic active context
 
-- `.kiro/CONTEXT.md` is now an atomic, derived snapshot capped at 8 KiB. It includes active format/phase, nested task progress, current chunk/task, design, Jira, requirements summary, decisions, and next action.
+- `.kiro/CONTEXT.md` is now an atomic, derived snapshot capped at 8 KiB. It includes active format/phase, nested task progress, current chunk/task, design, planning-tool links, requirements summary, decisions, and next action.
+- Oversized planning-link sections are truncated gracefully instead of failing context refresh.
 - All custom agents and Agent Skills read `.kiro/.current`, refresh through `kspec context --stdout`, and treat source artifacts as authoritative.
 - Removed `.kiro/specs/**/*.md` from always-loaded resources so historical specs no longer consume every prompt's context window.
 - Added `kspec use <spec>` and V3 hooks that track native `/spec` file changes.
@@ -22,6 +30,7 @@ All notable changes to kspec are documented in this file.
 
 - Kiro model selection now inherits the CLI's persistent preference unless explicitly pinned.
 - Added global `--effort`, `KIRO_HOME` support, the official `cli.kiro.dev` installer, and removed the invalid shell-level `agent swap` invocation.
+- Azure DevOps MCP detection matches Boards-oriented names (`azure-devops`, `ado`, `*-ado-*`) and no longer treats unrelated Azure servers (e.g. `azure-openai`) as ADO.
 
 ## [2.2.0] — 2026-05-04
 

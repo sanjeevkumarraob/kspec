@@ -228,28 +228,32 @@ function getRallyMcpName() {
   );
 }
 
+// Match Azure DevOps Boards MCP servers without treating unrelated Azure
+// services (e.g. azure-openai) or accidental "ado" substrings as ADO Boards.
+function isAzureDevOpsMcpName(name) {
+  const n = String(name || '').toLowerCase();
+  if (!n) return false;
+  if (n.includes('azure-devops') || n.includes('azuredevops') || n.includes('azure_devops')) return true;
+  if (n === 'ado' || n.startsWith('ado-') || n.endsWith('-ado') || n.includes('-ado-')) return true;
+  if (n.includes('devops') && (n.includes('board') || n.includes('workitem') || n.includes('work-item'))) return true;
+  return false;
+}
+
 function hasAzureDevOpsMcp() {
   const mcpConfig = getMcpConfig();
   if (!mcpConfig || !mcpConfig.mcpServers) return false;
-
-  const serverNames = Object.keys(mcpConfig.mcpServers);
-  return serverNames.some(name =>
-    name.toLowerCase().includes('azure-devops') ||
-    name.toLowerCase().includes('azure') ||
-    name.toLowerCase().includes('ado')
-  );
+  return Object.keys(mcpConfig.mcpServers).some(isAzureDevOpsMcpName);
 }
 
 function getAzureDevOpsMcpName() {
   const mcpConfig = getMcpConfig();
   if (!mcpConfig || !mcpConfig.mcpServers) return null;
-
   const serverNames = Object.keys(mcpConfig.mcpServers);
-  return serverNames.find(name =>
-    name.toLowerCase().includes('azure-devops') ||
-    name.toLowerCase().includes('azure') ||
-    name.toLowerCase().includes('ado')
-  );
+  return serverNames.find(name => name.toLowerCase().includes('azure-devops')
+    || name.toLowerCase().includes('azuredevops')
+    || name.toLowerCase().includes('azure_devops'))
+    || serverNames.find(isAzureDevOpsMcpName)
+    || null;
 }
 
 function hasGitHubMcp() {
@@ -979,6 +983,19 @@ function truncateUtf8(value, maxBytes, marker = '\n\n... (truncated)') {
   return output.trimEnd() + marker;
 }
 
+// Parse `--flag value` or `--flag=value` from an argv-like list. When multiple
+// flag names are provided (e.g. --tags / --labels), the first match wins.
+function parseOptionValue(args, names) {
+  const flags = Array.isArray(names) ? names : [names];
+  for (const name of flags) {
+    const idx = args.findIndex(a => a === name || a.startsWith(`${name}=`));
+    if (idx === -1) continue;
+    if (args[idx].startsWith(`${name}=`)) return args[idx].slice(name.length + 1);
+    if (args[idx + 1] && !args[idx + 1].startsWith('-')) return args[idx + 1];
+  }
+  return null;
+}
+
 function writeContextAtomic(content) {
   ensureDir(KIRO_DIR);
   const tmp = `${CONTEXT_FILE}.${process.pid}.${Date.now()}.tmp`;
@@ -1045,7 +1062,7 @@ function refreshContext() {
     }
   }
 
-  let content = `# kspec Active Context
+  const core = `# kspec Active Context
 > Derived local snapshot. Requirements and tasks are authoritative.
 
 ## Active Spec
@@ -1063,30 +1080,31 @@ function refreshContext() {
 - Design: ${hasDesign ? 'present' : 'not created'}
 `;
 
+  let planning = '';
   const jiraLines = [];
   if (jiraLinks?.sourceIssues?.length) jiraLines.push(`- Source issues: ${jiraLinks.sourceIssues.join(', ')}`);
   if (jiraLinks?.specIssue) jiraLines.push(`- Spec issue: ${jiraLinks.specIssue}`);
   if (jiraLinks?.subtasks?.length) jiraLines.push(`- Subtasks: ${jiraLinks.subtasks.join(', ')}`);
-  if (jiraLines.length) content += `\n## Jira\n${jiraLines.join('\n')}\n`;
+  if (jiraLines.length) planning += `\n## Jira\n${jiraLines.join('\n')}\n`;
 
   const rallyLines = [];
   if (rallyLinks?.sourceItems?.length) rallyLines.push(`- Source items: ${rallyLinks.sourceItems.join(', ')}`);
   if (rallyLinks?.specItem) rallyLines.push(`- Spec item: ${rallyLinks.specItem}`);
   if (rallyLinks?.tasks?.length) rallyLines.push(`- Tasks: ${rallyLinks.tasks.join(', ')}`);
   if (rallyLinks?.traceability?.length) rallyLines.push(`- Traceability: ${rallyLinks.traceability.join(', ')}`);
-  if (rallyLines.length) content += `\n## Rally\n${rallyLines.join('\n')}\n`;
+  if (rallyLines.length) planning += `\n## Rally\n${rallyLines.join('\n')}\n`;
 
   const adoLines = [];
   if (adoLinks?.sourceItems?.length) adoLines.push(`- Source work items: ${adoLinks.sourceItems.join(', ')}`);
   if (adoLinks?.specItem) adoLines.push(`- Spec work item: ${adoLinks.specItem}`);
   if (adoLinks?.tasks?.length) adoLines.push(`- Tasks: ${adoLinks.tasks.join(', ')}`);
-  if (adoLines.length) content += `\n## Azure DevOps\n${adoLines.join('\n')}\n`;
+  if (adoLines.length) planning += `\n## Azure DevOps\n${adoLines.join('\n')}\n`;
 
   const githubLines = [];
   if (githubLinks?.sourceIssues?.length) githubLines.push(`- Source issues: ${githubLinks.sourceIssues.join(', ')}`);
   if (githubLinks?.specIssue) githubLines.push(`- Spec issue: ${githubLinks.specIssue}`);
   if (githubLinks?.tasks?.length) githubLines.push(`- Tasks: ${githubLinks.tasks.join(', ')}`);
-  if (githubLines.length) content += `\n## GitHub Issues\n${githubLines.join('\n')}\n`;
+  if (githubLines.length) planning += `\n## GitHub Issues\n${githubLines.join('\n')}\n`;
 
   let summary = '';
   const litePath = path.join(current, 'spec-lite.md');
@@ -1106,13 +1124,29 @@ function refreshContext() {
   let tail = `\n## Next Action\n${next}.\n`;
   if (stale) tail += '\nRun `kspec refresh` to update spec-lite.md.\n';
 
-  // Identity, paths, progress, and Jira references are never truncation
-  // candidates. Only derived prose sections consume the remaining budget.
-  const fixedBytes = Buffer.byteLength(content + tail, 'utf8');
-  if (fixedBytes > CONTEXT_MAX_BYTES) {
-    throw new Error('Active identifiers and planning-tool references exceed the 8 KiB context limit. Reduce planning link files before refreshing context.');
+  // Identity/progress + next-action are preferred; planning-link sections are
+  // truncated before we drop prose. Never throw — large link files should
+  // degrade gracefully so hooks and pre-chat refresh keep working.
+  const coreTailBytes = Buffer.byteLength(core + tail, 'utf8');
+  if (coreTailBytes >= CONTEXT_MAX_BYTES) {
+    const content = truncateUtf8(core + planning + tail, CONTEXT_MAX_BYTES, '\n\n... (context truncated)\n');
+    writeContextAtomic(content);
+    return content;
   }
-  let remaining = CONTEXT_MAX_BYTES - fixedBytes;
+
+  const planningBudget = CONTEXT_MAX_BYTES - coreTailBytes;
+  if (Buffer.byteLength(planning, 'utf8') > planningBudget) {
+    // Keep a small reserve for summary/memory when planning is huge.
+    const reserve = planningBudget > 400 ? Math.min(200, Math.floor(planningBudget * 0.15)) : 0;
+    planning = truncateUtf8(
+      planning,
+      Math.max(0, planningBudget - reserve),
+      '\n\n... (planning links truncated; read *-links.json)\n'
+    );
+  }
+
+  let content = core + planning;
+  let remaining = CONTEXT_MAX_BYTES - Buffer.byteLength(content + tail, 'utf8');
   if (summary && remaining > 160) {
     const header = '\n## Requirements Summary\n';
     const headerBytes = Buffer.byteLength(header, 'utf8');
@@ -1131,7 +1165,7 @@ function refreshContext() {
   }
   content += tail;
   if (Buffer.byteLength(content, 'utf8') > CONTEXT_MAX_BYTES) {
-    throw new Error('Generated context exceeded the 8 KiB limit.');
+    content = truncateUtf8(content, CONTEXT_MAX_BYTES, '\n\n... (context truncated)\n');
   }
   writeContextAtomic(content);
   return content;
@@ -4919,15 +4953,9 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
         console.log('📋 GitHub Issues integration: Skipping setup in non-interactive mode (set KSPEC_GITHUB_REPO to enable).');
       }
     } else {
-      const planningTool = await prompt('Configure planning tool integration?', [
-        { label: 'Jira', value: 'jira' },
-        { label: 'Rally', value: 'rally' },
-        { label: 'Azure DevOps Boards', value: 'ado' },
-        { label: 'GitHub Issues', value: 'github' },
-        { label: 'None', value: 'none' }
-      ]);
+      console.log('\nConfigure planning tool integrations (select any that apply):');
 
-      if (planningTool === 'jira') {
+      if (await confirm('  Configure Jira?', false)) {
         if (!hasMcp) {
           console.log('\n📋 Jira integration: Atlassian MCP not configured');
           console.log('   To enable, run: kiro-cli mcp add --name atlassian');
@@ -4943,7 +4971,9 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
             console.log(`  Jira project set to: ${jiraConfig.project}`);
           }
         }
-      } else if (planningTool === 'rally') {
+      }
+
+      if (await confirm('  Configure Rally?', false)) {
         if (!hasRally) {
           console.log('\n📋 Rally integration: Rally MCP not configured');
           console.log('   To enable, run: kiro-cli mcp add --name rally');
@@ -4959,7 +4989,9 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
             console.log(`  Rally project set to: ${rallyConfig.project}`);
           }
         }
-      } else if (planningTool === 'ado') {
+      }
+
+      if (await confirm('  Configure Azure DevOps Boards?', false)) {
         if (!hasAdo) {
           console.log('\n📋 Azure DevOps integration: Azure DevOps MCP not configured');
           console.log('   To enable, run: kiro-cli mcp add --name azure-devops');
@@ -4975,7 +5007,9 @@ Write ONLY ${temporary}. Preserve every requirement, acceptance criterion, const
             console.log(`  Azure DevOps project set to: ${adoConfig.project}`);
           }
         }
-      } else if (planningTool === 'github') {
+      }
+
+      if (await confirm('  Configure GitHub Issues?', false)) {
         if (!hasGitHub) {
           console.log('\n📋 GitHub Issues integration: GitHub MCP not configured');
           console.log('   To enable, run: kiro-cli mcp add --name github');
@@ -5753,6 +5787,7 @@ IMPORTANT: Include "Source: Rally US123456" attribution for pulled content.`, 'k
     const createFlag = args.includes('--create');
     const updateIndex = args.findIndex(a => a === '--update' || a.startsWith('--update='));
     const projectIndex = args.findIndex(a => a === '--project' || a.startsWith('--project='));
+    const tags = parseOptionValue(args, ['--tags', '--labels']);
     let updateItem = null;
     let project = null;
 
@@ -5793,18 +5828,24 @@ IMPORTANT: Include "Source: Rally US123456" attribution for pulled content.`, 'k
 
     log(`Syncing spec to Rally: ${folder}`);
     if (project && !updateItem) log(`Target Rally project: ${project}`);
+    if (tags) log(`Tags: ${tags}`);
+
+    const tagsLine = tags
+      ? `User tags/labels from CLI: ${tags}`
+      : 'User tags/labels from CLI: (none — use config.rally.defaultTags ∪ kspec defaults)';
 
     if (updateItem) {
       await chat(`Update existing Rally work item with specification.
 
 Spec folder: ${folder}
 Target Rally item: ${updateItem}
+${tagsLine}
 
 WORKFLOW:
 1. Read ${getRequirementsPath(folder)}, ${folder}/spec-lite.md, ${folder}/design.md, and ${folder}/tasks.md when present.
 2. Use Rally MCP/provider to update ${updateItem}:
    - Update description or append a note with the current spec summary.
-   - Preserve existing tags/labels by fetching them first and unioning with kspec tags and any --tags input.
+   - Preserve existing tags/labels by fetching them first and unioning with kspec tags and any --tags/--labels input.
    - Add a discussion note summarizing the spec update.
 3. Update ${folder}/rally-links.json with the item ID and canonical URL.
 4. Run \`kspec context --stdout\`.
@@ -5815,6 +5856,7 @@ Report the updated Rally item URL.`, 'kspec-rally');
 
 Spec folder: ${folder}
 Target Rally project/workspace: ${project || '(choose via Rally MCP/provider)'}
+${tagsLine}
 
 WORKFLOW:
 1. Read ${getRequirementsPath(folder)} and ${folder}/spec-lite.md.
@@ -5822,7 +5864,7 @@ WORKFLOW:
 3. Use Rally MCP/provider to create a user story or portfolio item:
    - Summary: extract from spec title.
    - Description: include spec-lite.md and traceability context.
-   - Tags: kspec, technical-specification, plus configured/default/user tags.
+   - Tags: config.rally.defaultTags ∪ kspec defaults (kspec, technical-specification) ∪ CLI --tags/--labels.
    - Link to source work items if any.
 4. Add a note requesting planning-owner review.
 5. Save the created item ID and URL to ${folder}/rally-links.json.
@@ -5915,6 +5957,7 @@ IMPORTANT: Include "Source: Azure DevOps #12345" attribution for pulled content.
     const createFlag = args.includes('--create');
     const updateIndex = args.findIndex(a => a === '--update' || a.startsWith('--update='));
     const projectIndex = args.findIndex(a => a === '--project' || a.startsWith('--project='));
+    const tags = parseOptionValue(args, ['--tags', '--labels']);
     let updateItem = null;
     let project = null;
 
@@ -5945,16 +5988,21 @@ IMPORTANT: Include "Source: Azure DevOps #12345" attribution for pulled content.
     }
 
     log(`Syncing spec to Azure DevOps: ${folder}`);
+    if (tags) log(`Tags: ${tags}`);
+    const tagsLine = tags
+      ? `User tags/labels from CLI: ${tags}`
+      : 'User tags/labels from CLI: (none — use config.ado.defaultTags ∪ kspec defaults)';
 
     await chat(`${updateItem ? 'Update existing' : 'Create new'} Azure DevOps work item from specification.
 
 Spec folder: ${folder}
 ${updateItem ? `Target work item: ${updateItem}` : `Target org/project: ${project || '(choose via Azure DevOps MCP/provider)'}`}
+${tagsLine}
 
 WORKFLOW:
 1. Read ${getRequirementsPath(folder)}, ${folder}/spec-lite.md, ${folder}/design.md, and ${folder}/tasks.md when present.
 2. Use Azure DevOps MCP/provider to ${updateItem ? 'update the target work item' : 'create a Product Backlog Item, User Story, Feature, or Task'}.
-3. Preserve existing tags by fetching first and unioning with kspec/default/user tags.
+3. Preserve existing tags by fetching first and unioning with kspec/default/user tags (including CLI --tags/--labels).
 4. Add a note/comment summarizing the spec update.
 5. Save the work item ID and URL to ${folder}/ado-links.json.
 6. Run \`kspec context --stdout\`.
@@ -6038,6 +6086,7 @@ IMPORTANT: Include "Source: GitHub owner/repo#123" attribution for pulled conten
     const createFlag = args.includes('--create');
     const updateIndex = args.findIndex(a => a === '--update' || a.startsWith('--update='));
     const repoIndex = args.findIndex(a => a === '--repo' || a.startsWith('--repo='));
+    const tags = parseOptionValue(args, ['--tags', '--labels']);
     let updateIssue = null;
     let repo = null;
 
@@ -6068,16 +6117,21 @@ IMPORTANT: Include "Source: GitHub owner/repo#123" attribution for pulled conten
     }
 
     log(`Syncing spec to GitHub Issues: ${folder}`);
+    if (tags) log(`Labels: ${tags}`);
+    const tagsLine = tags
+      ? `User labels from CLI: ${tags}`
+      : 'User labels from CLI: (none — use config.githubIssues.defaultLabels ∪ kspec defaults)';
 
     await chat(`${updateIssue ? 'Update existing' : 'Create new'} GitHub issue from specification.
 
 Spec folder: ${folder}
 ${updateIssue ? `Target issue: ${updateIssue}` : `Target repo: ${repo || '(choose via GitHub MCP)'}`}
+${tagsLine}
 
 WORKFLOW:
 1. Read ${getRequirementsPath(folder)}, ${folder}/spec-lite.md, ${folder}/design.md, and ${folder}/tasks.md when present.
 2. Use GitHub MCP to ${updateIssue ? 'update the target issue' : 'create an issue'}.
-3. Preserve existing labels by fetching first and unioning with config.githubIssues.defaultLabels, kspec defaults, and user labels.
+3. Preserve existing labels by fetching first and unioning with config.githubIssues.defaultLabels, kspec defaults, and CLI --tags/--labels.
 4. Add a comment summarizing the spec update.
 5. Save the issue reference and URL to ${folder}/github-links.json.
 6. Run \`kspec context --stdout\`.
@@ -6695,8 +6749,8 @@ Powers: contract, document, tdd, code-review, code-intelligence
   async 'sync-agents'() {
     // Re-runs the agent template merge logic from init() without touching
     // steering, hooks, gitignore, or config. Use this after adding/removing
-    // an MCP server (e.g. `kiro-cli mcp add --name github`) to grant the
-    // new server's tools to all kspec agents.
+    // an MCP server (e.g. `kiro-cli mcp add --name github`) or upgrading
+    // kspec (to create newly shipped agents/skills).
     if (!fs.existsSync(AGENTS_DIR)) {
       die('No .kiro/agents/ directory. Run `kspec init` first.');
     }
@@ -6716,13 +6770,15 @@ Powers: contract, document, tdd, code-review, code-intelligence
 
     let jsonUpdated = 0, mdUpdated = 0;
     const cfg = loadConfig();
+    const engine = getKiroEngine();
 
-    if (getKiroEngine() === 'v3') {
+    if (engine === 'v3') {
       for (const [file, content] of Object.entries(getAgentTemplates('v3'))) {
         const target = path.join(AGENTS_DIR, file);
         if (!fs.existsSync(target)) {
           fs.writeFileSync(target, JSON.stringify(content, null, 2));
-          mdUpdated++;
+          log(`Created ${target}`);
+          jsonUpdated++;
           continue;
         }
         try {
@@ -6749,7 +6805,8 @@ Powers: contract, document, tdd, code-review, code-intelligence
           }
           if (updated) {
             fs.writeFileSync(target, JSON.stringify(existing, null, 2));
-            mdUpdated++;
+            log(`Updated ${target}`);
+            jsonUpdated++;
           }
         } catch (e) {
           log(`Skipped ${target} (parse failed: ${e.message})`);
@@ -6758,16 +6815,29 @@ Powers: contract, document, tdd, code-review, code-intelligence
       const hooksDir = path.join(KIRO_DIR, 'hooks');
       ensureDir(hooksDir);
       fs.writeFileSync(path.join(hooksDir, 'kspec.json'), JSON.stringify(v3HooksTemplate, null, 2));
-      console.log(`\n✅ Synced ${mdUpdated} V3 agents and .kiro/hooks/kspec.json.\n`);
-      return;
-    }
+      log('Synced .kiro/hooks/kspec.json');
+    } else {
+      for (const [file, content] of Object.entries(getAgentTemplates('v2'))) {
+        const p = path.join(AGENTS_DIR, file);
 
-    for (const [file, content] of Object.entries(getAgentTemplates('v2'))) {
-      const p = path.join(AGENTS_DIR, file);
+        // Create missing agents on upgrade (e.g. new kspec-rally/ado/github).
+        if (!fs.existsSync(p)) {
+          fs.writeFileSync(p, JSON.stringify(content, null, 2));
+          log(`Created ${p}`);
+          jsonUpdated++;
+          if (cfg.ideAgents) {
+            const mdPath = path.join(AGENTS_DIR, file.replace(/\.json$/, '.md'));
+            if (!fs.existsSync(mdPath)) {
+              fs.writeFileSync(mdPath, agentToMarkdown(content));
+              log(`Created ${mdPath}`);
+              mdUpdated++;
+            }
+          }
+          continue;
+        }
 
-      // JSON: update tools/allowedTools/includeMcpJson, preserve custom
-      // prompt (only append MCP usage hint if our marker is missing).
-      if (fs.existsSync(p)) {
+        // JSON: update tools/allowedTools/includeMcpJson, preserve custom
+        // prompt (only append MCP usage hint if our marker is missing).
         try {
           const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
           let updated = false;
@@ -6820,57 +6890,61 @@ Powers: contract, document, tdd, code-review, code-intelligence
         } catch (e) {
           log(`Skipped ${p} (parse failed: ${e.message})`);
         }
-      }
 
-      // IDE markdown: update frontmatter tools line AND refresh the
-      // MCP-tools body section so renamed/removed MCPs don't leave
-      // stale `@server` guidance behind.
-      if (cfg.ideAgents) {
-        const mdPath = path.join(AGENTS_DIR, file.replace(/\.json$/, '.md'));
-        if (fs.existsSync(mdPath)) {
-          try {
-            const existing = fs.readFileSync(mdPath, 'utf8');
-            const parsed = parseFrontmatter(existing);
-            const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
-            const desiredModel = content.model;
-            let mdUpdatedThisFile = false;
-            if (parsed.frontmatter.tools !== desiredTools) {
-              parsed.frontmatter.tools = desiredTools;
-              mdUpdatedThisFile = true;
-            }
-            // Same model-drift fix as the init re-init path: keep the
-            // IDE markdown agent's model line in sync with the
-            // configured model.
-            if (desiredModel && parsed.frontmatter.model !== desiredModel) {
-              parsed.frontmatter.model = desiredModel;
-              mdUpdatedThisFile = true;
-            }
-            let newBody = parsed.body;
-            // Mirror the JSON-prompt logic: refresh the section for
-            // allow-list agents, strip it for agents no longer on the list.
-            if (content.prompt.includes(MCP_TOOLS_MARKER)) {
-              const refreshed = applyMcpToolsSection(newBody, allMcps);
-              if (refreshed !== newBody.replace(/\s+$/, '')) {
-                newBody = refreshed;
+        // IDE markdown: update frontmatter tools line AND refresh the
+        // MCP-tools body section so renamed/removed MCPs don't leave
+        // stale `@server` guidance behind.
+        if (cfg.ideAgents) {
+          const mdPath = path.join(AGENTS_DIR, file.replace(/\.json$/, '.md'));
+          if (!fs.existsSync(mdPath)) {
+            fs.writeFileSync(mdPath, agentToMarkdown(content));
+            log(`Created ${mdPath}`);
+            mdUpdated++;
+          } else {
+            try {
+              const existing = fs.readFileSync(mdPath, 'utf8');
+              const parsed = parseFrontmatter(existing);
+              const desiredTools = `[${(content.tools || []).map(t => JSON.stringify(t)).join(', ')}]`;
+              const desiredModel = content.model;
+              let mdUpdatedThisFile = false;
+              if (parsed.frontmatter.tools !== desiredTools) {
+                parsed.frontmatter.tools = desiredTools;
                 mdUpdatedThisFile = true;
               }
-            } else if (newBody.includes(MCP_TOOLS_MARKER)) {
-              const stripped = applyMcpToolsSection(newBody, []);
-              if (stripped !== newBody.replace(/\s+$/, '')) {
-                newBody = stripped;
+              // Same model-drift fix as the init re-init path: keep the
+              // IDE markdown agent's model line in sync with the
+              // configured model.
+              if (desiredModel && parsed.frontmatter.model !== desiredModel) {
+                parsed.frontmatter.model = desiredModel;
                 mdUpdatedThisFile = true;
               }
+              let newBody = parsed.body;
+              // Mirror the JSON-prompt logic: refresh the section for
+              // allow-list agents, strip it for agents no longer on the list.
+              if (content.prompt.includes(MCP_TOOLS_MARKER)) {
+                const refreshed = applyMcpToolsSection(newBody, allMcps);
+                if (refreshed !== newBody.replace(/\s+$/, '')) {
+                  newBody = refreshed;
+                  mdUpdatedThisFile = true;
+                }
+              } else if (newBody.includes(MCP_TOOLS_MARKER)) {
+                const stripped = applyMcpToolsSection(newBody, []);
+                if (stripped !== newBody.replace(/\s+$/, '')) {
+                  newBody = stripped;
+                  mdUpdatedThisFile = true;
+                }
+              }
+              if (mdUpdatedThisFile) {
+                const fmLines = ['---'];
+                for (const [k, v] of Object.entries(parsed.frontmatter)) fmLines.push(`${k}: ${v}`);
+                fmLines.push('---');
+                fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${newBody}\n`);
+                log(`Updated ${mdPath}`);
+                mdUpdated++;
+              }
+            } catch (e) {
+              log(`Skipped ${mdPath} (parse failed: ${e.message})`);
             }
-            if (mdUpdatedThisFile) {
-              const fmLines = ['---'];
-              for (const [k, v] of Object.entries(parsed.frontmatter)) fmLines.push(`${k}: ${v}`);
-              fmLines.push('---');
-              fs.writeFileSync(mdPath, `${fmLines.join('\n')}\n${newBody}\n`);
-              log(`Updated ${mdPath}`);
-              mdUpdated++;
-            }
-          } catch (e) {
-            log(`Skipped ${mdPath} (parse failed: ${e.message})`);
           }
         }
       }
@@ -6878,11 +6952,15 @@ Powers: contract, document, tdd, code-review, code-intelligence
 
     // Refresh kspec-shipped Agent Skills (.kiro/skills/<name>/SKILL.md).
     // These are kspec-authoritative workflow templates — kept in sync with
-    // the latest version so users get bug-fixes (e.g. Jira-URL detection
-    // in kspec-spec). Users who want custom workflows should create skills
-    // under DIFFERENT names; we never touch those.
+    // the latest version so users get bug-fixes and newly shipped skills
+    // (e.g. /kspec-rally). Users who want custom workflows should create
+    // skills under DIFFERENT names; we never touch those.
+    // Sync when skills were opted in, or when a skills dir already exists
+    // (upgrade path for workspaces created before cfg.skills was stored).
     let skillsUpdated = 0;
-    if (cfg.skills && fs.existsSync(SKILLS_DIR)) {
+    const shouldSyncSkills = cfg.skills === true || fs.existsSync(SKILLS_DIR);
+    if (shouldSyncSkills) {
+      ensureDir(SKILLS_DIR);
       for (const [relPath, content] of Object.entries(skillTemplates)) {
         const fullPath = path.join(SKILLS_DIR, relPath);
         ensureDir(path.dirname(fullPath));
@@ -6896,7 +6974,11 @@ Powers: contract, document, tdd, code-review, code-intelligence
     }
 
     const total = jsonUpdated + mdUpdated + skillsUpdated;
-    console.log(`\n✅ Sync complete (${jsonUpdated} agent JSON, ${mdUpdated} agent markdown, ${skillsUpdated} skills updated)`);
+    if (engine === 'v3') {
+      console.log(`\n✅ Sync complete (${jsonUpdated} V3 agents, ${skillsUpdated} skills, hooks/kspec.json)`);
+    } else {
+      console.log(`\n✅ Sync complete (${jsonUpdated} agent JSON, ${mdUpdated} agent markdown, ${skillsUpdated} skills updated)`);
+    }
     if (total === 0) {
       console.log('   Everything already in sync.\n');
     } else {
@@ -7425,6 +7507,8 @@ Rally Integration (requires Rally MCP/provider):
                           Create in specific Rally project/workspace
   kspec sync-rally --update US123456
                           Update existing Rally work item
+  kspec sync-rally --tags "qms,sdd"
+                          Attach tags (also --labels) without replacing existing
   kspec rally-tasks       Create Rally tasks from tasks.md
   kspec rally-tasks US123456
                           Create tasks under specific Rally item
@@ -7437,6 +7521,8 @@ Azure DevOps Integration (requires Azure DevOps MCP/provider):
                           Create in specific Azure DevOps project
   kspec sync-ado --update 12345
                           Update existing Azure DevOps work item
+  kspec sync-ado --tags "kspec,sdd"
+                          Attach tags (also --labels) without replacing existing
   kspec ado-tasks 12345   Create child tasks from tasks.md
 
 GitHub Issues Integration (requires GitHub MCP):
@@ -7449,6 +7535,8 @@ GitHub Issues Integration (requires GitHub MCP):
                           Create in specific repo
   kspec sync-github --update owner/repo#123
                           Update existing GitHub issue
+  kspec sync-github --tags "kspec,sdd"
+                          Attach labels (also --labels) without replacing existing
   kspec github-tasks owner/repo#123
                           Create task issues from tasks.md
 
@@ -7578,4 +7666,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getAzureDevOpsMcpName, isAzureDevOpsMcpName, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, parseOptionValue, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
