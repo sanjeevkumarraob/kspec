@@ -150,6 +150,23 @@ init → analyse → spec → verify-spec → design (optional) → tasks → ve
 | `kspec jira-subtasks` | Create Jira subtasks from tasks.md |
 | `kspec jira-subtasks PROJ-123` | Create subtasks under specific issue |
 
+### Rally / Azure DevOps / GitHub Issues
+
+| Command | Description |
+|---------|-------------|
+| `kspec rally-pull US123456` | Pull Rally work item context + change report |
+| `kspec sync-rally` | Smart sync — update linked Rally item or create new |
+| `kspec sync-rally --create --tags "qms,sdd"` | Force-create with tags |
+| `kspec rally-tasks US123456` | Create Rally tasks from `tasks.md` |
+| `kspec ado-pull 12345` | Pull Azure DevOps work item context + change report |
+| `kspec sync-ado --update 12345` | Update an Azure DevOps work item |
+| `kspec ado-tasks 12345` | Create ADO child tasks from `tasks.md` |
+| `kspec github-pull owner/repo#123` | Pull GitHub issue context + change report |
+| `kspec sync-github --repo owner/repo` | Smart sync to GitHub Issues |
+| `kspec github-tasks owner/repo#123` | Create task issues from `tasks.md` |
+
+Requires the matching MCP (`rally`, `azure-devops`, or `github`). After upgrading kspec, run `kspec sync-agents` to add the new agents/skills.
+
 ### Work Types (Abbreviated Pipelines)
 
 | Command | Description |
@@ -724,57 +741,31 @@ Or add via CLI: `kiro-cli mcp add --name atlassian`
 
 See [SECURITY.md](SECURITY.md) for security best practices.
 
-## Jira Integration
+## Planning Tool Integrations
 
-Bridge the gap between BAs/PMs and developers by integrating with Jira via Atlassian MCP.
+Bridge planning tools and SDD artifacts. Jira remains the deepest integration; Rally, Azure DevOps Boards, and GitHub Issues follow the same pull / sync / tasks pattern.
 
-### Pull Requirements from Jira
+### Jira (Atlassian MCP)
 
 ```bash
 kspec spec --jira PROJ-123,PROJ-456 "User Authentication"
-```
-
-This fetches issue details, extracts acceptance criteria, and creates a unified spec with source attribution.
-
-### Push Specs to Jira
-
-```bash
 kspec sync-jira                      # Smart: updates existing or creates new
 kspec sync-jira --create             # Force create new issue
 kspec sync-jira --project SECOPS     # Create in specific project
 kspec sync-jira --update PROJ-789    # Update specific issue
-```
-
-`sync-jira` is smart — it checks `jira-links.json` for an existing linked issue and updates it by default. Use `--create` to force a new issue.
-
-### Pull Latest Updates
-
-```bash
 kspec jira-pull
-```
-
-Fetches the latest state of linked Jira issues, generates a change report, and presents changes for approval before modifying spec.md.
-
-### Create Subtasks
-
-```bash
 kspec jira-subtasks PROJ-789
 ```
 
-Generate Jira subtasks from tasks.md for progress tracking.
+`sync-jira` checks `jira-links.json` for an existing linked issue and updates it by default. Pulls never auto-overwrite local specs — they produce a change report first.
 
-### Prerequisites
+Configure Atlassian MCP:
 
-Configure Atlassian MCP using one of these methods:
-
-**Option 1: Use kiro-cli** (recommended)
 ```bash
 kiro-cli mcp add --name atlassian
 ```
 
-**Option 2: Manual configuration**
-
-Add to `.kiro/settings/mcp.json` (workspace) or `~/.kiro/settings/mcp.json` (user):
+Or add to `.kiro/settings/mcp.json` / `~/.kiro/settings/mcp.json`:
 
 ```json
 {
@@ -788,7 +779,32 @@ Add to `.kiro/settings/mcp.json` (workspace) or `~/.kiro/settings/mcp.json` (use
 }
 ```
 
-Or add via CLI: `kiro-cli mcp add --name atlassian`
+### Rally / Azure DevOps / GitHub Issues
+
+```bash
+# Rally
+kspec rally-pull US123456
+kspec sync-rally --tags "qms,sdd,traceability"
+kspec rally-tasks US123456
+
+# Azure DevOps Boards
+kspec ado-pull 12345
+kspec sync-ado --project org/project --labels "kspec,sdd"
+kspec ado-tasks 12345
+
+# GitHub Issues
+kspec github-pull owner/repo#123
+kspec sync-github --repo owner/repo --tags "kspec,technical-specification"
+kspec github-tasks owner/repo#123
+```
+
+Link state is stored per spec as `rally-links.json`, `ado-links.json`, or `github-links.json`, and surfaced in `.kiro/CONTEXT.md`.
+
+```bash
+kiro-cli mcp add --name rally
+kiro-cli mcp add --name azure-devops
+kiro-cli mcp add --name github
+```
 
 See: https://kiro.dev/docs/cli/mcp/
 
@@ -824,7 +840,7 @@ Set during `kspec init`:
 - **Auto-execute**: ask (default), auto, or dry-run
 - **Kiro engine**: V2 by default; select V3 with `--engine v3` or `kspec engine set v3`
 - **Model**: inherits Kiro's persistent preference by default, or pin a custom model ID
-- **Jira project**: Default project key for `sync-jira` (when Atlassian MCP detected)
+- **Planning tools**: Jira / Rally / Azure DevOps / GitHub Issues (multi-select; when matching MCP detected)
 - **Reviewers**: Multi-CLI reviewers for agentic review loop (Copilot, Claude, Gemini, etc.)
 - **IDE chat subagents**: Optional `.md` agent files for Kiro IDE chat (default No)
 - **Agent Skills**: Slash-command skills (`/kspec-spec` etc.) for default chat (default Yes)
