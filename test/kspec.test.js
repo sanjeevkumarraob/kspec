@@ -19,6 +19,72 @@ describe('kspec', () => {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
+  describe('workflow snapshot', () => {
+    const specFolder = '.kiro/specs/2026-09-01-crew-handoff';
+
+    after(() => {
+      fs.rmSync(specFolder, { recursive: true, force: true });
+      fs.rmSync('.kiro/.current', { force: true });
+    });
+
+    it('derives portable progress, candidates, and a content fingerprint from authoritative artifacts', () => {
+      const { getWorkflowSnapshot } = require('../src/index.js');
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(path.join(specFolder, 'requirements.md'), '# Requirements\n');
+      fs.writeFileSync(path.join(specFolder, 'design.md'), '# Design\n');
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), [
+        '## Chunk 1: Foundation',
+        '- [x] Add a requirements model',
+        '## Chunk 2: Snapshot',
+        '- [ ] Derive workflow state',
+        '- [x] Add compatibility tests'
+      ].join('\n'));
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const snapshot = getWorkflowSnapshot();
+      assert.strictEqual(snapshot.schemaVersion, 1);
+      assert.strictEqual(snapshot.kind, 'kspec-workflow-snapshot');
+      assert.deepStrictEqual(snapshot.activeSpec, {
+        id: '2026-09-01-crew-handoff',
+        path: specFolder,
+        format: 'v3'
+      });
+      assert.strictEqual(snapshot.stage, 'build');
+      assert.deepStrictEqual(snapshot.progress.tasks, { total: 3, done: 2, remaining: 1 });
+      assert.deepStrictEqual(snapshot.progress.chunks[1], {
+        number: 2,
+        name: 'Snapshot',
+        total: 2,
+        done: 1,
+        remaining: 1
+      });
+      assert.strictEqual(snapshot.progress.currentChunk, 'Chunk 2: Snapshot');
+      assert.strictEqual(snapshot.progress.currentTask, 'Derive workflow state');
+      assert.strictEqual(snapshot.next.candidates[0].id, 'build-next-chunk');
+      assert.strictEqual(snapshot.freshness.algorithm, 'sha256');
+      assert.ok(snapshot.freshness.inputs.some(input => input.path === `${specFolder}/tasks.md`));
+
+      const firstFingerprint = snapshot.freshness.value;
+      fs.appendFileSync(path.join(specFolder, 'tasks.md'), '\n- [ ] Detect stale input');
+      assert.notStrictEqual(getWorkflowSnapshot().freshness.value, firstFingerprint);
+    });
+
+    it('emits the same derived contract through status --json without human-readable status text', () => {
+      let output = '';
+      const originalWrite = process.stdout.write;
+      process.stdout.write = chunk => { output += chunk; return true; };
+      try {
+        commands.status(['2026-09-01-crew-handoff', '--json']);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+      const snapshot = JSON.parse(output);
+      assert.strictEqual(snapshot.activeSpec.id, '2026-09-01-crew-handoff');
+      assert.strictEqual(snapshot.stage, 'build');
+      assert.strictEqual(snapshot.progress.tasks.remaining, 2);
+    });
+  });
+
   describe('loadConfig', () => {
     it('returns defaults when no config', () => {
       const cfg = loadConfig();

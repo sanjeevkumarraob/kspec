@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const { execSync, spawn } = require('child_process');
 const readline = require('readline');
+const crypto = require('crypto');
 
 const KIRO_DIR = '.kiro';
 const SPECS_DIR = path.join(KIRO_DIR, 'specs');
@@ -898,7 +899,6 @@ function getChunkStats(folder) {
 function getCurrentTask(folder) {
   const tasksFile = path.join(folder, 'tasks.md');
   if (!fs.existsSync(tasksFile)) return null;
-
   try {
     const content = fs.readFileSync(tasksFile, 'utf8');
     const lines = content.split('\n');
@@ -912,6 +912,104 @@ function getCurrentTask(folder) {
     return null; // File unreadable
   }
 }
+// Return a project-relative path for integration output. Keeping the snapshot
+// relative makes it portable between developer machines and avoids exporting
+// host-specific paths or environment details.
+function toProjectPath(file) {
+  if (!file) return null;
+  const relative = path.relative(process.cwd(), path.resolve(file)).split(path.sep).join('/');
+  return relative || '.';
+}
+// The snapshot is derived from authoritative artifacts. Its fingerprint covers
+// the inputs that determine stage, progress, and candidate next actions, so a
+// consumer can detect changes without trusting a timestamp alone.
+function getWorkflowInputFingerprint(files) {
+  const inputs = [];
+  for (const file of files) {
+    if (!file || !fs.existsSync(file)) continue;
+    try {
+      const contents = fs.readFileSync(file);
+      const digest = crypto.createHash('sha256').update(contents).digest('hex');
+      inputs.push({ path: toProjectPath(file), sha256: digest, bytes: contents.length });
+    } catch {
+      // An unreadable input is omitted. The snapshot remains usable but the
+      // consumer can see that it has fewer fingerprinted inputs than expected.
+    }
+  }
+  const value = crypto.createHash('sha256').update(JSON.stringify(inputs)).digest('hex');
+  return { algorithm: 'sha256', value, inputs };
+}
+function getWorkflowStage(folder, artifact, hasDesign, hasTasks, stats) {
+  if (!artifact) return 'requirements';
+  if (!hasTasks) return hasDesign ? 'tasks' : 'design';
+  return stats && stats.remaining > 0 ? 'build' : 'verify';
+}
+function getWorkflowCandidates(stage, stats) {
+  const candidates = {
+    requirements: [{ id: 'create-requirements', command: 'kspec spec "Feature Name"', description: 'Create requirements for a new specification' }],
+    design: [
+      { id: 'create-design', command: 'kspec design', description: 'Create a technical design' },
+      { id: 'create-tasks', command: 'kspec tasks', description: 'Generate implementation tasks without a design' }
+    ],
+    tasks: [{ id: 'create-tasks', command: 'kspec tasks', description: 'Generate implementation tasks' }],
+    build: [{ id: 'build-next-chunk', command: 'kspec build', description: `Build the next incomplete task${stats?.remaining === 1 ? '' : 's'}` }],
+    verify: [{ id: 'verify-implementation', command: 'kspec verify', description: 'Verify the implementation against the specification' }]
+  };
+  return candidates[stage] || [];
+}
+/**
+ * Build a fresh, portable view of one kspec workflow.
+ *
+ * This function intentionally persists nothing. Requirements, design, tasks,
+ * and the active-spec pointer remain authoritative; integrations may use the
+ * fingerprint to refuse work when the input artifacts change after inspection.
+ */
+function getWorkflowSnapshot(folder = resolveActiveSpec()) {
+  if (!folder) {
+    return {
+      schemaVersion: 1,
+      kind: 'kspec-workflow-snapshot',
+      projectRoot: '.',
+      activeSpec: null,
+      stage: 'uninitialized',
+      artifacts: { requirements: null, design: null, tasks: null, context: fs.existsSync(CONTEXT_FILE) ? toProjectPath(CONTEXT_FILE) : null },
+      progress: { tasks: null, chunks: [], currentChunk: null, currentTask: null },
+      next: { candidates: getWorkflowCandidates('requirements', null) },
+      freshness: getWorkflowInputFingerprint([CURRENT_FILE])
+    };
+  }
+  const artifact = getRequirementsArtifact(folder);
+  const designFile = path.join(folder, 'design.md');
+  const tasksFile = path.join(folder, 'tasks.md');
+  const hasDesign = fs.existsSync(designFile);
+  const hasTasks = fs.existsSync(tasksFile);
+  const stats = getTaskStats(folder);
+  const stage = getWorkflowStage(folder, artifact, hasDesign, hasTasks, stats);
+  const metadataFile = path.join(folder, 'metadata.json');
+  const inputFiles = [CURRENT_FILE, artifact?.path, designFile, tasksFile, metadataFile];
+  return {
+    schemaVersion: 1,
+    kind: 'kspec-workflow-snapshot',
+    projectRoot: '.',
+    activeSpec: { id: path.basename(folder), path: toProjectPath(folder), format: artifact?.format || null },
+    stage,
+    artifacts: {
+      requirements: artifact ? toProjectPath(artifact.path) : null,
+      design: hasDesign ? toProjectPath(designFile) : null,
+      tasks: hasTasks ? toProjectPath(tasksFile) : null,
+      context: fs.existsSync(CONTEXT_FILE) ? toProjectPath(CONTEXT_FILE) : null
+    },
+    progress: {
+      tasks: stats,
+      chunks: getChunkStats(folder) || [],
+      currentChunk: getCurrentChunk(folder),
+      currentTask: getCurrentTask(folder)
+    },
+    next: { candidates: getWorkflowCandidates(stage, stats) },
+    freshness: getWorkflowInputFingerprint(inputFiles)
+  };
+}
+
 
 // Check if spec.md has been modified after spec-lite.md
 function isSpecStale(folder) {
@@ -6614,8 +6712,19 @@ Provide detailed findings.`;
     console.log('');
   },
 
-  status() {
-    const current = getCurrentSpec();
+  status(args = []) {
+    const jsonOutput = args.includes('--json');
+    const requested = args.filter(arg => !arg.startsWith('-'));
+    if (requested.length > 1) die('Usage: kspec status [spec] [--json]');
+    const exactFolder = requested.length === 1
+      ? getSpecDirectories().find(folder => path.basename(folder) === requested[0])
+      : null;
+    const current = requested.length === 1 ? (exactFolder || findSpec(requested[0])) : getCurrentSpec();
+    if (requested.length === 1 && !current) die(`Spec "${requested[0]}" not found. Run \`kspec list\` to see available specs.`);
+    if (jsonOutput) {
+      process.stdout.write(`${JSON.stringify(getWorkflowSnapshot(current), null, 2)}\n`);
+      return;
+    }
     const jiraProject = getJiraProject();
     const rallyProject = getRallyProject();
     const adoProject = getAdoProject();
@@ -7575,7 +7684,8 @@ Other:
   kspec context           Refresh/view the derived context snapshot
   kspec context --stdout  Refresh/print context for hooks and agents
   kspec list              List all specs
-  kspec status            Current status
+  kspec status [spec] [--json]
+                          Current status; --json emits a derived workflow snapshot for integrations
   kspec agents            List agents
   kspec sync-agents       Refresh agents + skills to latest kspec templates (use after MCP changes or kspec upgrade)
   kspec update            Check for updates
@@ -7666,4 +7776,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getAzureDevOpsMcpName, isAzureDevOpsMcpName, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, parseOptionValue, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, getChunkStats, getWorkflowInputFingerprint, getWorkflowSnapshot, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getAzureDevOpsMcpName, isAzureDevOpsMcpName, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, parseOptionValue, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
