@@ -208,7 +208,8 @@ Requires the matching MCP (`rally`, `azure-devops`, or `github`). After upgradin
 | `kspec refresh` | Regenerate spec-lite.md after editing spec.md |
 | `kspec context` | View/refresh context file |
 | `kspec list` | List all specs |
-| `kspec status` | Pipeline-aware status with next step suggestion |
+| `kspec status [spec] [--json]` | Pipeline-aware status; `--json` emits a fresh workflow snapshot for integrations |
+| `kspec crew-result [spec] [options]` | Emit a Crew-specific run-result envelope without persisting workflow state |
 | `kspec agents` | List available agents |
 | `kspec update` | Check for updates |
 | `kspec help` | Show help |
@@ -571,6 +572,21 @@ Or refresh inline without leaving kiro-cli:
 
 Compaction creates a new Kiro session and reloads persistent resources. Session-start hooks and the Agent Skill preflight regenerate the snapshot before it is consumed.
 
+### Integration-ready workflow snapshot
+
+`kspec status --json` provides a **derived, versioned workflow snapshot** for Kiro Crew or other integration consumers. It reads the active specification, requirements, design, tasks, and context artifacts at invocation time; it does not write a parallel task store, session log, approval state, or agent runtime configuration.
+
+```bash
+kspec status --json                    # active specification
+kspec status 2026-09-01-feature --json # an explicitly selected specification
+```
+
+The output contains the lifecycle stage, repository-relative artifact paths, aggregate and per-chunk task progress, advisory candidate commands, and a SHA-256 fingerprint over the inputs used to derive the result. Consumers should compare the fingerprint before acting and refresh the snapshot if the source artifacts change. Requirements, designs, tasks, and kspec's active-spec pointer remain authoritative.
+
+The contract is deliberately complementary to Kiro Crew. It does **not** authorize an action or replace Crew's policy, approvals, sessions, retries, checkpoints, scheduling, or memory. Those controls remain owned by Kiro Crew. See the [workflow snapshot contract](docs/workflow-snapshot.md) and its [JSON Schema](schemas/kspec-workflow-snapshot.schema.json).
+
+For a Crew-managed execution outcome, `kspec crew-result` emits a separate, non-persistent result envelope. It can include optional `KIROCREW_SESSION_KEY` correlation metadata, the input fingerprint observed at admission, the current output fingerprint, a normalized outcome, and references to existing project artifacts. It intentionally keeps Crew session information out of the portable snapshot. See the [Crew run-result contract](docs/crew-run-result.md) and its [JSON Schema](schemas/kspec-crew-run-result.schema.json).
+
 ### Native Kiro session controls
 
 kspec does not wrap controls Kiro already provides:
@@ -892,6 +908,9 @@ kspec --version
 - [Methodology](docs/methodology.md) — Why spec-driven development works
 - [Example: Todo App](docs/examples/todo-app/) — Complete walkthrough with real files
 - [Contracts](docs/contracts.md) — Enforce structured outputs in specs
+- [Workflow snapshot](docs/workflow-snapshot.md) — Derived, portable status contract for integrations
+- [Crew run result](docs/crew-run-result.md) — Optional Crew provenance and outcome envelope
+- [Crew ACP hook compatibility](docs/crew-acp-hook-compatibility.md) — Reproducible V3 project-hook test matrix
 - [CHANGELOG](CHANGELOG.md) — Version history and release notes
 - [SECURITY.md](SECURITY.md) — Secure MCP configuration and best practices
 

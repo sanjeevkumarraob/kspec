@@ -1,4 +1,4 @@
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, after, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
@@ -17,6 +17,278 @@ describe('kspec', () => {
   after(() => {
     process.chdir(__dirname);
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  describe('workflow snapshot', () => {
+    const specFolder = '.kiro/specs/2026-09-01-crew-handoff';
+
+    after(() => {
+      fs.rmSync(specFolder, { recursive: true, force: true });
+      fs.rmSync('.kiro/.current', { force: true });
+    });
+
+    it('derives portable progress, candidates, and a content fingerprint from authoritative artifacts', () => {
+      const { getWorkflowSnapshot } = require('../src/index.js');
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(path.join(specFolder, 'requirements.md'), '# Requirements\n');
+      fs.writeFileSync(path.join(specFolder, 'design.md'), '# Design\n');
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), [
+        '## Chunk 1: Foundation',
+        '- [x] Add a requirements model',
+        '## Chunk 2: Snapshot',
+        '- [ ] Derive workflow state',
+        '- [x] Add compatibility tests'
+      ].join('\n'));
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const snapshot = getWorkflowSnapshot();
+      assert.strictEqual(snapshot.schemaVersion, 1);
+      assert.strictEqual(snapshot.kind, 'kspec-workflow-snapshot');
+      assert.deepStrictEqual(snapshot.activeSpec, {
+        id: '2026-09-01-crew-handoff',
+        path: specFolder,
+        format: 'v3'
+      });
+      assert.strictEqual(snapshot.stage, 'build');
+      assert.deepStrictEqual(snapshot.progress.tasks, { total: 3, done: 2, remaining: 1 });
+      assert.deepStrictEqual(snapshot.progress.chunks[1], {
+        number: 2,
+        name: 'Snapshot',
+        total: 2,
+        done: 1,
+        remaining: 1
+      });
+      assert.strictEqual(snapshot.progress.currentChunk, 'Chunk 2: Snapshot');
+      assert.strictEqual(snapshot.progress.currentTask, 'Derive workflow state');
+      assert.strictEqual(snapshot.next.candidates[0].id, 'build-next-chunk');
+      assert.strictEqual(snapshot.freshness.algorithm, 'sha256');
+      assert.ok(snapshot.freshness.inputs.some(input => input.path === `${specFolder}/tasks.md`));
+
+      const firstFingerprint = snapshot.freshness.value;
+      fs.appendFileSync(path.join(specFolder, 'tasks.md'), '\n- [ ] Detect stale input');
+      assert.notStrictEqual(getWorkflowSnapshot().freshness.value, firstFingerprint);
+    });
+
+    it('emits the same derived contract through status --json without human-readable status text', () => {
+      let output = '';
+      const originalWrite = process.stdout.write;
+      process.stdout.write = chunk => { output += chunk; return true; };
+      try {
+        commands.status(['2026-09-01-crew-handoff', '--json']);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+      const snapshot = JSON.parse(output);
+      assert.strictEqual(snapshot.activeSpec.id, '2026-09-01-crew-handoff');
+      assert.strictEqual(snapshot.stage, 'build');
+      assert.strictEqual(snapshot.progress.tasks.remaining, 2);
+    });
+  });
+
+  describe('workflow snapshot stage boundaries', () => {
+    const specFolder = '.kiro/specs/2026-09-01-stage-boundaries';
+
+    const seed = () => {
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(path.join(specFolder, 'requirements.md'), '# Requirements\n');
+      fs.writeFileSync('.kiro/.current', specFolder);
+    };
+
+    afterEach(() => {
+      fs.rmSync(specFolder, { recursive: true, force: true });
+      fs.rmSync('.kiro/.current', { force: true });
+    });
+
+    it('reports tasks, not verify, when tasks.md exists but schedules no work', () => {
+      const { getWorkflowSnapshot } = require('../src/index.js');
+      seed();
+      // Task generation that failed part-way leaves a file with no checkboxes.
+      // Reporting `verify` here would tell an unattended consumer the build
+      // finished when nothing was ever scheduled.
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '# Tasks\n\nNothing generated yet.\n');
+
+      const snapshot = getWorkflowSnapshot();
+      assert.deepStrictEqual(snapshot.progress.tasks, { total: 0, done: 0, remaining: 0 });
+      assert.strictEqual(snapshot.stage, 'tasks');
+      assert.deepStrictEqual(snapshot.next.candidates.map(c => c.id), ['create-tasks']);
+    });
+
+    it('still reports verify when every scheduled task is complete', () => {
+      const { getWorkflowSnapshot } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+
+      const snapshot = getWorkflowSnapshot();
+      assert.strictEqual(snapshot.stage, 'verify');
+      assert.deepStrictEqual(snapshot.next.candidates.map(c => c.id), ['verify-implementation']);
+    });
+
+    it('reports the terminal complete stage with no candidates once done is recorded', () => {
+      const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      assert.strictEqual(getWorkflowSnapshot().stage, 'verify');
+
+      recordMetric(specFolder, 'done');
+
+      const snapshot = getWorkflowSnapshot();
+      assert.strictEqual(snapshot.stage, 'complete');
+      // An empty candidate list is the stopping condition for a scheduler.
+      assert.deepStrictEqual(snapshot.next.candidates, []);
+    });
+
+    it('reopens a completed workflow after later lifecycle activity creates pending work', () => {
+      const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      recordMetric(specFolder, 'done');
+      assert.strictEqual(getWorkflowSnapshot().stage, 'complete');
+
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n- [ ] Implement revised requirement\n');
+      recordMetric(specFolder, 'revise-started');
+
+      const snapshot = getWorkflowSnapshot();
+      assert.strictEqual(snapshot.stage, 'build');
+      assert.deepStrictEqual(snapshot.next.candidates.map(c => c.id), ['build-next-chunk']);
+    });
+
+    it('changes the fingerprint when completion is recorded so cached consumers see the transition', () => {
+      const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      const before = getWorkflowSnapshot().freshness.value;
+
+      recordMetric(specFolder, 'done');
+
+      const after = getWorkflowSnapshot();
+      assert.notStrictEqual(after.freshness.value, before);
+      assert.ok(after.freshness.inputs.some(input => input.path === `${specFolder}/metrics.json`));
+    });
+
+    it('never fabricates a terminal stage from unreadable metrics', () => {
+      const { getWorkflowSnapshot } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      fs.writeFileSync(path.join(specFolder, 'metrics.json'), '{ not valid json');
+
+      assert.strictEqual(getWorkflowSnapshot().stage, 'verify');
+    });
+
+    it('emits a stage the shipped schema accepts', () => {
+      const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
+      const schema = require('../schemas/kspec-workflow-snapshot.schema.json');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      recordMetric(specFolder, 'done');
+
+      assert.ok(schema.properties.stage.enum.includes(getWorkflowSnapshot().stage));
+    });
+  });
+
+  describe('Crew run result', () => {
+    const specFolder = '.kiro/specs/2026-09-01-crew-run-result';
+
+    after(() => {
+      fs.rmSync(specFolder, { recursive: true, force: true });
+      fs.rmSync('.kiro/.current', { force: true });
+    });
+
+    it('emits a non-persistent Crew envelope with optional session provenance and bound inputs', () => {
+      const { createCrewRunResult } = require('../src/index.js');
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(path.join(specFolder, 'requirements.md'), '# Requirements\n');
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '- [ ] Build bridge\n');
+      fs.writeFileSync(path.join(specFolder, 'review.md'), '# Review\nPassed\n');
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const result = createCrewRunResult({
+        folder: specFolder,
+        env: { KIROCREW_SESSION_KEY: 'crew-session-123' },
+        status: 'needs-review',
+        summary: 'Implementation is ready for maintainer review.',
+        inputFingerprint: 'a'.repeat(64),
+        artifacts: [path.join(specFolder, 'review.md'), path.join(specFolder, 'review.md')]
+      });
+
+      assert.strictEqual(result.schemaVersion, 1);
+      assert.strictEqual(result.kind, 'kspec-crew-run-result');
+      assert.strictEqual(result.consumer.name, 'kiro-crew');
+      assert.strictEqual(result.consumer.sessionKey, 'crew-session-123');
+      assert.strictEqual(result.workflow.specId, '2026-09-01-crew-run-result');
+      assert.strictEqual(result.workflow.inputFingerprint, 'a'.repeat(64));
+      assert.match(result.workflow.outputFingerprint, /^[a-f0-9]{64}$/);
+      assert.strictEqual(result.result.status, 'needs_review');
+      assert.deepStrictEqual(result.result.artifacts, [`${specFolder}/review.md`]);
+    });
+
+    it('rejects empty artifacts, directories, and symlink escapes from the project root', () => {
+      const { createCrewRunResult } = require('../src/index.js');
+      const expectExit = callback => {
+        const originalExit = process.exit;
+        const originalError = console.error;
+        process.exit = () => { throw new Error('EXIT'); };
+        console.error = () => {};
+        try {
+          assert.throws(callback, /EXIT/);
+        } finally {
+          process.exit = originalExit;
+          console.error = originalError;
+        }
+      };
+
+      expectExit(() => createCrewRunResult({ folder: specFolder, artifacts: [''] }));
+      expectExit(() => createCrewRunResult({ folder: specFolder, artifacts: [specFolder] }));
+
+      const outside = path.join(__dirname, 'crew-result-outside.txt');
+      const link = path.join(specFolder, 'external-artifact');
+      fs.writeFileSync(outside, 'outside project');
+      try {
+        try {
+          fs.symlinkSync(outside, link, 'file');
+        } catch (error) {
+          // Some Windows environments deny symlink creation without developer
+          // mode. The direct path and directory checks above still run there.
+          if (error.code === 'EPERM') return;
+          throw error;
+        }
+        expectExit(() => createCrewRunResult({ folder: specFolder, artifacts: [link] }));
+      } finally {
+        fs.rmSync(link, { force: true });
+        fs.rmSync(outside, { force: true });
+      }
+    });
+
+    it('emits JSON through the CLI command without writing an adapter state file', () => {
+      let output = '';
+      const originalWrite = process.stdout.write;
+      process.stdout.write = chunk => { output += chunk; return true; };
+      try {
+        commands['crew-result']([
+          '2026-09-01-crew-run-result',
+          '--status', 'completed',
+          '--summary', 'Completed from a Crew session.',
+          '--artifact', '.kiro/specs/2026-09-01-crew-run-result/review.md'
+        ]);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+      const result = JSON.parse(output);
+      assert.strictEqual(result.consumer.sessionKey, null);
+      assert.strictEqual(result.result.status, 'completed');
+      assert.deepStrictEqual(result.result.artifacts, [`${specFolder}/review.md`]);
+      assert.ok(!fs.existsSync(path.join(specFolder, 'crew-run-result.json')));
+    });
+  });
+
+  describe('Crew integration schemas', () => {
+    it('ships parseable versioned schemas for workflow snapshots and Crew run results', () => {
+      const workflowSchema = require('../schemas/kspec-workflow-snapshot.schema.json');
+      const resultSchema = require('../schemas/kspec-crew-run-result.schema.json');
+      assert.strictEqual(workflowSchema.properties.schemaVersion.const, 1);
+      assert.strictEqual(workflowSchema.properties.kind.const, 'kspec-workflow-snapshot');
+      assert.strictEqual(resultSchema.properties.schemaVersion.const, 1);
+      assert.strictEqual(resultSchema.properties.kind.const, 'kspec-crew-run-result');
+    });
   });
 
   describe('loadConfig', () => {
