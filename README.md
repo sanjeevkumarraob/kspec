@@ -209,6 +209,7 @@ Requires the matching MCP (`rally`, `azure-devops`, or `github`). After upgradin
 | `kspec context` | View/refresh context file |
 | `kspec list` | List all specs |
 | `kspec status [spec] [--json]` | Pipeline-aware status; `--json` emits a fresh workflow snapshot for integrations |
+| `kspec crew-result [spec] [options]` | Emit a Crew-specific run-result envelope without persisting workflow state |
 | `kspec agents` | List available agents |
 | `kspec update` | Check for updates |
 | `kspec help` | Show help |
@@ -584,6 +585,8 @@ The output contains the lifecycle stage, repository-relative artifact paths, agg
 
 The contract is deliberately complementary to Kiro Crew. It does **not** authorize an action or replace Crew's policy, approvals, sessions, retries, checkpoints, scheduling, or memory. Those controls remain owned by Kiro Crew. See the [workflow snapshot contract](docs/workflow-snapshot.md) and its [JSON Schema](schemas/kspec-workflow-snapshot.schema.json).
 
+For a Crew-managed execution outcome, `kspec crew-result` emits a separate, non-persistent result envelope. It can include optional `KIROCREW_SESSION_KEY` correlation metadata, the input fingerprint observed at admission, the current output fingerprint, a normalized outcome, and references to existing project artifacts. It intentionally keeps Crew session information out of the portable snapshot. See the [Crew run-result contract](docs/crew-run-result.md) and its [JSON Schema](schemas/kspec-crew-run-result.schema.json).
+
 ### Native Kiro session controls
 
 kspec does not wrap controls Kiro already provides:
@@ -906,6 +909,8 @@ kspec --version
 - [Example: Todo App](docs/examples/todo-app/) — Complete walkthrough with real files
 - [Contracts](docs/contracts.md) — Enforce structured outputs in specs
 - [Workflow snapshot](docs/workflow-snapshot.md) — Derived, portable status contract for integrations
+- [Crew run result](docs/crew-run-result.md) — Optional Crew provenance and outcome envelope
+- [Crew ACP hook compatibility](docs/crew-acp-hook-compatibility.md) — Reproducible V3 project-hook test matrix
 - [CHANGELOG](CHANGELOG.md) — Version history and release notes
 - [SECURITY.md](SECURITY.md) — Secure MCP configuration and best practices
 

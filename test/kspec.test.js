@@ -85,6 +85,75 @@ describe('kspec', () => {
     });
   });
 
+  describe('Crew run result', () => {
+    const specFolder = '.kiro/specs/2026-09-01-crew-run-result';
+
+    after(() => {
+      fs.rmSync(specFolder, { recursive: true, force: true });
+      fs.rmSync('.kiro/.current', { force: true });
+    });
+
+    it('emits a non-persistent Crew envelope with optional session provenance and bound inputs', () => {
+      const { createCrewRunResult } = require('../src/index.js');
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(path.join(specFolder, 'requirements.md'), '# Requirements\n');
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '- [ ] Build bridge\n');
+      fs.writeFileSync(path.join(specFolder, 'review.md'), '# Review\nPassed\n');
+      fs.writeFileSync('.kiro/.current', specFolder);
+
+      const result = createCrewRunResult({
+        folder: specFolder,
+        env: { KIROCREW_SESSION_KEY: 'crew-session-123' },
+        status: 'needs-review',
+        summary: 'Implementation is ready for maintainer review.',
+        inputFingerprint: 'a'.repeat(64),
+        artifacts: [path.join(specFolder, 'review.md'), path.join(specFolder, 'review.md')]
+      });
+
+      assert.strictEqual(result.schemaVersion, 1);
+      assert.strictEqual(result.kind, 'kspec-crew-run-result');
+      assert.strictEqual(result.consumer.name, 'kiro-crew');
+      assert.strictEqual(result.consumer.sessionKey, 'crew-session-123');
+      assert.strictEqual(result.workflow.specId, '2026-09-01-crew-run-result');
+      assert.strictEqual(result.workflow.inputFingerprint, 'a'.repeat(64));
+      assert.match(result.workflow.outputFingerprint, /^[a-f0-9]{64}$/);
+      assert.strictEqual(result.result.status, 'needs_review');
+      assert.deepStrictEqual(result.result.artifacts, [`${specFolder}/review.md`]);
+    });
+
+    it('emits JSON through the CLI command without writing an adapter state file', () => {
+      let output = '';
+      const originalWrite = process.stdout.write;
+      process.stdout.write = chunk => { output += chunk; return true; };
+      try {
+        commands['crew-result']([
+          '2026-09-01-crew-run-result',
+          '--status', 'completed',
+          '--summary', 'Completed from a Crew session.',
+          '--artifact', '.kiro/specs/2026-09-01-crew-run-result/review.md'
+        ]);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+      const result = JSON.parse(output);
+      assert.strictEqual(result.consumer.sessionKey, null);
+      assert.strictEqual(result.result.status, 'completed');
+      assert.deepStrictEqual(result.result.artifacts, [`${specFolder}/review.md`]);
+      assert.ok(!fs.existsSync(path.join(specFolder, 'crew-run-result.json')));
+    });
+  });
+
+  describe('Crew integration schemas', () => {
+    it('ships parseable versioned schemas for workflow snapshots and Crew run results', () => {
+      const workflowSchema = require('../schemas/kspec-workflow-snapshot.schema.json');
+      const resultSchema = require('../schemas/kspec-crew-run-result.schema.json');
+      assert.strictEqual(workflowSchema.properties.schemaVersion.const, 1);
+      assert.strictEqual(workflowSchema.properties.kind.const, 'kspec-workflow-snapshot');
+      assert.strictEqual(resultSchema.properties.schemaVersion.const, 1);
+      assert.strictEqual(resultSchema.properties.kind.const, 'kspec-crew-run-result');
+    });
+  });
+
   describe('loadConfig', () => {
     it('returns defaults when no config', () => {
       const cfg = loadConfig();
