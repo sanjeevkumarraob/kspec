@@ -34,7 +34,7 @@ The command writes exactly one JSON document to standard output when `--json` is
 | `kind` | Stable document discriminator: `kspec-workflow-snapshot`. |
 | `projectRoot` | The root from which all paths are relative. The current value is `.`. |
 | `activeSpec` | The selected or explicitly requested specification, including its stable directory name, repository-relative path, and detected format. It is `null` if no specification can be resolved. |
-| `stage` | Derived lifecycle phase: `uninitialized`, `requirements`, `design`, `tasks`, `build`, or `verify`. |
+| `stage` | Derived lifecycle phase: `uninitialized`, `requirements`, `design`, `tasks`, `build`, `verify`, or `complete`. `complete` is terminal — it is derived from the `done` event recorded in the spec's `metrics.json` and carries an empty `next.candidates`, so a scheduled consumer has an explicit stopping condition. A `tasks.md` that exists but contains no checkboxes reports `tasks`, not `verify`, because no work was ever scheduled. |
 | `artifacts` | Repository-relative paths to the requirements, design, tasks, and generated context artifacts when present. |
 | `progress` | Aggregate task totals, progress by chunk where `tasks.md` contains chunk headings, and the first incomplete chunk/task. |
 | `next.candidates` | Candidate kspec commands appropriate to the derived stage. These are suggestions, **not authorizations**. |

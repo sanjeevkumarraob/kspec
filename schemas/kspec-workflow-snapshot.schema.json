@@ -50,7 +50,7 @@
     },
     "stage": {
       "type": "string",
-      "enum": ["uninitialized", "requirements", "design", "tasks", "build", "verify"]
+      "enum": ["uninitialized", "requirements", "design", "tasks", "build", "verify", "complete"]
     },
     "artifacts": {
       "$ref": "#/$defs/artifacts"

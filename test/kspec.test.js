@@ -1,4 +1,4 @@
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, after, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
@@ -82,6 +82,91 @@ describe('kspec', () => {
       assert.strictEqual(snapshot.activeSpec.id, '2026-09-01-crew-handoff');
       assert.strictEqual(snapshot.stage, 'build');
       assert.strictEqual(snapshot.progress.tasks.remaining, 2);
+    });
+  });
+
+  describe('workflow snapshot stage boundaries', () => {
+    const specFolder = '.kiro/specs/2026-09-01-stage-boundaries';
+
+    const seed = () => {
+      fs.mkdirSync(specFolder, { recursive: true });
+      fs.writeFileSync(path.join(specFolder, 'requirements.md'), '# Requirements\n');
+      fs.writeFileSync('.kiro/.current', specFolder);
+    };
+
+    afterEach(() => {
+      fs.rmSync(specFolder, { recursive: true, force: true });
+      fs.rmSync('.kiro/.current', { force: true });
+    });
+
+    it('reports tasks, not verify, when tasks.md exists but schedules no work', () => {
+      const { getWorkflowSnapshot } = require('../src/index.js');
+      seed();
+      // Task generation that failed part-way leaves a file with no checkboxes.
+      // Reporting `verify` here would tell an unattended consumer the build
+      // finished when nothing was ever scheduled.
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '# Tasks\n\nNothing generated yet.\n');
+
+      const snapshot = getWorkflowSnapshot();
+      assert.deepStrictEqual(snapshot.progress.tasks, { total: 0, done: 0, remaining: 0 });
+      assert.strictEqual(snapshot.stage, 'tasks');
+      assert.deepStrictEqual(snapshot.next.candidates.map(c => c.id), ['create-tasks']);
+    });
+
+    it('still reports verify when every scheduled task is complete', () => {
+      const { getWorkflowSnapshot } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+
+      const snapshot = getWorkflowSnapshot();
+      assert.strictEqual(snapshot.stage, 'verify');
+      assert.deepStrictEqual(snapshot.next.candidates.map(c => c.id), ['verify-implementation']);
+    });
+
+    it('reports the terminal complete stage with no candidates once done is recorded', () => {
+      const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      assert.strictEqual(getWorkflowSnapshot().stage, 'verify');
+
+      recordMetric(specFolder, 'done');
+
+      const snapshot = getWorkflowSnapshot();
+      assert.strictEqual(snapshot.stage, 'complete');
+      // An empty candidate list is the stopping condition for a scheduler.
+      assert.deepStrictEqual(snapshot.next.candidates, []);
+    });
+
+    it('changes the fingerprint when completion is recorded so cached consumers see the transition', () => {
+      const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      const before = getWorkflowSnapshot().freshness.value;
+
+      recordMetric(specFolder, 'done');
+
+      const after = getWorkflowSnapshot();
+      assert.notStrictEqual(after.freshness.value, before);
+      assert.ok(after.freshness.inputs.some(input => input.path === `${specFolder}/metrics.json`));
+    });
+
+    it('never fabricates a terminal stage from unreadable metrics', () => {
+      const { getWorkflowSnapshot } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      fs.writeFileSync(path.join(specFolder, 'metrics.json'), '{ not valid json');
+
+      assert.strictEqual(getWorkflowSnapshot().stage, 'verify');
+    });
+
+    it('emits a stage the shipped schema accepts', () => {
+      const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
+      const schema = require('../schemas/kspec-workflow-snapshot.schema.json');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      recordMetric(specFolder, 'done');
+
+      assert.ok(schema.properties.stage.enum.includes(getWorkflowSnapshot().stage));
     });
   });
 

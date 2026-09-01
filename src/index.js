@@ -939,10 +939,32 @@ function getWorkflowInputFingerprint(files) {
   const value = crypto.createHash('sha256').update(JSON.stringify(inputs)).digest('hex');
   return { algorithm: 'sha256', value, inputs };
 }
+// `kspec done` appends a `done` event to the spec's metrics.json. Deriving the
+// terminal stage from that existing artifact keeps the snapshot free of any new
+// persisted state while still giving schedulers a stopping condition. Without
+// it a finished spec reports `verify` forever, so a recurring Crew job would
+// re-verify completed work on every tick.
+function isWorkflowComplete(folder) {
+  const metricsFile = path.join(folder, 'metrics.json');
+  if (!fs.existsSync(metricsFile)) return false;
+  try {
+    const metrics = JSON.parse(fs.readFileSync(metricsFile, 'utf8'));
+    return Array.isArray(metrics) && metrics.some(entry => entry && entry.event === 'done');
+  } catch {
+    // Unreadable metrics must never fabricate a terminal state; report the
+    // stage the workflow artifacts alone can justify.
+    return false;
+  }
+}
 function getWorkflowStage(folder, artifact, hasDesign, hasTasks, stats) {
   if (!artifact) return 'requirements';
+  if (isWorkflowComplete(folder)) return 'complete';
   if (!hasTasks) return hasDesign ? 'tasks' : 'design';
-  return stats && stats.remaining > 0 ? 'build' : 'verify';
+  // tasks.md exists but holds no checkboxes, so task generation never produced
+  // a plan. Falling through to `verify` here would tell an unattended consumer
+  // the build had finished when no work was ever scheduled.
+  if (!stats || stats.total === 0) return 'tasks';
+  return stats.remaining > 0 ? 'build' : 'verify';
 }
 function getWorkflowCandidates(stage, stats) {
   const candidates = {
@@ -953,7 +975,10 @@ function getWorkflowCandidates(stage, stats) {
     ],
     tasks: [{ id: 'create-tasks', command: 'kspec tasks', description: 'Generate implementation tasks' }],
     build: [{ id: 'build-next-chunk', command: 'kspec build', description: `Build the next incomplete task${stats?.remaining === 1 ? '' : 's'}` }],
-    verify: [{ id: 'verify-implementation', command: 'kspec verify', description: 'Verify the implementation against the specification' }]
+    verify: [{ id: 'verify-implementation', command: 'kspec verify', description: 'Verify the implementation against the specification' }],
+    // A completed spec offers no automatable next action. An empty list is the
+    // honest signal for a scheduler: stop, rather than pick a default.
+    complete: []
   };
   return candidates[stage] || [];
 }
@@ -986,7 +1011,12 @@ function getWorkflowSnapshot(folder = resolveActiveSpec()) {
   const stats = getTaskStats(folder);
   const stage = getWorkflowStage(folder, artifact, hasDesign, hasTasks, stats);
   const metadataFile = path.join(folder, 'metadata.json');
-  const inputFiles = [CURRENT_FILE, artifact?.path, designFile, tasksFile, metadataFile];
+  // metrics.json determines the terminal `complete` stage, so it belongs in the
+  // fingerprint. Omitting it would leave the digest unchanged across the
+  // transition into `complete`, and a consumer caching on the fingerprint would
+  // keep acting on a finished spec.
+  const metricsFile = path.join(folder, 'metrics.json');
+  const inputFiles = [CURRENT_FILE, artifact?.path, designFile, tasksFile, metadataFile, metricsFile];
   return {
     schemaVersion: 1,
     kind: 'kspec-workflow-snapshot',
