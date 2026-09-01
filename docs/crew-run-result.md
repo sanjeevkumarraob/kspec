@@ -52,7 +52,7 @@ A Crew integration can use the contracts as a narrow, reviewable bridge:
 4. Run `kspec crew-result <spec> --input-fingerprint <value> ...` at the end of the execution.
 5. Store or present the resulting envelope in the Crew-owned run/audit layer. If `inputFingerprint` and `outputFingerprint` differ, show that source artifacts changed and request reconciliation when needed.
 
-The command validates that reported artifacts exist below the repository root. It does not accept arbitrary host paths, does not write a session transcript, and does not create a second lock or distributed coordination mechanism.
+The command validates that each reported artifact is a **non-empty existing regular file** whose canonical filesystem location resolves below the canonical repository root. It therefore rejects project-root directories, arbitrary host paths, and in-repository symlinks that point outside the worktree. It does not write a session transcript and does not create a second lock or distributed coordination mechanism.
 
 ## Security boundary
 

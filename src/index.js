@@ -941,15 +941,25 @@ function getWorkflowInputFingerprint(files) {
 }
 // `kspec done` appends a `done` event to the spec's metrics.json. Deriving the
 // terminal stage from that existing artifact keeps the snapshot free of any new
-// persisted state while still giving schedulers a stopping condition. Without
-// it a finished spec reports `verify` forever, so a recurring Crew job would
-// re-verify completed work on every tick.
+// persisted state while still giving schedulers a stopping condition. A terminal
+// event is superseded by later workflow-start events so revised or resumed work
+// never remains falsely complete.
+const WORKFLOW_REOPEN_EVENTS = new Set([
+  'spec-started', 'design-started', 'tasks-started', 'build-started',
+  'verify-started', 'fix-started', 'refactor-started', 'spike-started', 'revise-started'
+]);
 function isWorkflowComplete(folder) {
   const metricsFile = path.join(folder, 'metrics.json');
   if (!fs.existsSync(metricsFile)) return false;
   try {
     const metrics = JSON.parse(fs.readFileSync(metricsFile, 'utf8'));
-    return Array.isArray(metrics) && metrics.some(entry => entry && entry.event === 'done');
+    if (!Array.isArray(metrics)) return false;
+    for (let i = metrics.length - 1; i >= 0; i--) {
+      const event = metrics[i]?.event;
+      if (event === 'done') return true;
+      if (WORKFLOW_REOPEN_EVENTS.has(event)) return false;
+    }
+    return false;
   } catch {
     // Unreadable metrics must never fabricate a terminal state; report the
     // stage the workflow artifacts alone can justify.
@@ -1082,11 +1092,24 @@ function parseCrewRunResultArgs(args) {
   return result;
 }
 function toExistingProjectArtifact(file) {
-  const resolved = path.resolve(file);
-  const root = path.resolve(process.cwd());
-  const withinRoot = resolved === root || resolved.startsWith(`${root}${path.sep}`);
-  if (!withinRoot) die(`Crew result artifact must be inside the project root: ${file}`);
+  if (typeof file !== 'string' || !file.trim()) {
+    die('Crew result artifact must be a non-empty path to an existing project file.');
+  }
+  const resolved = path.resolve(file.trim());
   if (!fs.existsSync(resolved)) die(`Crew result artifact does not exist: ${file}`);
+  let root;
+  let canonical;
+  try {
+    root = fs.realpathSync(process.cwd());
+    canonical = fs.realpathSync(resolved);
+  } catch {
+    die(`Crew result artifact could not be resolved safely: ${file}`);
+  }
+  const withinRoot = canonical === root || canonical.startsWith(`${root}${path.sep}`);
+  if (!withinRoot) die(`Crew result artifact must resolve inside the project root: ${file}`);
+  if (!fs.statSync(canonical).isFile()) {
+    die(`Crew result artifact must be an existing file: ${file}`);
+  }
   return toProjectPath(resolved);
 }
 /**

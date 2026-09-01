@@ -137,6 +137,21 @@ describe('kspec', () => {
       assert.deepStrictEqual(snapshot.next.candidates, []);
     });
 
+    it('reopens a completed workflow after later lifecycle activity creates pending work', () => {
+      const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
+      seed();
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n');
+      recordMetric(specFolder, 'done');
+      assert.strictEqual(getWorkflowSnapshot().stage, 'complete');
+
+      fs.writeFileSync(path.join(specFolder, 'tasks.md'), '## Chunk 1: Work\n- [x] Ship it\n- [ ] Implement revised requirement\n');
+      recordMetric(specFolder, 'revise-started');
+
+      const snapshot = getWorkflowSnapshot();
+      assert.strictEqual(snapshot.stage, 'build');
+      assert.deepStrictEqual(snapshot.next.candidates.map(c => c.id), ['build-next-chunk']);
+    });
+
     it('changes the fingerprint when completion is recorded so cached consumers see the transition', () => {
       const { getWorkflowSnapshot, recordMetric } = require('../src/index.js');
       seed();
@@ -204,6 +219,43 @@ describe('kspec', () => {
       assert.match(result.workflow.outputFingerprint, /^[a-f0-9]{64}$/);
       assert.strictEqual(result.result.status, 'needs_review');
       assert.deepStrictEqual(result.result.artifacts, [`${specFolder}/review.md`]);
+    });
+
+    it('rejects empty artifacts, directories, and symlink escapes from the project root', () => {
+      const { createCrewRunResult } = require('../src/index.js');
+      const expectExit = callback => {
+        const originalExit = process.exit;
+        const originalError = console.error;
+        process.exit = () => { throw new Error('EXIT'); };
+        console.error = () => {};
+        try {
+          assert.throws(callback, /EXIT/);
+        } finally {
+          process.exit = originalExit;
+          console.error = originalError;
+        }
+      };
+
+      expectExit(() => createCrewRunResult({ folder: specFolder, artifacts: [''] }));
+      expectExit(() => createCrewRunResult({ folder: specFolder, artifacts: [specFolder] }));
+
+      const outside = path.join(__dirname, 'crew-result-outside.txt');
+      const link = path.join(specFolder, 'external-artifact');
+      fs.writeFileSync(outside, 'outside project');
+      try {
+        try {
+          fs.symlinkSync(outside, link, 'file');
+        } catch (error) {
+          // Some Windows environments deny symlink creation without developer
+          // mode. The direct path and directory checks above still run there.
+          if (error.code === 'EPERM') return;
+          throw error;
+        }
+        expectExit(() => createCrewRunResult({ folder: specFolder, artifacts: [link] }));
+      } finally {
+        fs.rmSync(link, { force: true });
+        fs.rmSync(outside, { force: true });
+      }
     });
 
     it('emits JSON through the CLI command without writing an adapter state file', () => {
