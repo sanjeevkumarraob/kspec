@@ -5,6 +5,19 @@
 
 Spec-driven development workflow for Kiro CLI with context management, verification at every step, and Jira integration.
 
+## What's new in 2.4.0
+
+| Area | What you get |
+|---|---|
+| **Kiro Crew handoff** | `kspec status --json` emits a derived workflow snapshot — active spec, lifecycle stage, artifact paths, task progress, and advisory next-step candidates — so Crew can pick up work started interactively |
+| **Crew run results** | `kspec crew-result` emits a run-result envelope with `--status`/`--summary`/`--artifact`, reading `KIROCREW_SESSION_KEY` for session provenance |
+| **Nothing persisted** | The snapshot is derived on every read, so it cannot drift from the artifacts it describes |
+| **Content fingerprints** | `freshness` is a SHA-256 over the input artifacts, not a timestamp — a consumer can refuse to act if inputs changed underneath it |
+| **Published schemas** | Versioned JSON Schemas in `schemas/` for both documents |
+| **Accurate stages** | A `tasks.md` scheduling no work reports `tasks` (not `verify`), and finished specs reach a terminal `complete` stage that later activity reopens |
+
+See [CHANGELOG](CHANGELOG.md#240--2026-09-06) for the full release notes.
+
 ## What's new in 2.3.0
 
 | Area | What you get |

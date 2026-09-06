@@ -2,6 +2,35 @@
 
 All notable changes to kspec are documented in this file.
 
+## [2.4.0] — 2026-09-06
+
+### Kiro Crew workflow handoff
+
+kspec is complementary to Kiro — this release adds a machine-readable view of workflow state so work started in an interactive Kiro CLI session can be picked up by Kiro Crew's persistent, scheduled, and event-driven sessions.
+
+- **`kspec status [spec] [--json]`** emits a derived workflow snapshot: active spec, lifecycle stage, repository-relative artifact paths, aggregate and per-chunk task progress, and advisory next-step candidates. `kspec status` without `--json` is unchanged.
+- **`kspec crew-result [spec] [options]`** emits a Crew-specific run-result envelope with `--status`, `--summary`, `--artifact`, and `--input-fingerprint`. Reads `KIROCREW_SESSION_KEY` from the environment for session provenance when running inside a Crew session.
+- **Versioned JSON Schemas** published at `schemas/kspec-workflow-snapshot.schema.json` and `schemas/kspec-crew-run-result.schema.json`.
+- **Docs**: `docs/workflow-snapshot.md`, `docs/crew-run-result.md`, and `docs/crew-acp-hook-compatibility.md`.
+
+### Design notes
+
+- **Nothing is persisted.** The snapshot is derived on every read, so it cannot drift from the artifacts it describes — which matters because the build agent rewrites `tasks.md` directly from inside a Kiro session without routing through a kspec command.
+- **`freshness` is a SHA-256 content fingerprint** over the input artifacts, not a timestamp. A consumer can bind work to the exact inputs it inspected and refuse to act if they changed underneath it.
+- **`next.candidates` are suggestions, never authorizations.** Tool permissions and approvals remain Kiro Crew's responsibility, enforced at its own policy gate.
+- **Progress is reported as per-chunk `{total, done, remaining}` counts** rather than synthesized task IDs, because `tasks.md` checkboxes have no stable identity and positional IDs would renumber on every insertion.
+
+### Lifecycle stage accuracy
+
+- A `tasks.md` that exists but schedules no work now reports `tasks`, not `verify`. Previously an empty or partially generated task file told an unattended consumer the build had finished.
+- New terminal `complete` stage, derived from the `done` event `kspec done` already records, with an empty candidate list as an explicit stopping condition. Previously a finished spec reported `verify` indefinitely and a recurring job would re-verify completed work.
+- A terminal state is reopened by any later workflow-start event (spec, design, tasks, build, verify, fix, refactor, spike, revise), so revised or resumed work is never left falsely complete.
+- Corrupt or unreadable `metrics.json` never fabricates a terminal state.
+
+### Hardening
+
+- Crew result artifacts must be non-empty paths to existing files that resolve inside the project root. Symlinks are resolved with `realpathSync` before the containment check, and directories are rejected.
+
 ## [2.3.0] — 2026-06-23
 
 ### Kiro CLI 2.8 and V3 early access
