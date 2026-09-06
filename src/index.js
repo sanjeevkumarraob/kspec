@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const { execSync, spawn } = require('child_process');
 const readline = require('readline');
+const crypto = require('crypto');
 
 const KIRO_DIR = '.kiro';
 const SPECS_DIR = path.join(KIRO_DIR, 'specs');
@@ -898,7 +899,6 @@ function getChunkStats(folder) {
 function getCurrentTask(folder) {
   const tasksFile = path.join(folder, 'tasks.md');
   if (!fs.existsSync(tasksFile)) return null;
-
   try {
     const content = fs.readFileSync(tasksFile, 'utf8');
     const lines = content.split('\n');
@@ -912,8 +912,240 @@ function getCurrentTask(folder) {
     return null; // File unreadable
   }
 }
-
+// Return a project-relative path for integration output. Keeping the snapshot
+// relative makes it portable between developer machines and avoids exporting
+// host-specific paths or environment details.
+function toProjectPath(file) {
+  if (!file) return null;
+  const relative = path.relative(process.cwd(), path.resolve(file)).split(path.sep).join('/');
+  return relative || '.';
+}
+// The snapshot is derived from authoritative artifacts. Its fingerprint covers
+// the inputs that determine stage, progress, and candidate next actions, so a
+// consumer can detect changes without trusting a timestamp alone.
+function getWorkflowInputFingerprint(files) {
+  const inputs = [];
+  for (const file of files) {
+    if (!file || !fs.existsSync(file)) continue;
+    try {
+      const contents = fs.readFileSync(file);
+      const digest = crypto.createHash('sha256').update(contents).digest('hex');
+      inputs.push({ path: toProjectPath(file), sha256: digest, bytes: contents.length });
+    } catch {
+      // An unreadable input is omitted. The snapshot remains usable but the
+      // consumer can see that it has fewer fingerprinted inputs than expected.
+    }
+  }
+  const value = crypto.createHash('sha256').update(JSON.stringify(inputs)).digest('hex');
+  return { algorithm: 'sha256', value, inputs };
+}
+// `kspec done` appends a `done` event to the spec's metrics.json. Deriving the
+// terminal stage from that existing artifact keeps the snapshot free of any new
+// persisted state while still giving schedulers a stopping condition. A terminal
+// event is superseded by later workflow-start events so revised or resumed work
+// never remains falsely complete.
+const WORKFLOW_REOPEN_EVENTS = new Set([
+  'spec-started', 'design-started', 'tasks-started', 'build-started',
+  'verify-started', 'fix-started', 'refactor-started', 'spike-started', 'revise-started'
+]);
+function isWorkflowComplete(folder) {
+  const metricsFile = path.join(folder, 'metrics.json');
+  if (!fs.existsSync(metricsFile)) return false;
+  try {
+    const metrics = JSON.parse(fs.readFileSync(metricsFile, 'utf8'));
+    if (!Array.isArray(metrics)) return false;
+    for (let i = metrics.length - 1; i >= 0; i--) {
+      const event = metrics[i]?.event;
+      if (event === 'done') return true;
+      if (WORKFLOW_REOPEN_EVENTS.has(event)) return false;
+    }
+    return false;
+  } catch {
+    // Unreadable metrics must never fabricate a terminal state; report the
+    // stage the workflow artifacts alone can justify.
+    return false;
+  }
+}
+function getWorkflowStage(folder, artifact, hasDesign, hasTasks, stats) {
+  if (!artifact) return 'requirements';
+  if (isWorkflowComplete(folder)) return 'complete';
+  if (!hasTasks) return hasDesign ? 'tasks' : 'design';
+  // tasks.md exists but holds no checkboxes, so task generation never produced
+  // a plan. Falling through to `verify` here would tell an unattended consumer
+  // the build had finished when no work was ever scheduled.
+  if (!stats || stats.total === 0) return 'tasks';
+  return stats.remaining > 0 ? 'build' : 'verify';
+}
+function getWorkflowCandidates(stage, stats) {
+  const candidates = {
+    requirements: [{ id: 'create-requirements', command: 'kspec spec "Feature Name"', description: 'Create requirements for a new specification' }],
+    design: [
+      { id: 'create-design', command: 'kspec design', description: 'Create a technical design' },
+      { id: 'create-tasks', command: 'kspec tasks', description: 'Generate implementation tasks without a design' }
+    ],
+    tasks: [{ id: 'create-tasks', command: 'kspec tasks', description: 'Generate implementation tasks' }],
+    build: [{ id: 'build-next-chunk', command: 'kspec build', description: `Build the next incomplete task${stats?.remaining === 1 ? '' : 's'}` }],
+    verify: [{ id: 'verify-implementation', command: 'kspec verify', description: 'Verify the implementation against the specification' }],
+    // A completed spec offers no automatable next action. An empty list is the
+    // honest signal for a scheduler: stop, rather than pick a default.
+    complete: []
+  };
+  return candidates[stage] || [];
+}
+/**
+ * Build a fresh, portable view of one kspec workflow.
+ *
+ * This function intentionally persists nothing. Requirements, design, tasks,
+ * and the active-spec pointer remain authoritative; integrations may use the
+ * fingerprint to refuse work when the input artifacts change after inspection.
+ */
+function getWorkflowSnapshot(folder = resolveActiveSpec()) {
+  if (!folder) {
+    return {
+      schemaVersion: 1,
+      kind: 'kspec-workflow-snapshot',
+      projectRoot: '.',
+      activeSpec: null,
+      stage: 'uninitialized',
+      artifacts: { requirements: null, design: null, tasks: null, context: fs.existsSync(CONTEXT_FILE) ? toProjectPath(CONTEXT_FILE) : null },
+      progress: { tasks: null, chunks: [], currentChunk: null, currentTask: null },
+      next: { candidates: getWorkflowCandidates('requirements', null) },
+      freshness: getWorkflowInputFingerprint([CURRENT_FILE])
+    };
+  }
+  const artifact = getRequirementsArtifact(folder);
+  const designFile = path.join(folder, 'design.md');
+  const tasksFile = path.join(folder, 'tasks.md');
+  const hasDesign = fs.existsSync(designFile);
+  const hasTasks = fs.existsSync(tasksFile);
+  const stats = getTaskStats(folder);
+  const stage = getWorkflowStage(folder, artifact, hasDesign, hasTasks, stats);
+  const metadataFile = path.join(folder, 'metadata.json');
+  // metrics.json determines the terminal `complete` stage, so it belongs in the
+  // fingerprint. Omitting it would leave the digest unchanged across the
+  // transition into `complete`, and a consumer caching on the fingerprint would
+  // keep acting on a finished spec.
+  const metricsFile = path.join(folder, 'metrics.json');
+  const inputFiles = [CURRENT_FILE, artifact?.path, designFile, tasksFile, metadataFile, metricsFile];
+  return {
+    schemaVersion: 1,
+    kind: 'kspec-workflow-snapshot',
+    projectRoot: '.',
+    activeSpec: { id: path.basename(folder), path: toProjectPath(folder), format: artifact?.format || null },
+    stage,
+    artifacts: {
+      requirements: artifact ? toProjectPath(artifact.path) : null,
+      design: hasDesign ? toProjectPath(designFile) : null,
+      tasks: hasTasks ? toProjectPath(tasksFile) : null,
+      context: fs.existsSync(CONTEXT_FILE) ? toProjectPath(CONTEXT_FILE) : null
+    },
+    progress: {
+      tasks: stats,
+      chunks: getChunkStats(folder) || [],
+      currentChunk: getCurrentChunk(folder),
+      currentTask: getCurrentTask(folder)
+    },
+    next: { candidates: getWorkflowCandidates(stage, stats) },
+        freshness: getWorkflowInputFingerprint(inputFiles)
+  };
+}
+function getCrewSessionKey(env = process.env) {
+  const value = env.KIROCREW_SESSION_KEY;
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+function normalizeCrewRunStatus(value) {
+  const aliases = { 'needs-review': 'needs_review' };
+  const status = aliases[value] || value;
+  const allowed = new Set(['completed', 'failed', 'needs_review', 'cancelled']);
+  if (!allowed.has(status)) {
+    die('Invalid Crew run status. Use completed, failed, needs_review, or cancelled.');
+  }
+  return status;
+}
+function parseCrewRunResultArgs(args) {
+  const result = { spec: null, status: 'completed', summary: null, artifacts: [], inputFingerprint: null };
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    const readValue = flag => {
+      if (token.startsWith(`${flag}=`)) return token.slice(flag.length + 1);
+      const value = args[++i];
+      if (!value || value.startsWith('-')) die(`Usage: ${flag} requires a value.`);
+      return value;
+    };
+    if (token === '--status' || token.startsWith('--status=')) result.status = readValue('--status');
+    else if (token === '--summary' || token.startsWith('--summary=')) result.summary = readValue('--summary');
+    else if (token === '--artifact' || token.startsWith('--artifact=')) result.artifacts.push(readValue('--artifact'));
+    else if (token === '--input-fingerprint' || token.startsWith('--input-fingerprint=')) result.inputFingerprint = readValue('--input-fingerprint');
+    else if (token.startsWith('-')) die(`Unknown Crew result option: ${token}`);
+    else positional.push(token);
+  }
+  if (positional.length > 1) die('Usage: kspec crew-result [spec] [options]');
+  result.spec = positional[0] || null;
+  result.status = normalizeCrewRunStatus(result.status);
+  if (result.summary && Buffer.byteLength(result.summary, 'utf8') > 4000) {
+    die('Crew result summary must be 4 KiB or smaller. Store longer details in a repository artifact.');
+  }
+  if (result.inputFingerprint && !/^[a-f0-9]{64}$/.test(result.inputFingerprint)) {
+    die('Crew input fingerprint must be a 64-character lowercase SHA-256 hex digest.');
+  }
+  return result;
+}
+function toExistingProjectArtifact(file) {
+  if (typeof file !== 'string' || !file.trim()) {
+    die('Crew result artifact must be a non-empty path to an existing project file.');
+  }
+  const resolved = path.resolve(file.trim());
+  if (!fs.existsSync(resolved)) die(`Crew result artifact does not exist: ${file}`);
+  let root;
+  let canonical;
+  try {
+    root = fs.realpathSync(process.cwd());
+    canonical = fs.realpathSync(resolved);
+  } catch {
+    die(`Crew result artifact could not be resolved safely: ${file}`);
+  }
+  const withinRoot = canonical === root || canonical.startsWith(`${root}${path.sep}`);
+  if (!withinRoot) die(`Crew result artifact must resolve inside the project root: ${file}`);
+  if (!fs.statSync(canonical).isFile()) {
+    die(`Crew result artifact must be an existing file: ${file}`);
+  }
+  return toProjectPath(resolved);
+}
+/**
+ * Build a Crew-specific execution result without mutating kspec workflow state.
+ * The envelope is intended for a Crew adapter or its durable run store; kspec
+ * itself does not persist it, schedule work, or interpret approvals from it.
+ */
+function createCrewRunResult(options = {}) {
+  const folder = options.folder || resolveActiveSpec();
+  if (!folder) die('No active spec. Select a spec before creating a Crew run result.');
+  const snapshot = getWorkflowSnapshot(folder);
+  const artifacts = [...new Set((options.artifacts || []).map(toExistingProjectArtifact))];
+  return {
+    schemaVersion: 1,
+    kind: 'kspec-crew-run-result',
+    generatedAt: new Date().toISOString(),
+    consumer: {
+      name: 'kiro-crew',
+      sessionKey: getCrewSessionKey(options.env)
+    },
+    workflow: {
+      specId: snapshot.activeSpec.id,
+      specPath: snapshot.activeSpec.path,
+      inputFingerprint: options.inputFingerprint || null,
+      outputFingerprint: snapshot.freshness.value,
+      snapshotSchemaVersion: snapshot.schemaVersion
+    },
+    result: {
+      status: normalizeCrewRunStatus(options.status || 'completed'),
+      summary: options.summary || null,
+      artifacts
+    }
+  };
+}
 // Check if spec.md has been modified after spec-lite.md
+
 function isSpecStale(folder) {
   const specFile = getRequirementsArtifact(folder)?.path;
   const specLiteFile = path.join(folder, 'spec-lite.md');
@@ -6614,8 +6846,19 @@ Provide detailed findings.`;
     console.log('');
   },
 
-  status() {
-    const current = getCurrentSpec();
+  status(args = []) {
+    const jsonOutput = args.includes('--json');
+    const requested = args.filter(arg => !arg.startsWith('-'));
+    if (requested.length > 1) die('Usage: kspec status [spec] [--json]');
+    const exactFolder = requested.length === 1
+      ? getSpecDirectories().find(folder => path.basename(folder) === requested[0])
+      : null;
+    const current = requested.length === 1 ? (exactFolder || findSpec(requested[0])) : getCurrentSpec();
+    if (requested.length === 1 && !current) die(`Spec "${requested[0]}" not found. Run \`kspec list\` to see available specs.`);
+    if (jsonOutput) {
+      process.stdout.write(`${JSON.stringify(getWorkflowSnapshot(current), null, 2)}\n`);
+      return;
+    }
     const jiraProject = getJiraProject();
     const rallyProject = getRallyProject();
     const adoProject = getAdoProject();
@@ -6709,6 +6952,16 @@ Provide detailed findings.`;
     console.log('');
   },
 
+  'crew-result'(args = []) {
+    const options = parseCrewRunResultArgs(args);
+    const exactFolder = options.spec
+      ? getSpecDirectories().find(folder => path.basename(folder) === options.spec)
+      : null;
+    const folder = options.spec ? (exactFolder || findSpec(options.spec)) : getOrSelectSpec();
+    if (options.spec && !folder) die(`Spec "${options.spec}" not found. Run \`kspec list\` to see available specs.`);
+    const result = createCrewRunResult({ ...options, folder });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  },
   context(args = []) {
     const content = refreshContext();
     console.log(content);
@@ -7575,7 +7828,13 @@ Other:
   kspec context           Refresh/view the derived context snapshot
   kspec context --stdout  Refresh/print context for hooks and agents
   kspec list              List all specs
-  kspec status            Current status
+  kspec status [spec] [--json]
+                          Current status; --json emits a derived workflow snapshot for integrations
+  kspec crew-result [spec] [options]
+                          Emit a Crew-specific run result without persisting workflow state
+                          Options: --status completed|failed|needs_review|cancelled
+                                   --summary "..." --artifact <project-file>
+                                   --input-fingerprint <sha256>
   kspec agents            List agents
   kspec sync-agents       Refresh agents + skills to latest kspec templates (use after MCP changes or kspec upgrade)
   kspec update            Check for updates
@@ -7666,4 +7925,4 @@ async function run(args) {
   }
 }
 
-module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getAzureDevOpsMcpName, isAzureDevOpsMcpName, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, parseOptionValue, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };
+module.exports = { run, commands, loadConfig, detectCli, requireCli, getAgentTemplates, validateGeneratedAgents, steeringTemplates, skillTemplates, agentsMdTemplate, hooksTemplateBasic, hooksTemplateEnterprise, hooksTemplateDocumentation, hooksTemplateCi, v3HooksTemplate, githubActionsKspecReview, getEnterpriseGovernanceTemplate, reviewerCliConfigs, getTaskStats, getChunkStats, getWorkflowInputFingerprint, getWorkflowSnapshot, getCrewSessionKey, parseCrewRunResultArgs, createCrewRunResult, refreshContext, getCurrentSpec, resolveActiveSpec, setCurrentSpec, getOrSelectSpec, getCurrentTask, getRequirementsArtifact, getRequirementsPath, getKiroEngine, getKiroHome, getKiroCliVersion, extractGlobalOptions, checkForUpdates, compareVersions, hasAtlassianMcp, hasRallyMcp, hasAzureDevOpsMcp, hasGitHubMcp, getAzureDevOpsMcpName, isAzureDevOpsMcpName, getMcpConfig, getJiraProject, getRallyProject, getAdoProject, getGitHubIssuesRepo, slugify, generateSlug, isSpecStale, validateContract, migrateV1toV2, resetToDefaultAgent, recordMetric, truncateSpecLite, acquireLock, releaseLock, KIRO_DIR, SPECS_DIR, MILESTONES_DIR, LEGACY_KSPEC_DIR, SKILLS_DIR, CONTEXT_MAX_BYTES, getConfiguredModel, agentToMarkdown, parseFrontmatter, mergeSteeringFile, getAllMcpNames, buildChatArgs, classifyReviewArgs, applyMcpToolsSection, parseOptionValue, formatMigrationDiff, KSPEC_GITIGNORE_BLOCK, upgradeKspecGitignore };

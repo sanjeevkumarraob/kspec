@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sanjeevkumarraob/kspec/schemas/kspec-crew-run-result.schema.json",
+  "title": "kspec Crew Run Result",
+  "description": "A Kiro Crew-specific execution envelope. It records run provenance and outcome without persisting or authorizing kspec workflow state.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "generatedAt",
+    "consumer",
+    "workflow",
+    "result"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "type": "string",
+      "const": "kspec-crew-run-result"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "consumer": {
+      "type": "object",
+      "required": ["name", "sessionKey"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "const": "kiro-crew"
+        },
+        "sessionKey": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflow": {
+      "type": "object",
+      "required": ["specId", "specPath", "inputFingerprint", "outputFingerprint", "snapshotSchemaVersion"],
+      "properties": {
+        "specId": { "type": "string", "minLength": 1 },
+        "specPath": { "type": "string", "minLength": 1 },
+        "inputFingerprint": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "outputFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "snapshotSchemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": ["status", "summary", "artifacts"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["completed", "failed", "needs_review", "cancelled"]
+        },
+        "summary": {
+          "type": ["string", "null"],
+          "maxLength": 4000
+        },
+        "artifacts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}
